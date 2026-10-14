@@ -1,0 +1,154 @@
+{
+  "_doc": "radar_accounts : comptes dont les posts frais te sont proposés sur Telegram avec une réponse déjà rédigée — c'est TOI qui publies la réponse depuis l'app X (les réponses automatiques sous les posts des autres sont interdites). x_news_accounts : comptes officiels lus via l'API pour l'actu (0,005 $ par post lu). news_feeds : flux RSS/Atom gratuits. Handles sans @.",
+  "radar_accounts": [
+    "ChatGPTapp",
+    "claudeai",
+    "GeminiApp",
+    "perplexity_ai",
+    "MistralAI",
+    "AIatMeta",
+    "huggingface",
+    "OpenAIDevs",
+    "alliekmiller",
+    "LinusEkenstam",
+    "heyBarsee",
+    "minchoi",
+    "godofprompt",
+    "sama",
+    "karpathy",
+    "AndrewYNg",
+    "ylecun",
+    "DarioAmodei",
+    "AnthropicAI",
+    "OpenAI",
+    "GoogleDeepMind",
+    "demishassabis",
+    "satyanadella",
+    "sundarpichai",
+    "gdb",
+    "AravSrinivas",
+    "emollick",
+    "rowancheung",
+    "swyx",
+    "DrJimFan",
+    "fchollet",
+    "ID_AA_Carmack",
+    "JeffDean",
+    "levelsio",
+    "naval",
+    "paulg",
+    "garrytan",
+    "ycombinator",
+    "MKBHD",
+    "GergelyOrosz",
+    "thejustinwelsh",
+    "dickiebush",
+    "sahilbloom",
+    "ShaanVP",
+    "shl",
+    "david_perell",
+    "george__mack",
+    "patrick_oshag"
+  ],
+  "x_news_accounts": [
+    "OpenAI",
+    "ChatGPTapp",
+    "OpenAIDevs",
+    "AnthropicAI",
+    "claudeai",
+    "GoogleDeepMind",
+    "GeminiApp",
+    "perplexity_ai",
+    "MistralAI",
+    "AIatMeta",
+    "huggingface"
+  ],
+  "news_feeds": [
+    {
+      "name": "OpenAI",
+      "url": "https://openai.com/news/rss.xml",
+      "weight": 3,
+      "official": true
+    },
+    {
+      "name": "Google AI",
+      "url": "https://blog.google/technology/ai/rss/",
+      "weight": 3,
+      "official": true
+    },
+    {
+      "name": "Google DeepMind",
+      "url": "https://deepmind.google/blog/rss.xml",
+      "weight": 3,
+      "official": true
+    },
+    {
+      "name": "Hugging Face",
+      "url": "https://huggingface.co/blog/feed.xml",
+      "weight": 1,
+      "official": true
+    },
+    {
+      "name": "GitHub Blog",
+      "url": "https://github.blog/feed/",
+      "weight": 1,
+      "official": true
+    },
+    {
+      "name": "NVIDIA Blog",
+      "url": "https://blogs.nvidia.com/feed/",
+      "weight": 1,
+      "official": true
+    },
+    {
+      "name": "TechCrunch AI",
+      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "weight": 2,
+      "official": false
+    },
+    {
+      "name": "The Verge AI",
+      "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+      "weight": 2,
+      "official": false
+    },
+    {
+      "name": "Ars Technica AI",
+      "url": "https://arstechnica.com/ai/feed/",
+      "weight": 2,
+      "official": false
+    },
+    {
+      "name": "MIT Technology Review AI",
+      "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+      "weight": 1,
+      "official": false
+    },
+    {
+      "name": "Simon Willison",
+      "url": "https://simonwillison.net/atom/everything/",
+      "weight": 1,
+      "official": false
+    },
+    {
+      "name": "Hacker News",
+      "url": "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=40",
+      "weight": 2,
+      "official": false,
+      "type": "hn"
+    }
+  ],
+  "blacklist": {
+    "users": [],
+    "keywords": [
+      "airdrop claim",
+      "casino",
+      "connect wallet",
+      "free mint click",
+      "onlyfans",
+      "porn",
+      "scam",
+      "verify wallet"
+    ]
+  }
+}

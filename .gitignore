@@ -1,0 +1,14 @@
+.venv/
+.venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+config/.env
+config/.env.*
+auth/
+state/
+logs/
+media/
+backup_deploy/
+*.zip
+.DS_Store
