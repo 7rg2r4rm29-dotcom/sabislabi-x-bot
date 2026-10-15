@@ -15,6 +15,15 @@ WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
             "lun": 0, "mar": 1, "mer": 2, "jeu": 3, "ven": 4, "sam": 5, "dim": 6}
 
 POST_KINDS = ("gm", "tip", "news")
+
+# Créneaux par défaut (heure de Paris), calés sur l'audience anglophone mondiale
+# et sur l'algorithme X (xai-org/x-algorithm, oct. 2026) : chaque post a sa
+# chance « cold start » pendant ~2 h, et le 2e/3e post qu'une même personne voit
+# de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc 3 posts forts
+# bien espacés plutôt que 5 : 08:30 (Europe, Inde), 14:00 (côte Est US au réveil
+# + Europe), 18:30 (pause déjeuner US + soirée Europe).
+DEFAULT_POST_SLOTS = "gm@08:30,tip@14:00,news@18:30"
+DEFAULT_THREAD_SLOTS = "tue@15:00,sun@17:00"
 DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240}
 
 # Modèles qui acceptent la bascule serveur en cas de refus (fallbacks: "default").
@@ -141,7 +150,7 @@ class Settings:
 
     # --- Posts réactifs ---
     reactive_enabled: bool = True
-    reactive_max_per_day: int = 2
+    reactive_max_per_day: int = 1
     reactive_check_every_min: int = 150
     reactive_window: tuple[dtime, dtime] = (dtime(9, 30), dtime(22, 0))
     reactive_min_gap_min: int = 90
@@ -157,7 +166,7 @@ class Settings:
     radar_check_every_min: int = 30
     radar_accounts_per_check: int = 6
     radar_max_age_min: int = 45
-    radar_max_per_day: int = 10
+    radar_max_per_day: int = 8
     radar_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(22, 30))
     radar_min_likes_per_min: float = 1.0
 
@@ -273,15 +282,15 @@ def load_settings() -> Settings:
         llm_model=_env("LLM_MODEL") or "claude-opus-5-5",
         llm_effort=_env("LLM_EFFORT", "medium").lower() or "medium",
         llm_effort_thread=_env("LLM_EFFORT_THREAD", "high").lower() or "high",
-        post_slots=parse_post_slots(_env("POST_SLOTS", "gm@08:00,tip@13:30,news@18:00")),
-        thread_slots=parse_thread_slots(_env("THREAD_SLOTS", "tue@15:00,sun@18:00")),
+        post_slots=parse_post_slots(_env("POST_SLOTS", DEFAULT_POST_SLOTS)),
+        thread_slots=parse_thread_slots(_env("THREAD_SLOTS", DEFAULT_THREAD_SLOTS)),
         draft_leads=parse_leads(_env("DRAFT_LEAD_MINUTES")),
         approval_grace_minutes=_env_int("APPROVAL_GRACE_MINUTES", 120),
         quiet_hours=_quiet_hours(_env("QUIET_HOURS", "23:30-07:30")),
         health_report_at=parse_hhmm(_env("HEALTH_REPORT_AT", "08:30")),
         thread_candidates=max(1, _env_int("THREAD_CANDIDATES", 3)),
         reactive_enabled=_env_bool("REACTIVE_ENABLED", True),
-        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 2),
+        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 1),
         reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 150),
         reactive_window=parse_window(_env("REACTIVE_WINDOW", "09:30-22:00")),
         reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 90),
@@ -293,7 +302,7 @@ def load_settings() -> Settings:
         radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 30),
         radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 6),
         radar_max_age_min=_env_int("RADAR_MAX_AGE_MINUTES", 45),
-        radar_max_per_day=_env_int("RADAR_MAX_PER_DAY", 10),
+        radar_max_per_day=_env_int("RADAR_MAX_PER_DAY", 8),
         radar_window=parse_window(_env("RADAR_WINDOW", "08:00-22:30")),
         radar_min_likes_per_min=_env_float("RADAR_MIN_LIKES_PER_MIN", 1.0),
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),

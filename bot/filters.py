@@ -3,7 +3,8 @@
 Repris de la v1 (ligne éditoriale d'octobre 2026) : zéro crypto/NFT, zéro
 politique/drames, rien de contraire à la foi du propriétaire, pas de jargon,
 pas de chiffres empilés, pas de copie d'une source, pas de fuite JSON.
-Nouveau en v2 : pas de lien (0,20 $ le post via l'API et portée réduite), et
+Nouveau en v2 : pas de lien (0,20 $ le post via l'API au lieu de 0,015 $ ; l'algorithme,
+lui, ne pénalise plus les liens), et
 longueur pondérée comme X la compte.
 """
 from __future__ import annotations
@@ -230,7 +231,7 @@ def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int
     if looks_like_json_leak(text):
         return "ressemble à du JSON"
     if contains_url(text):
-        return "contient un lien ou un nom de domaine (0,20 $ et portée réduite)"
+        return "contient un lien ou un nom de domaine (0,20 $ le post via l'API au lieu de 0,015 $)"
     off = off_limits_term(text)
     if off:
         return f"hors ligne éditoriale ({off})"

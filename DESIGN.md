@@ -7,7 +7,7 @@ Assistant X pour **@sabislabi** (compte international en anglais : utiliser l'IA
 1. **API officielle uniquement.** Aucun navigateur sur x.com (docs.x.com/developer-guidelines : « Non-API automation (scraping, browser automation) results in permanent suspension »). Le dossier `auth/` et `storage_state.json` disparaissent.
 2. **Un humain valide chaque contenu écrit par Claude** avant publication (mode `APPROVAL_MODE=telegram`, par défaut). Raisons : les réponses générées par IA exigent l'accord préalable de X ; un compte entièrement automatique doit porter l'étiquette « Automated » ; Original Content Rewards exclut le contenu « created or posted using automated means » ; X a supprimé 42 000 comptes de réponses par chatbot en juillet 2026.
 3. **Aucune réponse automatique sous les posts des autres, aucun like automatique.** L'API refuse d'ailleurs les réponses non « summoned » depuis le 23/02/2026 et a retiré likes/follows/citations du self-serve le 20/04/2026. Le **radar** propose une réponse rédigée, l'utilisateur la publie lui-même via un lien `x.com/intent/post?in_reply_to=…` qui ouvre l'app X.
-4. **Pas de lien dans les posts** (0,20 $ au lieu de 0,015 $ via l'API, et portée réduite). Les noms de domaine (`claude.ai`) comptent comme des liens.
+4. **Pas de lien dans les posts publiés par l'API** (0,20 $ au lieu de 0,015 $ ; l'algorithme ne pénalise plus les liens, c'est une question de coût). Les noms de domaine (`claude.ai`) comptent comme des liens.
 5. **Budget API X plafonné** (jour / mois), chaque appel est compté (`bot/costs.py`).
 
 ## Modules
