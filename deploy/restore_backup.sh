@@ -11,7 +11,7 @@ main() {
   set -u
   local APP_DIR="${XBOT_APP_DIR:-$HOME/x-degen-bot}"
   local SERVICE="${XBOT_SERVICE-x-degen-bot}"
-  local SUDO="${XBOT_SUDO-sudo}"
+  local SUDO="${XBOT_SUDO-sudo -n}"
   local MANAGE_SERVICE="${XBOT_RESTORE_MANAGE_SERVICE:-1}"
   local WITH_ENV="${XBOT_RESTORE_ENV:-}"
   local B="${1:-}"
@@ -34,7 +34,7 @@ except Exception:
     print(0)' "$1"
   }
 
-  [ "$MANAGE_SERVICE" = 1 ] && svc stop
+  if [ "$MANAGE_SERVICE" = 1 ]; then svc stop 2>/dev/null || true; fi
   local kind path
   while read -r kind path; do
     [ -n "$path" ] || continue
@@ -64,7 +64,7 @@ except Exception:
         ;;
     esac
   done < "$B/.xbot_backup"
-  [ "$MANAGE_SERVICE" = 1 ] && svc start
+  if [ "$MANAGE_SERVICE" = 1 ]; then svc restart || echo "Relance impossible : sudo systemctl restart $SERVICE"; fi
   echo "RESTAURÉ : $(basename "$B")"
 }
 main "$@"

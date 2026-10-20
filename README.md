@@ -207,12 +207,14 @@ question des clés. Tes réglages, tes clés et l'historique du bot sont conserv
   ssh botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/restore_backup.sh'
   ```
 
-- **Arrêter complètement / relancer** :
+- **Relancer le bot** (s'il ne répond plus) :
 
   ```
-  ssh botuser@178.128.194.190 'sudo systemctl stop x-degen-bot'
-  ssh botuser@178.128.194.190 'sudo systemctl start x-degen-bot'
+  ssh botuser@178.128.194.190 'sudo systemctl restart x-degen-bot'
   ```
+
+- **Arrêter complètement** : `ssh botuser@178.128.194.190 'sudo systemctl stop x-degen-bot'`
+  (si le serveur demande un mot de passe, utilise plutôt `/pause`).
 
 ## 8. En cas de problème
 

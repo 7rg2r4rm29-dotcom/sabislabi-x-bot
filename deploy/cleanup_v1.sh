@@ -13,7 +13,6 @@ main() {
   set -u
   local APP_DIR="${XBOT_APP_DIR:-$HOME/x-degen-bot}"
   local SERVICE="${XBOT_SERVICE-x-degen-bot}"
-  local SUDO="${XBOT_SUDO-sudo}"
   cd "$APP_DIR" || return 1
 
   # Garde-fous : la v2 doit être installée, avoir tourné, et tourner encore.
@@ -26,7 +25,7 @@ main() {
     echo "La v2 n'a pas encore tourné ici (état encore en v1) : rien supprimé. Réessaie dans un jour ou deux."
     return 1
   fi
-  if [ -n "$SERVICE" ] && ! $SUDO systemctl is-active --quiet "$SERVICE"; then
+  if [ -n "$SERVICE" ] && ! systemctl is-active --quiet "$SERVICE"; then
     echo "Le bot ne tourne pas en ce moment : rien supprimé. Vérifie d'abord /statut sur Telegram."
     return 1
   fi

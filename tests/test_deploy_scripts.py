@@ -299,3 +299,46 @@ def test_cleanup_v1(tmp_path):
     assert not (app / "backup_deploy" / "x_browser.py").exists()
     assert not (app / "backup_deploy" / "20250101-000000").exists() and latest.exists()
     assert (app / "bot" / "publisher.py").exists() and (app / "tests" / "test_deploy_scripts.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# Service systemd simulé : sudo n'autorise que « restart » (comme pour la v1)
+# ---------------------------------------------------------------------------
+def fake_service_bin(tmp_path: Path, active: bool) -> tuple[Path, Path]:
+    bindir, log = tmp_path / "bin", tmp_path / "systemctl.log"
+    bindir.mkdir()
+    (bindir / "sudo").write_text('#!/usr/bin/env bash\n[ "$1" = -n ] && shift\nexec "$@"\n')
+    (bindir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$*" >> "{log}"\n'
+        'case "$1" in\n'
+        '  stop) echo "Interactive authentication required." >&2; exit 1 ;;\n'
+        f'  is-active) exit {0 if active else 3} ;;\n'
+        "esac\n")
+    (bindir / "journalctl").write_text('#!/usr/bin/env bash\necho "journal: bot démarré"\n')
+    for f in bindir.iterdir():
+        f.chmod(0o755)
+    return bindir, log
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_deploy_with_restart_only_service(tmp_path, active):
+    app = make_v1_app(tmp_path / "app")
+    stage = make_stage(tmp_path / "stage")
+    bindir, log = fake_service_bin(tmp_path, active)
+    env = deploy_env(app, XBOT_SERVICE="x-degen-bot", XBOT_WAIT="0",
+                     PATH=f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+    res = run(DEPLOY / "deploy.sh", str(stage), env=env)
+    calls = log.read_text().splitlines()
+    assert "Arrêt non autorisé" in res.stdout
+    assert calls[0] == "stop x-degen-bot"
+    if active:
+        assert res.returncode == 0, out(res)
+        assert "V2_OK" in res.stdout and "journal: bot démarré" in res.stdout
+        assert calls[1:] == ["restart x-degen-bot", "is-active --quiet x-degen-bot"]
+        assert (app / "bot" / "publisher.py").exists()
+    else:
+        assert res.returncode == 1
+        assert "ne démarre pas" in res.stdout and "ancienne version remise" in res.stdout
+        assert calls[1:] == ["restart x-degen-bot", "is-active --quiet x-degen-bot", "restart x-degen-bot"]
+        assert (app / "bot" / "x_browser.py").exists() and not (app / "bot" / "publisher.py").exists()

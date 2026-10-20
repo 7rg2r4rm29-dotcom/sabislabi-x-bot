@@ -16,7 +16,7 @@ main() {
   STAGE="${STAGE%/}"
   local APP_DIR="${XBOT_APP_DIR:-$HOME/x-degen-bot}"
   local SERVICE="${XBOT_SERVICE-x-degen-bot}"
-  local SUDO="${XBOT_SUDO-sudo}"
+  local SUDO="${XBOT_SUDO-sudo -n}"   # -n : jamais de mot de passe demandé (sinon tout resterait bloqué)
   local PY="$APP_DIR/.venv/bin/python"
   # Ce qui est sauvegardé puis remplacé (le reste n'est jamais touché).
   local SAVED="bot deploy tests config/settings.json config/content.json config/.env state/state.json requirements.txt README.md DESIGN.md"
@@ -25,6 +25,8 @@ main() {
   local KEEP_BACKUPS=5
 
   svc() { [ -n "$SERVICE" ] || return 0; $SUDO systemctl "$@" "$SERVICE"; }
+  svc_active() { [ -z "$SERVICE" ] || systemctl is-active --quiet "$SERVICE"; }
+  journal() { [ -z "$SERVICE" ] || $SUDO journalctl -u "$SERVICE" -n "$1" --no-pager 2>/dev/null || true; }
 
   if [ ! -f "$STAGE/bot/main.py" ] || [ ! -f "$STAGE/deploy/restore_backup.sh" ]; then
     echo "Nouvelle version introuvable dans $STAGE. Rien n'a été modifié."
@@ -106,17 +108,21 @@ main() {
 
   # --- 3. Arrêt, sauvegarde, installation ------------------------------------
   echo "=== 3/5 Sauvegarde et installation ==="
-  svc stop || { echo "Arrêt du bot impossible. Rien n'a été modifié."; return 1; }
+  # Si le serveur n'autorise que « restart », on installe pendant qu'il tourne
+  # (comme la v1) : le redémarrage final charge la nouvelle version.
+  if ! svc stop 2>/dev/null; then
+    echo "(Arrêt non autorisé : installation pendant que le bot tourne, redémarrage à la fin.)"
+  fi
   local BACKUP
   BACKUP="$APP_DIR/backup_deploy/$(date +%Y%m%d-%H%M%S)"
-  (umask 077 && mkdir -p "$BACKUP") || { svc start; echo "Sauvegarde impossible : bot relancé tel quel."; return 1; }
+  (umask 077 && mkdir -p "$BACKUP") || { svc restart; echo "Sauvegarde impossible : bot relancé tel quel."; return 1; }
   chmod 700 "$APP_DIR/backup_deploy"
   local p
   for p in $SAVED; do
     if [ -e "$APP_DIR/$p" ]; then
       mkdir -p "$(dirname "$BACKUP/$p")"
       if ! cp -a "$APP_DIR/$p" "$BACKUP/$p"; then
-        svc start
+        svc restart
         echo "Sauvegarde impossible ($p) : bot relancé tel quel, rien installé."
         return 1
       fi
@@ -132,7 +138,7 @@ main() {
     echo "$1"
     XBOT_APP_DIR="$APP_DIR" XBOT_RESTORE_ENV=1 XBOT_RESTORE_MANAGE_SERVICE=0 \
       bash "$STAGE/deploy/restore_backup.sh" "$BACKUP"
-    svc start
+    svc restart
     echo "ÉCHEC : ancienne version remise et relancée. Rien n'est perdu."
   }
 
@@ -173,15 +179,18 @@ main() {
 
   # --- 5. Redémarrage ---------------------------------------------------------
   echo "=== 5/5 Redémarrage ==="
-  svc start
+  if ! svc restart; then
+    rollback "Redémarrage du bot impossible (droits sudo du serveur ?)."
+    return 1
+  fi
   if [ -n "$SERVICE" ]; then
     sleep "${XBOT_WAIT:-12}"
-    if ! svc is-active --quiet; then
-      $SUDO journalctl -u "$SERVICE" -n 30 --no-pager
+    if ! svc_active; then
+      journal 30
       rollback "Le bot ne démarre pas (voir le journal ci-dessus)."
       return 1
     fi
-    $SUDO journalctl -u "$SERVICE" -n 15 --no-pager
+    journal 15
   fi
 
   # On garde les 5 dernières sauvegardes datées.
