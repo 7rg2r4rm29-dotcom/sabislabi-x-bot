@@ -82,6 +82,7 @@ Champs créés par `StateStore.new_item(kind, texts, **fields)` : `id, kind, sta
 3. `✅` : si `now < publish_at` → `approved` (« programmé à 13h32 ») ; sinon publication immédiate (`publish_at = now`).
 4. `Publisher.publish_due()` : items `approved` avec `publish_at <= now` → upload image éventuel → `post` / `post_thread` → `published`, `state.add_published(...)`, carte mise à jour avec le lien.
 5. Items `awaiting` dont `expires_at` est passé → `expired` (carte : « ⌛ expiré, rien publié »).
+   Un item `approved` qui n'a pas pu partir à l'heure (bot arrêté) n'est plus publié au-delà de 3 h de retard (2 h pour un réactif, 12 h pour une réponse à un commentaire ; jamais pour un thread déjà en partie en ligne) : `expired` + message. `/reprendre` décale les posts validés en retard à `now + 3 min` (le temps d'annuler) et expire ceux qui ont trop attendu.
 6. `APPROVAL_MODE=auto` (déconseillé, bloqué sans `AUTOMATED_LABEL_ACK=yes`) : l'item naît `approved`, la carte montre `❌ Annuler` / `✏️ Modifier` jusqu'à l'heure.
 
 ## Réponses à mes commentaires (`comments.py`)
@@ -104,8 +105,16 @@ Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTI
 
 ## Coûts estimés
 
-API X : ~4 posts/jour + 2 threads/semaine ≈ 3 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu plafonnées par `X_BUDGET_DAILY_USD` (1,50 $ par défaut, 80 % pour l'optionnel). Claude : ~30-60 appels/jour, consignes en cache.
+API X : ~4 posts/jour + 2 threads/semaine ≈ 3 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~30-60 appels/jour, consignes en cache.
 
 ## Tests
 
 `pytest` sans réseau : faux `LLM`, faux `XClient`, faux `Telegram`, horloge figée (`utils.set_clock`). `deploy/deploy.sh` lance la suite sur une copie isolée avant toute installation.
+
+## Installation (`deploy/`)
+
+- `push_from_mac.sh` (sur le Mac) : envoie le code (tar via ssh, jamais `config/.env`) dans `~/xbv2_stage`, propose `set_secrets.sh` (`ssh -t`, saisie masquée, écriture atomique en 600), puis lance `deploy.sh`.
+- `deploy.sh` (sur le serveur) : verrou ; refus si publication en cours (`--busy-check`, ou horaires fixes de la v1) ; `pip install` + `pytest` sur la nouvelle version ; arrêt du service ; sauvegarde datée (`backup_deploy/<date>/` + manifeste `.xbot_backup`, 5 gardées) ; installation de `bot/ deploy/ tests/` et des JSON ; `migrate_env_v2.sh` (ajoute les réglages v2 absents, n'écrase rien) ; `--check` réel ; redémarrage ; tout échec après l'arrêt → `restore_backup.sh` + relance de l'ancienne version.
+- `restore_backup.sh` : remet une sauvegarde (code + JSON ; l'état seulement s'il change de format ; `.env` seulement pour annuler un déploiement raté).
+- `cleanup_v1.sh` : une fois la v2 en service, supprime `auth/` (session X du navigateur), les copies de l'ancien `.env`, les restes v1 et les clés SSH privées égarées dans le dossier.
+- Points d'entrée de test : `XBOT_APP_DIR`, `XBOT_SERVICE=""`, `XBOT_SUDO`, `XBOT_SKIP_PIP|TESTS|CHECK`, `XBOT_CLOCK`, `XBOT_SSH`, `XBOT_HOST`, `XBOT_ASK_SECRETS`.

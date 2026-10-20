@@ -1,0 +1,13 @@
+# Assistant X @sabislabi — v2 (API officielle X + validation Telegram)
+anthropic>=1.14,<2
+requests>=2.32
+requests-oauthlib>=2.0
+feedparser>=6.0.11
+python-dotenv>=1.0.1
+Pillow>=11.0
+tzdata
+pytest>=8
+# Optionnels : captures de vraies pages (playwright + Chromium) et photos IA (openai).
+# Sans eux, le bot fonctionne et publie simplement sans image.
+playwright>=1.49
+openai>=1.50

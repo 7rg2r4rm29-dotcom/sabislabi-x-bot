@@ -27,6 +27,7 @@ log = logging.getLogger("xbot.approvals")
 
 POST_KINDS = ("gm", "tip", "news", "thread", "reactive")
 MAX_REGEN = 3
+RESUME_DELAY_MINUTES = 3  # /reprendre : délai avant le départ des posts en retard
 CARD_MAX_CHARS = 3900          # Telegram coupe à 4096 ; on garde de la marge pour le HTML
 EDIT_PROMPT_MAX_TEXT = 3000    # au-delà, on ne recopie pas le texte actuel dans l'invite ✏️
 CARD_RETRY_MINUTES = 5         # carte non envoyée (Telegram en panne) : nouvel essai toutes les 5 min
@@ -482,7 +483,8 @@ class Approvals:
         if status == "rejected":
             return "❌ Annulé — rien n'a été publié"
         if status == "expired":
-            return "⌛ Expiré — rien n'a été publié"
+            why = item.get("last_error")
+            return "⌛ Expiré — rien n'a été publié" + (f" ({esc(why)})" if why else "")
         return f"Statut : {esc(str(status))}"
 
     def _post_buttons(self, item: dict) -> list[list[dict]]:
@@ -581,7 +583,6 @@ class Approvals:
 
     # ---- Radar (c'est toi qui publies) --------------------------------
     def _render_radar_text(self, item: dict, limit: int | None) -> str:
-        now = now_local()
         meta = item.get("meta") or {}
         status = item.get("status")
         bits = []
@@ -1008,13 +1009,28 @@ class Approvals:
             was = bool(self.state.data.get("paused"))
             self.state.data["paused"] = False
             self.state.flush()
+            from .publisher import is_stale
             now = now_local()
             late = [it for it in self.state.items(statuses=("approved",))
                     if (parse_iso(it.get("publish_at")) or now) <= now]
+            # Les posts en retard partent dans quelques minutes (le temps d'annuler),
+            # ceux qui ont trop attendu ne partent plus (même règle que le Publisher).
+            resume_at = now + timedelta(minutes=RESUME_DELAY_MINUTES)
+            go = [it for it in late if not is_stale(it, now)]
+            old = [it for it in late if is_stale(it, now)]
+            for it in go:
+                self.state.update_item(it["id"], publish_at=iso(resume_at))
+                self.refresh_card(it)
+            for it in old:
+                self.state.update_item(it["id"], status="expired",
+                                       last_error="trop de retard pendant la pause : pas publié")
+                self.refresh_card(it)
             msg = "▶️ C'est reparti." if was else "▶️ Le bot n'était pas en pause."
-            if late:
-                msg += (f"\n{len(late)} post(s) validé(s) dont l'heure est passée vont partir maintenant "
-                        "(❌ Annuler sur leur carte si tu préfères pas).")
+            if go:
+                msg += (f"\n{len(go)} post(s) validé(s) en retard partiront à {resume_at:%H:%M} "
+                        "(❌ Annuler sur leur carte d'ici là si tu préfères pas).")
+            if old:
+                msg += f"\n⌛ {len(old)} post(s) validé(s) trop ancien(s) ne partiront pas."
             self.notify(msg)
 
     def _cmd_note(self, arg: str) -> None:

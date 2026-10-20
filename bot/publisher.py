@@ -31,6 +31,25 @@ RETRY_MINUTES = 10
 RATE_LIMIT_FALLBACK_MINUTES = 15
 RATE_LIMIT_MAX_WAIT_HOURS = 24
 STUCK_MINUTES = 15
+# Un post validé qui n'a pas pu partir à l'heure (bot arrêté, panne) n'est plus
+# publié au-delà de ce retard : un GM à 16 h ou une « actu » de la veille n'ont
+# plus de sens. Les réponses aux commentaires restent utiles plus longtemps.
+STALE_AFTER_MINUTES = {"reactive": 120, "comment_reply": 720}
+STALE_DEFAULT_MINUTES = 180
+
+def stale_after(kind: str | None) -> timedelta:
+    return timedelta(minutes=STALE_AFTER_MINUTES.get(kind or "", STALE_DEFAULT_MINUTES))
+
+
+def is_stale(item: dict, now: datetime) -> bool:
+    """Item validé dont l'heure de publication est dépassée de trop. Un thread
+    déjà en partie en ligne n'est jamais « trop vieux » : on le termine."""
+    pa = parse_iso(item.get("publish_at"))
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    if pa is None or meta.get("partial_ids"):
+        return False
+    return now - pa > stale_after(item.get("kind"))
+
 
 # (sujet, participe accordé) pour les messages d'échec.
 KIND_FR = {
@@ -96,9 +115,13 @@ class Publisher:
         if self.state.data.get("paused"):
             log.info("En pause : %d publication(s) validée(s) attendent /reprendre", len(due))
             return 0
+        now = now_local()
         n = 0
         for item in due:
             if item.get("status") != "approved":
+                continue
+            if is_stale(item, now):
+                self._expire_late(item)
                 continue
             try:
                 if self.publish_item(item):
@@ -311,6 +334,20 @@ class Publisher:
             if partial:
                 msg += f"\n🧩 {len(partial)}/{len(item.get('texts') or [])} tweets sont déjà en ligne (voir la carte)."
             self._notify(msg)
+
+    def _expire_late(self, item: dict) -> None:
+        pa = parse_iso(item.get("publish_at"))
+        when = f"{pa.astimezone(tz()):%H:%M}" if pa else "?"
+        hours = int(stale_after(item.get("kind")).total_seconds() // 3600)
+        reason = f"pas parti à l'heure (prévu à {when}, bot arrêté ?) : trop tard pour le publier"
+        self.state.update_item(item["id"], status="expired", last_error=reason)
+        log.warning("Item %s (%s) : prévu à %s, plus de %d h de retard, pas publié",
+                    item["id"], item.get("kind"), when, hours)
+        self._refresh(item)
+        label, verb = KIND_FR.get(item.get("kind") or "", ("Le post", "publié"))
+        self._notify(f"⌛ {label} validé pour {when} n'a pas pu partir à temps (bot arrêté ?). "
+                     f"Avec plus de {hours} h de retard, je ne le publie pas : rien n'est parti. "
+                     "Le prochain créneau suit son cours.")
 
     def _recover_stuck(self) -> None:
         """Item resté « en cours de publication » (bot tué au mauvais moment) :

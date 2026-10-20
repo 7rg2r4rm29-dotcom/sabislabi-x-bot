@@ -12,3 +12,4 @@ media/
 backup_deploy/
 *.zip
 .DS_Store
+.ruff_cache/

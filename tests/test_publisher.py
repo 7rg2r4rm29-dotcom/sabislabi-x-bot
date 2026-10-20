@@ -68,6 +68,38 @@ def test_not_due_and_order(pub, state, fake_x, clock):
     assert first["status"] == later["status"] == "published"
 
 
+def test_late_approved_post_is_not_published_hours_later(pub, state, fake_x, fake_tg, clock):
+    clock(8, 30)
+    gm = approved(state, kind="gm", texts=["gm. ship one small thing today."])
+    clock(12, 0)  # bot arrêté de 8 h 30 à midi
+    assert pub.publish_due() == 0
+    assert fake_x.posts == []
+    assert gm["status"] == "expired"
+    assert "08:30" in gm["last_error"]
+    assert any("n'a pas pu partir à temps" in m["text"] for m in fake_tg.sent)
+    assert pub.publish_due() == 0  # une seule notification
+
+
+def test_stale_limits_per_kind(pub, state, fake_x, clock):
+    clock(9, 0)
+    reactive = approved(state, kind="reactive", texts=["Big news: a model just shipped."])
+    reply = approved(state, kind="comment_reply", texts=["thanks!"], meta={"comment_id": "555"})
+    tip = approved(state, texts=["A tip, 2h30 late."])
+    clock(11, 30)
+    assert pub.publish_due() == 2
+    assert reactive["status"] == "expired"           # réactif : 2 h max
+    assert tip["status"] == reply["status"] == "published"
+
+
+def test_half_published_thread_is_finished_even_late(pub, state, fake_x, clock):
+    clock(9, 0)
+    th = approved(state, kind="thread", texts=[HOOK, "two", "three"], meta={"partial_ids": ["900"]})
+    clock(15, 0)
+    assert pub.publish_due() == 1
+    assert th["status"] == "published"
+    assert th["published_ids"][0] == "900"
+
+
 def test_awaiting_items_are_never_published(pub, state, fake_x):
     state.new_item("tip", ["waiting for you"], status="awaiting")
     assert pub.publish_due() == 0

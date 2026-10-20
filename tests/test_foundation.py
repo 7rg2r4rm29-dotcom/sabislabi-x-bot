@@ -144,15 +144,26 @@ class TestState:
 # ---------------------------------------------------------------------------
 class TestBudget:
     def test_record_and_caps(self, state, clock):
-        b = Budget(state, daily_usd=0.10, monthly_usd=0.50)
+        b = Budget(state, daily_usd=0.10, monthly_usd=5.0)
         b.record("post", 2)
         assert b.spent_today() == pytest.approx(0.03)
         assert b.can_spend_optional(0.04)
         b.record("post_read", 10)  # 0.05
         assert not b.can_spend_optional(0.01)          # 0.08 + 0.01 > 0.08
         assert b.can_spend_essential(0.1)
-        b.record("post_url", 2)                           # +0.40
-        assert not b.can_spend_essential(0.05)
+        b.record("post_url", 24)                          # +4.80
+        assert not b.can_spend_essential(0.2)
+
+    def test_optional_reads_leave_a_monthly_reserve_for_posts(self, state, clock):
+        b = Budget(state, daily_usd=1.50, monthly_usd=30)
+        # 30 $ × 75 % / 31 jours (octobre) : le radar est étalé sur le mois
+        assert b.optional_daily_limit() == pytest.approx(22.5 / 31)
+        assert b.can_spend_optional(0.70) and not b.can_spend_optional(0.75)
+        # Même un jour neuf, plus aucune lecture optionnelle une fois 75 % du mois dépensés…
+        state.data["costs"]["days"]["2026-10-01"] = {"total": 22.45, "by_kind": {}}
+        assert not b.can_spend_optional(0.10)
+        # … mais les publications passent toujours
+        assert b.can_spend_essential(0.10)
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import pytest
 
 from bot import scheduler as sched
 from bot import utils
-from bot.config import Slot, parse_post_slots, parse_thread_slots
+from bot.config import Slot, parse_post_slots
 from bot.models import Draft, NewsItem, Visual
 from bot.scheduler import SLOT_FAILED, SLOT_PENDING, SLOT_SKIPPED, Bot, NullTelegram
 from bot.utils import iso, parse_iso

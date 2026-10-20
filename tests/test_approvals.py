@@ -9,7 +9,7 @@ from bot.approvals import MAX_REGEN, Approvals, check_human_text, split_thread
 from bot.models import Draft, NewsItem
 from bot.publisher import Publisher
 from bot.state import StateStore
-from bot.utils import iso, now_local
+from bot.utils import iso, now_local, parse_iso
 from bot.x_api import intent_reply_url
 from tests.fakes import callback_data_for
 
@@ -453,7 +453,23 @@ def test_resume_mentions_late_posts(app, state, fake_tg, clock):
     clock(15, 0)
     fake_tg.push_message("/reprendre")
     app.poll()
-    assert "1 post(s) validé(s)" in fake_tg.sent[-1]["text"]
+    assert "1 post(s) validé(s) en retard partiront à 15:03" in fake_tg.sent[-1]["text"]
+    # Le temps d'annuler : il ne part pas tout de suite
+    assert item["status"] == "approved"
+    assert parse_iso(item["publish_at"]) == at(15, 3)
+
+
+def test_resume_drops_posts_that_waited_too_long(app, state, fake_tg, clock):
+    clock(11, 0)
+    item = make_post(app)
+    click(fake_tg, app, f"ok:{item['id']}", item)
+    state.data["paused"] = True
+    clock(18, 0)  # prévu à 14:00 : 4 h de retard
+    fake_tg.push_message("/reprendre")
+    app.poll()
+    assert item["status"] == "expired"
+    assert "trop ancien" in fake_tg.sent[-1]["text"]
+    assert "partiront à" not in fake_tg.sent[-1]["text"]
 
 
 # ---------------------------------------------------------------------------

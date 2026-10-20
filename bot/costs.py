@@ -10,11 +10,13 @@ estimation est donc un plafond prudent (on compte chaque lecture).
 Deux niveaux :
   - essentiel (publier ce que tu as validé, lire tes mentions et tes posts) :
     bloqué seulement par le plafond MENSUEL ;
-  - optionnel (radar, lecture des comptes d'actu) : bloqué dès que le budget du
-    JOUR est consommé à 80 %.
+  - optionnel (radar, lecture des comptes d'actu) : au plus 75 % du plafond
+    mensuel, réparti jour par jour (et jamais plus de 80 % du plafond du jour).
+    Le dernier quart du mois reste ainsi TOUJOURS disponible pour publier.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 
 from .utils import now_local
@@ -32,6 +34,7 @@ PRICES = {
 }
 
 OPTIONAL_DAILY_SHARE = 0.8
+OPTIONAL_MONTHLY_SHARE = 0.75
 
 
 class Budget:
@@ -80,10 +83,20 @@ class Budget:
             log.warning("Budget MENSUEL API X atteint (%.2f $ / %.2f $)", self.spent_month(), self.monthly_usd)
         return ok
 
+    def optional_daily_limit(self) -> float:
+        now = now_local()
+        days = calendar.monthrange(now.year, now.month)[1]
+        return min(self.daily_usd * OPTIONAL_DAILY_SHARE, self.monthly_usd * OPTIONAL_MONTHLY_SHARE / days)
+
     def can_spend_optional(self, estimate: float = 0.0) -> bool:
         if not self.can_spend_essential(estimate):
             return False
-        limit = self.daily_usd * OPTIONAL_DAILY_SHARE
+        month_limit = self.monthly_usd * OPTIONAL_MONTHLY_SHARE
+        if self.spent_month() + estimate > month_limit:
+            log.info("Lectures optionnelles en pause jusqu'au mois prochain (%.2f $ / %.2f $) : "
+                     "le reste est réservé aux publications", self.spent_month(), month_limit)
+            return False
+        limit = self.optional_daily_limit()
         ok = self.spent_today() + estimate <= limit
         if not ok:
             log.info("Budget du jour pour les lectures optionnelles atteint (%.2f $ / %.2f $)",
