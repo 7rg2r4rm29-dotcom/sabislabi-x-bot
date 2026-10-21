@@ -85,7 +85,11 @@ class FakeX:
                 raise
         return ids
 
-    def mentions(self, since_id=None, max_results: int = 50):
+    def me(self) -> dict:
+        self.calls.append(("me",))
+        return {"id": self.me_id, "username": "sabislabi", "public_metrics": {"followers_count": 1234}}
+
+    def mentions(self, since_id=None, max_results: int = 50, max_pages: int = 4):
         self.calls.append(("mentions", since_id))
         if self.mention_batches:
             return self.mention_batches.pop(0)
@@ -125,6 +129,7 @@ class FakeTelegram:
         self.photos: list[dict] = []
         self.pending_updates: list[dict] = []
         self.chat_id = "777"
+        self.last_error = ""   # comme Telegram : "network" ou la description d'erreur
 
     def send(self, text: str, buttons=None, reply_to=None, force_reply=False, silent=False) -> int:
         mid = next(self._ids)

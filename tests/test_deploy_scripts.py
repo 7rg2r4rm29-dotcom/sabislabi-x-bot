@@ -62,7 +62,11 @@ def make_v1_app(app: Path) -> Path:
     (app / "auth").mkdir()
     (app / "auth" / "storage_state.json").write_text("{}")
     (app / ".venv" / "bin").mkdir(parents=True)
-    (app / ".venv" / "bin" / "python").symlink_to(sys.executable)
+    # Un lien symbolique vers le python d'un venv perd ses bibliothèques (Python 3.12) :
+    # un petit relais appelle le vrai chemin.
+    py = app / ".venv" / "bin" / "python"
+    py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    py.chmod(0o755)
     return app
 
 

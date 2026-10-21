@@ -130,7 +130,9 @@ def test_followers_recorded_once_per_day(settings, state, budget, clock):
 
 
 def test_followers_optional_and_errors(settings, state, budget, fake_x):
-    Analytics(settings, state, fake_x, budget).refresh_metrics()   # FakeX n'a pas de me()
+    class _NoMeX(FakeX):
+        me = None                                                     # client sans me()
+    Analytics(settings, state, _NoMeX(), budget).refresh_metrics()
     assert not state.data.get("followers")
     Analytics(settings, state, _MeX(fail=True), budget).refresh_metrics()
     assert not state.data.get("followers")
