@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# À lancer SUR TON MAC, dans le Terminal :
+# À lancer SUR TON MAC, dans le Terminal. C'est la seule commande : ensuite,
+# l'assistant te guide pas à pas.
 #   bash ~/Downloads/sabislabi-x-bot-main/deploy/push_from_mac.sh
 # 1. envoie le code au serveur (jamais tes clés : elles ne sont pas dans ce dossier) ;
-# 2. si tu as de nouvelles clés, te les fait coller DIRECTEMENT sur le serveur ;
-# 3. installe la nouvelle version (tests, sauvegarde, vérification, retour arrière si besoin).
+# 2. essaie les clés DÉJÀ sur le serveur et ne te demande que ce qui manque, en
+#    t'ouvrant la bonne page ; ce que tu colles va directement sur le serveur ;
+# 3. installe la nouvelle version (tests, sauvegarde, vérification, retour arrière
+#    automatique). L'installation continue même si la connexion se coupe.
+# Compatible avec le bash 3.2 du Mac.
 main() {
   set -u
   local HOST="${XBOT_HOST:-botuser@178.128.194.190}"
   local SSH="${XBOT_SSH:-ssh}"
-  local STAGE="xbv2_stage"
+  local OPEN="${XBOT_OPEN:-open}"
+  local STAMP
+  STAMP=$(date +%Y%m%d%H%M%S)
+  local STAGE="xbv2_stage_$STAMP"
+  local LOG="xbv2_deploy_$STAMP.log"
   local HERE
   HERE="$(cd "$(dirname "$0")/.." && pwd)"
   if [ ! -f "$HERE/bot/main.py" ] || [ ! -f "$HERE/deploy/deploy.sh" ]; then
@@ -16,39 +24,169 @@ main() {
     return 1
   fi
 
-  echo "=== Envoi du code vers $HOST ==="
+  ask() {  # ask "question" -> la réponse tapée (clavier du Mac ; entrée standard pour les tests)
+    local a=""
+    if [ -z "${XBOT_NO_TTY:-}" ] && { exec 3</dev/tty; } 2>/dev/null; then
+      read -r -p "$1" a <&3 || a=""
+      exec 3<&-
+    else
+      printf '%s' "$1" >&2
+      read -r a || a=""
+    fi
+    printf '%s' "$a"
+  }
+  pause() { ask "$1 appuie sur Entrée. " >/dev/null; echo; }
+  remote() { $SSH -n "$HOST" "$@"; }
+  remote_tty() { $SSH -t "$HOST" "$@"; }
+  open_page() {
+    echo "   → J'ouvre $1"
+    $OPEN "$1" >/dev/null 2>&1 || echo "   (ouvre toi-même cette adresse dans ton navigateur)"
+  }
+  part() { printf '%s\n' "$2" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -n 1; }
+
+  fix_x() {
+    echo
+    echo "━━━━━━━━ Clés de l'API X ━━━━━━━━"
+    case "$1" in
+      credits)
+        echo "Ton compte développeur X n'a pas (ou plus) de crédit."
+        open_page "https://console.x.com"
+        echo "   1. Menu « Billing »."
+        echo "   2. Ajoute une carte bancaire (X offre 20 \$ de crédit). Conseillé : un plafond de 30 \$ par mois."
+        pause "Quand c'est fait,"
+        return 0 ;;
+      error)
+        echo "X n'a pas répondu (réseau ou limite passagère) : nouvel essai dans 30 secondes."
+        sleep "${XBOT_RETRY_SLEEP:-30}"
+        return 0 ;;
+      wrong_account)
+        echo "⚠️ Les clés actuelles appartiennent à un AUTRE compte X que @sabislabi." ;;
+    esac
+    open_page "https://console.x.com"
+    echo "   1. Connecte-toi avec le compte @sabislabi, puis clique sur ton app (colonne de gauche)."
+    echo "   2. « Settings » → « User authentication settings » → App permissions : « Read and write » → Save."
+    echo "   3. « Keys and tokens » → « API Key and Secret » → Regenerate : garde les 2 valeurs."
+    echo "   4. « Keys and tokens » → « Access Token and Secret » → Regenerate : garde les 2 valeurs."
+    pause "Quand tu as les 4 valeurs,"
+    remote_tty "bash ~/$STAGE/deploy/set_secrets.sh X_API_KEY X_API_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET"
+  }
+
+  fix_claude() {
+    echo
+    echo "━━━━━━━━ Clé Claude (Anthropic) ━━━━━━━━"
+    open_page "https://console.anthropic.com/settings/keys"
+    echo "   1. « Create Key », nom : sabislabi-bot, puis copie la clé."
+    if [ "${1:-}" = rotate ]; then
+      echo "   2. Dans la même liste, supprime l'ANCIENNE clé (icône poubelle)."
+    else
+      echo "   2. Si ton compte n'a plus de crédit : menu « Billing », ajoute du crédit."
+    fi
+    pause "Quand tu as copié la nouvelle clé,"
+    remote_tty "bash ~/$STAGE/deploy/set_secrets.sh ANTHROPIC_API_KEY"
+  }
+
+  fix_telegram() {
+    echo
+    echo "━━━━━━━━ Telegram ━━━━━━━━"
+    local t
+    t=$(remote "bash ~/$STAGE/deploy/telegram_setup.sh check" 2>&1 | tail -n 1)
+    if [ "${1:-}" = rotate ] || [ "${t%% *}" != TOKEN_OK ]; then
+      open_page "https://t.me/BotFather"
+      echo "   1. Dans Telegram, ouvre la conversation avec @BotFather."
+      if [ "${1:-}" = rotate ]; then
+        echo "   2. Envoie /revoke puis choisis ton bot : BotFather te donne un NOUVEAU jeton (token). Copie-le."
+      else
+        echo "   2. Envoie /mybots → choisis ton bot → « API Token » : copie le jeton."
+      fi
+      pause "Quand tu as copié le jeton,"
+      remote_tty "bash ~/$STAGE/deploy/set_secrets.sh TELEGRAM_BOT_TOKEN" || return 1
+      t=$(remote "bash ~/$STAGE/deploy/telegram_setup.sh check" 2>&1 | tail -n 1)
+      if [ "${t%% *}" != TOKEN_OK ]; then
+        echo "Telegram refuse ce jeton. Rien n'a été modifié sur ton bot ; relance la commande pour réessayer."
+        return 1
+      fi
+    fi
+    [ "${1:-}" = rotate ] && return 0
+    echo "   Dans Telegram, ouvre ta conversation avec ${t#TOKEN_OK } et envoie-lui : /start"
+    pause "Quand c'est envoyé,"
+    remote "bash ~/$STAGE/deploy/telegram_setup.sh chatid"
+  }
+
+  check_keys() {  # affiche la vérification ; 0 si tout est OK, 2 si quelque chose manque, 1 si erreur
+    local out parts
+    out=$(remote "bash ~/$STAGE/deploy/precheck.sh ~/$STAGE" 2>&1)
+    printf '%s\n' "$out" | grep -v '^PARTS '
+    parts=$(printf '%s\n' "$out" | grep '^PARTS ' | tail -n 1)
+    case "$parts" in
+      "") echo "Le serveur n'a pas répondu. Rien n'a été modifié : relance la même commande dans un moment."
+          return 1 ;;
+      *server=*) echo "Le serveur n'a pas pu préparer la vérification (voir ci-dessus). Rien n'a été modifié."
+          return 1 ;;
+    esac
+    TG=$(part telegram "$parts"); XS=$(part x "$parts"); CL=$(part claude "$parts")
+    [ "$TG" = ok ] && [ "$XS" = ok ] && [ "$CL" = ok ] && return 0
+    return 2
+  }
+
+  echo "=== 1/4 Envoi du code au serveur ==="
   local items=() p
   for p in bot deploy tests config/settings.json config/content.json requirements.txt README.md DESIGN.md; do
     [ -e "$HERE/$p" ] && items+=("$p")
   done
   # COPYFILE_DISABLE : pas de fichiers ._ du Mac ; les attributs macOS sont ignorés côté serveur.
   if ! COPYFILE_DISABLE=1 tar -C "$HERE" --exclude=__pycache__ --exclude=.DS_Store -czf - "${items[@]}" \
-      | $SSH "$HOST" "rm -rf ~/$STAGE && mkdir -p ~/$STAGE && tar --warning=no-unknown-keyword -xzf - -C ~/$STAGE \
-                      && echo ENVOI_OK"; then
+      | $SSH "$HOST" "mkdir -p ~/$STAGE && tar --warning=no-unknown-keyword -xzf - -C ~/$STAGE && echo ENVOI_OK"; then
     echo "Envoi impossible : vérifie ta connexion internet, puis relance la même commande."
     return 1
   fi
 
-  local ans="${XBOT_ASK_SECRETS:-}"
-  if [ -z "$ans" ]; then
-    if [ -r /dev/tty ]; then
-      read -r -p "As-tu de nouvelles clés à enregistrer (API X, Claude, Telegram) ? (o/N) " ans </dev/tty || ans=n
-    else
-      ans=n
+  echo "=== 2/4 Vérification de tes clés (celles déjà sur le serveur) ==="
+  local round=0 rc
+  TG="" XS="" CL=""
+  while :; do
+    check_keys
+    rc=$?
+    [ "$rc" = 0 ] && break
+    [ "$rc" = 1 ] && return 1
+    round=$((round + 1))
+    if [ "$round" -gt 3 ]; then
+      echo "Il reste un problème avec une clé (voir les lignes ❌). Rien n'a été modifié sur ton bot."
+      return 1
     fi
-  fi
-  case "$ans" in
+    [ "$XS" = ok ] || fix_x "$XS" || return 1
+    [ "$CL" = ok ] || fix_claude || return 1
+    [ "$TG" = ok ] || fix_telegram "$TG" || return 1
+    echo "=== 2/4 Nouvelle vérification ==="
+  done
+  echo "✅ Telegram, l'API X et Claude fonctionnent."
+
+  local rot
+  rot=$(ask "Recommandé (vol du 9 octobre) : remplacer aussi les clés qui marchent, environ 5 min ? (o/N) ")
+  case "$rot" in
     o|O|oui|OUI|y|Y|yes)
-      echo "=== Enregistrement des clés sur le serveur ==="
-      $SSH -t "$HOST" "bash ~/$STAGE/deploy/set_secrets.sh" || {
-        echo "Enregistrement des clés interrompu. Relance la même commande."
-        return 1
-      }
-      ;;
+      fix_x rotate && fix_claude rotate && fix_telegram rotate || return 1
+      echo "=== 2/4 Vérification des nouvelles clés ==="
+      check_keys || { echo "Une nouvelle clé ne marche pas (voir ❌). Relance la commande. Rien n'a été modifié."; return 1; }
+      echo "✅ Nouvelles clés OK. Pense à supprimer les anciennes clés X et Claude sur leurs sites." ;;
   esac
 
-  echo "=== Installation sur le serveur ==="
-  $SSH -t "$HOST" "bash ~/$STAGE/deploy/deploy.sh ~/$STAGE"
+  echo "=== 3/4 Installation (5 à 10 minutes, tu peux laisser cette fenêtre ouverte) ==="
+  if ! remote "nohup setsid bash ~/$STAGE/deploy/deploy.sh ~/$STAGE > ~/$LOG 2>&1 < /dev/null & echo LANCEMENT_OK"; then
+    echo "Le serveur n'a pas pu lancer l'installation. Rien n'a été modifié : relance la même commande."
+    return 1
+  fi
+  remote "bash ~/$STAGE/deploy/follow.sh ~/$LOG"
+  rc=$?
+  echo
+  echo "=== 4/4 Résultat ==="
+  case "$rc" in
+    0) echo "✅ C'est fait : la nouvelle version tourne. Sur Telegram, envoie /statut pour voir le planning." ;;
+    3) echo "⏳ Une publication était en cours : relance la même commande dans 20 minutes. Rien n'a été modifié." ;;
+    255) echo "La connexion s'est coupée, mais l'installation continue toute seule sur le serveur."
+         echo "Dans 10 minutes, regarde Telegram : « Bot v2 démarré » = c'est bon ; un message ❌ sinon." ;;
+    *) echo "❌ L'installation n'a pas abouti : l'ancienne version tourne comme avant (détails ci-dessus et sur Telegram)." ;;
+  esac
+  return "$rc"
 }
 main "$@"
 exit $?

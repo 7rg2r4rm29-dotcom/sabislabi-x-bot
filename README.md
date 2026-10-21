@@ -50,7 +50,7 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 
 | Bouton | Effet |
 |---|---|
-| ✅ | Valider : partira à l'heure prévue (ou tout de suite si l'heure est passée) |
+| ✅ | Valider : partira à l'heure prévue (ou tout de suite si l'heure est passée). Seul le texte affiché sur la carte est validé |
 | ✏️ | Modifier : appuie, puis **réponds** au message qui s'affiche avec ton texte |
 | 🔄 | Autre version, écrite par Claude (3 fois maximum) |
 | ❌ | Annuler (même après validation, tant que ce n'est pas parti) |
@@ -65,9 +65,18 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 | Thread | mardi 15 h et dimanche 17 h | 4 h avant |
 | Post réactif (actu brûlante) | au plus 1 par jour, seulement si ça vaut le coup | quand ça arrive |
 
-- Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**.
+- **Les jours de thread**, le thread prend la place du post le plus proche (l'astuce le mardi, l'actu le
+  dimanche) : jamais plus de 3 posts prévus dans la journée.
+- Si Claude ne trouve rien de solide pour l'actu ou le thread, le créneau est **sauté** (tu es prévenu)
+  plutôt que rempli avec un texte creux.
+- Chaque texte est **vérifié** par une seconde lecture de Claude : faits d'actu, chiffres, et surtout
+  aucune « expérience perso » inventée.
+- Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**,
+  même si tu appuies sur ✅ plus tard.
 - Si le bot a été arrêté et qu'un post validé a plus de 3 h de retard, il ne part pas non plus
   (un GM à 16 h n'a pas de sens). Tu es prévenu.
+- Si X ne confirme pas une publication (coupure réseau), le bot vérifie sur ton profil avant de réessayer :
+  **jamais de doublon**.
 - La nuit (23 h 30 - 7 h 30), les messages arrivent **sans sonnerie**.
 
 **Les commentaires sous tes posts.** Quand quelqu'un répond à l'un de tes posts, une carte arrive avec une
@@ -122,34 +131,15 @@ dans les réglages (section 9).
 
 ## 5. Installation (une seule fois)
 
-### Étape 1 : changer TOUTES les clés (obligatoire)
+Tu n'as que **deux choses à faire**. L'assistant fait le reste et te guide quand il a besoin de toi.
 
-Tes clés ont pu être exposées lors du vol du 9 octobre, et elles traînent en clair dans le dossier du Mac
-synchronisé avec iCloud. On en fait de nouvelles, et on supprime les anciennes.
-
-**Ne colle jamais ces clés dans une conversation** (Claude, Cowork, mail, Telegram…). Garde-les juste
-le temps de l'installation, par exemple dans l'app Notes, puis efface-les.
-
-1. **X** : sur **console.x.com**, ouvre ton app.
-   - *Settings → User authentication settings* : mets **App permissions = Read and write**, enregistre.
-   - *Keys and tokens* : **API Key and Secret → Regenerate** (2 valeurs : API Key, API Key Secret).
-   - *Keys and tokens* : **Access Token and Secret → Regenerate** (2 valeurs). À faire **après** le passage
-     en « Read and write », sinon le jeton ne pourra pas publier. Vérifie que tu es connecté en tant que
-     **@sabislabi**.
-   - *Billing* : ajoute une carte bancaire, et un plafond mensuel si la console le propose.
-2. **Claude** : sur **console.anthropic.com → API Keys**, crée une nouvelle clé, puis **supprime l'ancienne**.
-3. **Telegram** : dans Telegram, écris à **@BotFather** : `/revoke`, choisis ton bot, copie le nouveau jeton.
-4. **OpenAI** (seulement si tu veux des photos générées par IA) : platform.openai.com → API keys.
-5. **Ton compte X** : change ton mot de passe, puis *Paramètres → Sécurité et accès au compte → Applications
-   et sessions → Sessions* : **déconnecte toutes les autres sessions** (dont celle de l'ancien robot).
-
-### Étape 2 : télécharger le code
+### 1. Télécharger le code (un clic)
 
 Sur **github.com/7rg2r4rm29-dotcom/sabislabi-x-bot** : bouton vert **Code → Download ZIP**.
 Safari le décompresse tout seul dans *Téléchargements* (dossier `sabislabi-x-bot-main`). Avec Chrome,
 double-clique sur le fichier zip.
 
-### Étape 3 : une seule commande
+### 2. Coller une commande
 
 Ouvre l'app **Terminal** (Cmd + Espace, tape « Terminal »), colle cette ligne et appuie sur Entrée :
 
@@ -157,26 +147,37 @@ Ouvre l'app **Terminal** (Cmd + Espace, tape « Terminal »), colle cette ligne 
 bash ~/Downloads/sabislabi-x-bot-main/deploy/push_from_mac.sh
 ```
 
-1. Le code part sur le serveur (`ENVOI_OK`).
-2. Question « As-tu de nouvelles clés à enregistrer ? » : tape **o**. Colle chaque clé quand on te la
-   demande, puis Entrée. **Rien ne s'affiche quand tu colles, c'est normal.** Entrée sans rien coller =
-   garder la clé actuelle. Les clés vont directement sur le serveur, nulle part ailleurs.
-3. L'installation se déroule en 5 étapes (environ 5 minutes). Elle se termine par :
+Ensuite, laisse-toi guider :
 
-```
-V2_OK : installation terminée, le bot tourne.
-```
+1. Le code part sur ton serveur.
+2. L'assistant **essaie d'abord les clés déjà installées** (Telegram, API X, Claude). Il ne te demande que
+   ce qui ne marche pas : il **ouvre lui-même la bonne page** et te dit où cliquer. Quand il te demande de
+   coller une clé, **rien ne s'affiche, c'est normal**. Les clés vont directement sur le serveur.
+   Ne les colle jamais ailleurs (Claude, Cowork, mail…).
+3. Il te propose de **remplacer aussi les clés qui marchent** : c'est recommandé à cause du vol du
+   9 octobre (environ 5 minutes, il te guide). Tu peux répondre **N** et le faire plus tard en relançant la
+   même commande.
+4. Il installe la nouvelle version (5 à 10 minutes) : tests, sauvegarde, vérification, puis redémarrage.
+   Si ta connexion se coupe, **l'installation continue toute seule** sur le serveur.
 
-Sur Telegram, tu reçois « ✅ Test v2 OK ». Envoie `/statut` pour voir le planning.
+C'est réussi quand tu lis **`✅ C'est fait`**, et que Telegram affiche « ✅ Test v2 OK » puis
+« 🤖 Bot v2 démarré ». Envoie `/statut` pour voir le planning.
 
-**Si ça ne se termine pas par V2_OK :**
+**Si ça ne se termine pas ainsi :**
 
-- `PAS MAINTENANT` : une publication est en cours. Relance la même commande 20 minutes plus tard
-  (réponds **N** à la question des clés). Rien n'a été modifié.
-- `ÉCHEC : ancienne version remise et relancée` : rien n'est perdu. Lis les lignes ❌ juste au-dessus, elles
-  disent quoi corriger (le plus souvent une clé mal copiée ou des crédits X manquants), puis relance.
+- `Une publication était en cours` : relance la même commande 20 minutes plus tard. Rien n'a été modifié.
+- `❌ L'installation n'a pas abouti` : rien n'est perdu, l'ancienne version tourne comme avant et tu reçois
+  un message sur Telegram. Les lignes ❌ au-dessus disent ce qui bloque (souvent une clé mal copiée ou des
+  crédits manquants). Relance la commande.
 
-### Étape 4 : le grand ménage (2 ou 3 jours plus tard, quand tout va bien)
+**Ce que seul toi peux faire, si l'assistant te le demande :** ajouter une carte bancaire sur la console X
+(paiement à l'usage, X offre 20 $ de crédit) ou du crédit sur la console Claude.
+
+**À faire aussi (2 minutes) :** sur X, change ton mot de passe, puis *Paramètres → Sécurité et accès au
+compte → Applications et sessions → Sessions* : **déconnecte toutes les autres sessions** (dont celle de
+l'ancien robot).
+
+### 3. Le grand ménage (2 ou 3 jours plus tard, quand tout va bien)
 
 Dans le Terminal :
 
@@ -195,8 +196,9 @@ serveur.
 ## 6. Mettre à jour plus tard
 
 Quand une nouvelle version est prête : supprime l'ancien dossier `sabislabi-x-bot-main` de
-*Téléchargements*, retélécharge le ZIP (étape 2), relance la même commande (étape 3) et réponds **N** à la
-question des clés. Tes réglages, tes clés et l'historique du bot sont conservés.
+*Téléchargements*, retélécharge le ZIP et relance la même commande. Tes clés, l'historique du bot et tes
+réglages sont conservés. Si tu as modifié `config/settings.json` ou `config/content.json`, tes modifications
+sont gardées et la nouvelle version par défaut est posée à côté (`….nouveau`).
 
 ## 7. Revenir en arrière, mettre en pause, arrêter
 
@@ -204,8 +206,11 @@ question des clés. Tes réglages, tes clés et l'historique du bot sont conserv
 - **Revenir à la version précédente** (5 sauvegardes sont gardées) :
 
   ```
-  ssh botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/restore_backup.sh'
+  ssh -t botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/restore_backup.sh'
   ```
+
+  Revenir à l'**ancienne version navigateur** demande de taper `OUI` : elle met le compte en danger.
+  Pour souffler, préfère `/pause`.
 
 - **Relancer le bot** (s'il ne répond plus) :
 
@@ -221,10 +226,12 @@ question des clés. Tes réglages, tes clés et l'historique du bot sont conserv
 | Ce que tu vois | Quoi faire |
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
-| « Clés API X refusées » | Régénère l'Access Token après le passage en « Read and write », puis relance l'étape 3 en répondant **o** |
-| « Plus de crédits API X » | Recharge sur console.x.com (*Billing*) |
+| « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
+| « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
+| « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
 | « X refuse que le bot réponde » | Normal si la personne ne t'a pas répondu : utilise le bouton 📲 et réponds toi-même |
-| Telegram ne reçoit rien | As-tu écrit `/start` à ton bot ? Le jeton a-t-il été changé sans relancer l'étape 3 ? |
+| « X n'a pas confirmé la publication » | Regarde ton profil X : le post y est peut-être déjà. Ne republie qu'après avoir vérifié |
+| Telegram ne reçoit rien | Relance la commande de la section 5 : l'assistant vérifie Telegram et te guide |
 
 Voir les dernières lignes du journal du bot :
 
@@ -241,7 +248,9 @@ et demande de l'aide.
 
 ## 10. Les réglages
 
-Ils sont dans `config/.env` sur le serveur. Pour modifier :
+Ils sont dans `config/.env` sur le serveur. Un horaire mal écrit n'arrête pas le bot : il reprend la valeur
+par défaut et te prévient sur Telegram. Les jours s'écrivent `mon`…`sun`, `lun`…`dim` ou en toutes lettres
+(`mardi`), les heures `14:00` ou `14h`. Pour modifier :
 `ssh botuser@178.128.194.190`, puis `nano ~/x-degen-bot/config/.env` (Ctrl+O pour enregistrer, Ctrl+X pour
 quitter), puis `sudo systemctl restart x-degen-bot`.
 

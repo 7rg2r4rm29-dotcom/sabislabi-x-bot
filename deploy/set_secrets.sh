@@ -62,15 +62,31 @@ ask() {  # ask CLE "explication"
   val=""
 }
 
+help_for() {
+  case "$1" in
+    X_API_KEY) echo "console.x.com > ton app > Keys and tokens > API Key (Consumer Key)" ;;
+    X_API_SECRET) echo "console.x.com > ton app > Keys and tokens > API Key Secret" ;;
+    X_ACCESS_TOKEN) echo "console.x.com > Access Token (généré APRÈS « Read and write », connecté en @sabislabi)" ;;
+    X_ACCESS_TOKEN_SECRET) echo "console.x.com > Access Token Secret" ;;
+    ANTHROPIC_API_KEY) echo "console.anthropic.com > API Keys > la clé que tu viens de créer" ;;
+    TELEGRAM_BOT_TOKEN) echo "Telegram > @BotFather > le jeton (token) de ton bot" ;;
+    OPENAI_API_KEY) echo "platform.openai.com > API keys (seulement pour les photos IA ; sinon Entrée)" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Sans argument : toutes les clés. Avec des noms : seulement celles-là.
+KEYS="$*"
+[ -n "$KEYS" ] || KEYS="X_API_KEY X_API_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN OPENAI_API_KEY"
 echo "=== Enregistrement des clés (rien ne s'affiche quand tu colles, c'est normal) ==="
-ask X_API_KEY "console.x.com > ton app > Keys and tokens > API Key (Consumer Key)"
-ask X_API_SECRET "console.x.com > ton app > Keys and tokens > API Key Secret"
-ask X_ACCESS_TOKEN "console.x.com > Access Token (généré APRÈS avoir mis l'app en « Read and write », pour @sabislabi)"
-ask X_ACCESS_TOKEN_SECRET "console.x.com > Access Token Secret"
-ask ANTHROPIC_API_KEY "console.anthropic.com > API Keys (nouvelle clé, puis révoque l'ancienne)"
-ask TELEGRAM_BOT_TOKEN "Telegram > @BotFather > /revoke sur ton bot > nouveau jeton"
-ask OPENAI_API_KEY "platform.openai.com > API keys (seulement pour les photos IA ; sinon Entrée)"
+for k in $KEYS; do
+  case "$k" in
+    X_API_KEY|X_API_SECRET|X_ACCESS_TOKEN|X_ACCESS_TOKEN_SECRET|ANTHROPIC_API_KEY|TELEGRAM_BOT_TOKEN|OPENAI_API_KEY)
+      ask "$k" "$(help_for "$k")" ;;
+    *) echo "  (clé inconnue ignorée : $k)" ;;
+  esac
+done
 
 chmod 600 "$ENV_FILE"
 echo
-echo "C'est enregistré. Pense à RÉVOQUER les anciennes clés sur chaque site (console.x.com, console.anthropic.com, @BotFather, platform.openai.com)."
+echo "C'est enregistré, directement sur le serveur."

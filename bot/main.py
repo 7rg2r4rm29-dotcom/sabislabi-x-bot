@@ -44,14 +44,18 @@ KIND_FR = {"gm": "GM", "tip": "astuce", "news": "actu", "thread": "thread", "rea
 # Environnement
 # ---------------------------------------------------------------------------
 def load_env() -> None:
-    """config/.env puis .env (sans écraser ce qui est déjà défini)."""
+    """config/.env puis .env (sans écraser ce qui est déjà défini). XBOT_ENV_FILE :
+    un autre fichier (vérifier une nouvelle version avec les clés déjà installées)."""
+    import os
     try:
         from dotenv import load_dotenv
     except ImportError:
         print("⚠️ python-dotenv absent : seules les variables d'environnement déjà définies sont lues.",
               file=sys.stderr)
         return
-    for candidate in (utils.PROJECT_ROOT / "config" / ".env", utils.PROJECT_ROOT / ".env"):
+    forced = os.getenv("XBOT_ENV_FILE", "").strip()
+    candidates = [Path(forced)] if forced else [utils.PROJECT_ROOT / "config" / ".env", utils.PROJECT_ROOT / ".env"]
+    for candidate in candidates:
         if candidate.is_file():
             load_dotenv(candidate, override=False)
 
@@ -175,6 +179,7 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
     """Vérifie Telegram, l'API X (≈ 0,01 $) et Claude. 0 si tout va bien, 1 sinon.
     N'écrit JAMAIS dans l'état du bot en service (état jetable)."""
     ok = True
+    parts = {"telegram": "missing", "x": "missing", "claude": "missing"}
     out("=== Configuration ===")
     for line in config_summary(settings):
         out("  " + line)
@@ -202,6 +207,11 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                 ok = False
             else:
                 out("⚠️ Telegram : non configuré (tu ne recevras aucun message)")
+        elif str(settings.telegram_chat_id).startswith("-"):
+            parts["telegram"] = "group"
+            out("❌ Telegram : TELEGRAM_CHAT_ID est un GROUPE. Le bot n'accepte que ton chat privé avec lui "
+                "(sinon n'importe quel membre pourrait valider une publication)")
+            ok = False
         else:
             try:
                 mid = telegram.send("✅ Test v2 OK — le bot @{} est bien relié à ce chat.".format(settings.handle))
@@ -209,8 +219,10 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                 mid = None
                 log.warning("Telegram : %s", type(e).__name__)
             if mid:
+                parts["telegram"] = "ok"
                 out("✅ Telegram : message de test envoyé")
             else:
+                parts["telegram"] = "bad"
                 out("❌ Telegram : envoi impossible (jeton faux, mauvais TELEGRAM_CHAT_ID, ou tu n'as jamais "
                     "écrit /start au bot ?)")
                 ok = False
@@ -228,6 +240,8 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
             try:
                 me = x.me() or {}
             except Exception as e:  # noqa: BLE001 — XError ou réseau
+                parts["x"] = {"auth": "auth", "credits": "credits", "forbidden": "forbidden"}.get(
+                    getattr(e, "kind", ""), "error")
                 out(f"❌ API X : {_x_reason(e)}")
                 ok = False
             else:
@@ -237,6 +251,7 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                     out("❌ API X : réponse sans nom de compte")
                     ok = False
                 elif username.lower() != settings.handle.lower():
+                    parts["x"] = "wrong_account"
                     out(f"❌ API X : les clés sont celles de @{username}, pas de @{settings.handle} — "
                         "régénère l'Access Token en étant connecté au bon compte")
                     ok = False
@@ -245,6 +260,7 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                         f"({me.get('id')}) — corrige ou supprime X_USER_ID dans config/.env")
                     ok = False
                 else:
+                    parts["x"] = "ok"
                     extra = f", {followers} abonnés" if followers is not None else ""
                     out(f"✅ API X : connecté en tant que @{username}{extra}")
         # --- Claude
@@ -264,14 +280,18 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                 log.warning("Claude : %s", type(e).__name__)
                 res = None
             if isinstance(res, dict) and res.get("ok") is True:
+                parts["claude"] = "ok"
                 out(f"✅ Claude : répond ({settings.llm_model})")
             else:
+                parts["claude"] = "bad"
                 out(f"❌ Claude : pas de réponse valide (clé ANTHROPIC_API_KEY, crédits, ou modèle "
                     f"{settings.llm_model} indisponible ? voir logs/bot.log)")
                 ok = False
     finally:
         tmp.cleanup()
     out("=== Résultat : " + ("tout est OK ✅" if ok else "au moins un problème ❌") + " ===")
+    # Ligne lue par l'assistant d'installation (deploy/push_from_mac.sh).
+    out("PARTS " + " ".join(f"{k}={v}" for k, v in parts.items()))
     return EXIT_OK if ok else EXIT_FAIL
 
 
@@ -414,7 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         print("❌ Configuration incomplète (config/.env) :")
         for err in errors:
             print(f"  - {err}")
-        if not (args.check or args.once):
+        if args.check:  # on vérifie quand même tout le reste : l'assistant sait quoi demander
+            run_check(settings)
+            return EXIT_CONFIG
+        if not args.once:
             alert_config_problem(errors)
         return EXIT_CONFIG
     if args.check:

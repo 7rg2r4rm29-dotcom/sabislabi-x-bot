@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Installe une nouvelle version du bot SUR LE SERVEUR, sans casser ce qui tourne.
-#   bash deploy.sh [DOSSIER_DE_LA_NOUVELLE_VERSION]      (défaut : ~/xbv2_stage)
+#   bash deploy.sh DOSSIER_DE_LA_NOUVELLE_VERSION
 # 1. refuse si une publication est en cours ou imminente (rien n'est modifié) ;
-# 2. installe les dépendances et lance TOUS les tests sur la nouvelle version ;
+# 2. met à jour les bibliothèques et lance TOUS les tests sur la nouvelle version ;
 # 3. arrête le bot, sauvegarde (code, réglages, état), installe,
 #    complète config/.env avec les réglages v2 (sans rien écraser) ;
 # 4. vérifie Telegram, l'API X et Claude (--check) ;
 # 5. relance le bot.
-# Au moindre échec après l'arrêt : l'ancienne version est remise et relancée.
+# Au moindre échec (ou interruption) après l'arrêt : l'ancienne version est remise
+# et relancée, et tu es prévenu sur Telegram. Tes modifications de
+# config/settings.json et content.json sont gardées.
 # Ne touche jamais : tes clés, state/, logs/, media/, auth/.
+# Dernière ligne : « FIN_DEPLOIEMENT <code> » (suivie par push_from_mac.sh).
 # Tout est dans main() : bash lit la fonction en entier avant de l'exécuter.
 main() {
   set -u
@@ -19,14 +22,75 @@ main() {
   local SUDO="${XBOT_SUDO-sudo -n}"   # -n : jamais de mot de passe demandé (sinon tout resterait bloqué)
   local PY="$APP_DIR/.venv/bin/python"
   # Ce qui est sauvegardé puis remplacé (le reste n'est jamais touché).
-  local SAVED="bot deploy tests config/settings.json config/content.json config/.env state/state.json requirements.txt README.md DESIGN.md"
+  local SAVED="bot deploy tests config/settings.json config/content.json config/.shipped config/.env state/state.json requirements.txt README.md DESIGN.md"
   local INSTALL_DIRS="bot deploy tests"
-  local INSTALL_FILES="config/settings.json config/content.json requirements.txt README.md DESIGN.md"
+  local INSTALL_FILES="requirements.txt README.md DESIGN.md"
   local KEEP_BACKUPS=5
+  local BACKUP=""
 
   svc() { [ -n "$SERVICE" ] || return 0; $SUDO systemctl "$@" "$SERVICE"; }
   svc_active() { [ -z "$SERVICE" ] || systemctl is-active --quiet "$SERVICE"; }
   journal() { [ -z "$SERVICE" ] || $SUDO journalctl -u "$SERVICE" -n "$1" --no-pager 2>/dev/null || true; }
+
+  # Message Telegram de secours (le jeton n'est jamais affiché).
+  tg_alert() {
+    [ -z "${XBOT_NO_TELEGRAM:-}" ] || return 0
+    "$PY" - "$APP_DIR/config/.env" "$1" >/dev/null 2>&1 <<'PY' || true
+import sys
+
+import requests
+from dotenv import dotenv_values
+
+v = dotenv_values(sys.argv[1])
+token, chat = (v.get("TELEGRAM_BOT_TOKEN") or "").strip(), (v.get("TELEGRAM_CHAT_ID") or "").strip()
+if token and chat:
+    requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                  json={"chat_id": chat, "text": sys.argv[2]}, timeout=15)
+PY
+  }
+
+  # Bibliothèques Python d'avant la mise à jour (le service partage le même .venv).
+  restore_pip() {
+    [ -z "${XBOT_SKIP_PIP:-}" ] && [ -s "$APP_DIR/.pip_freeze_avant" ] || return 0
+    echo "Remise des bibliothèques Python d'avant…"
+    "$PY" -m pip install -q --disable-pip-version-check -r "$APP_DIR/.pip_freeze_avant" >/dev/null 2>&1 \
+      || echo "(certaines bibliothèques n'ont pas pu être remises à l'identique)"
+  }
+
+  # Réglages JSON : ceux que tu as modifiés sont gardés.
+  install_config() {
+    local f="$1" new="$STAGE/config/$1" cur="$APP_DIR/config/$1" shipped="$APP_DIR/config/.shipped/$1"
+    [ -f "$new" ] || return 0
+    mkdir -p "$APP_DIR/config/.shipped" || return 1
+    if [ -f "$cur" ] && [ -f "$shipped" ] && ! cmp -s "$cur" "$shipped"; then
+      cp "$new" "$cur.nouveau" || return 1
+      echo "config/$f : tes modifications sont gardées (nouvelle version par défaut : config/$f.nouveau)"
+    else
+      cp "$new" "$cur" || return 1
+    fi
+    cp "$new" "$shipped"
+  }
+
+  # Annule tout et relance l'ancienne version.
+  rollback() {
+    trap - INT TERM HUP
+    echo "$1"
+    if XBOT_APP_DIR="$APP_DIR" XBOT_RESTORE_ENV=1 XBOT_RESTORE_MANAGE_SERVICE=0 \
+        bash "$STAGE/deploy/restore_backup.sh" "$BACKUP"; then
+      restore_pip
+      svc restart
+      if [ -f "$APP_DIR/bot/x_browser.py" ]; then
+        echo "ÉCHEC : rien n'a changé, l'ancienne version tourne comme avant."
+      else
+        echo "ÉCHEC : la version précédente est remise et relancée. Rien n'est perdu."
+      fi
+      tg_alert "❌ Nouvelle version NON installée ($1) L'ancienne version tourne comme avant."
+    else
+      svc stop 2>/dev/null || true
+      echo "⚠️ RESTAURATION INCOMPLÈTE : bot arrêté par sécurité. Sauvegarde intacte : backup_deploy/$(basename "$BACKUP")"
+      tg_alert "⚠️ Installation annulée mais restauration incomplète : bot arrêté par sécurité. Sauvegarde : backup_deploy/$(basename "$BACKUP")."
+    fi
+  }
 
   if [ ! -f "$STAGE/bot/main.py" ] || [ ! -f "$STAGE/deploy/restore_backup.sh" ]; then
     echo "Nouvelle version introuvable dans $STAGE. Rien n'a été modifié."
@@ -76,19 +140,24 @@ main() {
     fi
   fi
 
-  # --- 2. Dépendances + tests sur la nouvelle version ------------------------
-  echo "=== 2/5 Dépendances et tests (quelques minutes) ==="
+  # --- 2. Bibliothèques + tests sur la nouvelle version ----------------------
+  echo "=== 2/5 Bibliothèques et tests (quelques minutes) ==="
   if [ ! -x "$PY" ]; then
     python3 -m venv "$APP_DIR/.venv" || { echo "Impossible de créer .venv. Rien n'a été modifié."; return 1; }
   fi
   if [ -z "${XBOT_SKIP_PIP:-}" ]; then
+    # Instantané d'avant (sauf s'il vient d'être pris par precheck.sh).
+    if [ -z "$(find "$APP_DIR/.pip_freeze_avant" -mmin -180 2>/dev/null)" ]; then
+      "$PY" -m pip freeze --disable-pip-version-check > "$APP_DIR/.pip_freeze_avant" 2>/dev/null || true
+    fi
     if ! "$PY" -m pip install -q --disable-pip-version-check -r "$STAGE/requirements.txt"; then
-      echo "INSTALLATION DES DÉPENDANCES IMPOSSIBLE : rien installé, le bot continue sur la version actuelle."
+      restore_pip
+      echo "MISE À JOUR DES BIBLIOTHÈQUES IMPOSSIBLE : nouvelle version NON installée, le bot continue sur la version actuelle."
       return 1
     fi
     # Navigateur des captures d'écran (déjà présent avec l'ancienne version ; optionnel).
     "$PY" -m playwright install chromium >/dev/null 2>&1 || true
-    echo "DEPENDANCES_OK"
+    echo "BIBLIOTHEQUES_OK"
   fi
   if [ -z "${XBOT_SKIP_TESTS:-}" ]; then
     local tlog
@@ -101,7 +170,8 @@ main() {
       grep -E "^(FAILED|ERROR)|Error|error" "$tlog" | tail -n 30
       tail -n 1 "$tlog"
       rm -f "$tlog"
-      echo "TESTS EN ÉCHEC : rien installé, le bot continue sur la version actuelle."
+      restore_pip
+      echo "TESTS EN ÉCHEC : nouvelle version NON installée, le bot continue sur la version actuelle."
       return 1
     fi
   fi
@@ -113,7 +183,6 @@ main() {
   if ! svc stop 2>/dev/null; then
     echo "(Arrêt non autorisé : installation pendant que le bot tourne, redémarrage à la fin.)"
   fi
-  local BACKUP
   BACKUP="$APP_DIR/backup_deploy/$(date +%Y%m%d-%H%M%S)"
   (umask 077 && mkdir -p "$BACKUP") || { svc restart; echo "Sauvegarde impossible : bot relancé tel quel."; return 1; }
   chmod 700 "$APP_DIR/backup_deploy"
@@ -132,15 +201,8 @@ main() {
     fi
   done
   echo "Sauvegarde : backup_deploy/$(basename "$BACKUP")"
-
-  # Annule tout et relance l'ancienne version.
-  rollback() {
-    echo "$1"
-    XBOT_APP_DIR="$APP_DIR" XBOT_RESTORE_ENV=1 XBOT_RESTORE_MANAGE_SERVICE=0 \
-      bash "$STAGE/deploy/restore_backup.sh" "$BACKUP"
-    svc restart
-    echo "ÉCHEC : ancienne version remise et relancée. Rien n'est perdu."
-  }
+  # Coupure ou arrêt demandé à partir d'ici : on remet l'ancienne version.
+  trap 'rollback "Installation interrompue."; echo "FIN_DEPLOIEMENT 1"; exit 1' INT TERM HUP
 
   local d f ok=1
   for d in $INSTALL_DIRS; do
@@ -156,6 +218,9 @@ main() {
     for f in $INSTALL_FILES; do
       [ -f "$STAGE/$f" ] || continue
       cp "$STAGE/$f" "$APP_DIR/$f" || { ok=0; break; }
+    done
+    for f in settings.json content.json; do
+      install_config "$f" || { ok=0; break; }
     done
   fi
   if [ "$ok" != 1 ]; then
@@ -192,10 +257,18 @@ main() {
     fi
     journal 15
   fi
+  trap - INT TERM HUP
 
-  # On garde les 5 dernières sauvegardes datées.
+  # Ménage : 5 dernières sauvegardes datées, anciens dossiers d'envoi et journaux.
   ls -1d "$APP_DIR"/backup_deploy/20*/ 2>/dev/null | sort | head -n "-$KEEP_BACKUPS" | xargs -r rm -rf
+  local old
+  for old in "$HOME"/xbv2_stage_*; do
+    if [ -d "$old" ] && [ "$old" != "$STAGE" ]; then rm -rf "$old"; fi
+  done
+  ls -1t "$HOME"/xbv2_deploy_*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
   echo "V2_OK : installation terminée, le bot tourne."
 }
 main "$@"
-exit $?
+rc=$?
+echo "FIN_DEPLOIEMENT $rc"
+exit $rc
