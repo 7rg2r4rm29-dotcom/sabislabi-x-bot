@@ -197,7 +197,13 @@ class Bot:
         if kind not in POST_KINDS + ("thread", "reactive"):
             return None
         news = self._news(kind, use_x=False)
-        return self._write(kind, news, self._notes(), self._perf())
+        # Le Writer ne doit pas refuser la nouvelle version parce qu'elle ressemble…
+        # à la version qu'elle remplace.
+        self.writer.regen_item_id = item.get("id")
+        try:
+            return self._write(kind, news, self._notes(), self._perf())
+        finally:
+            self.writer.regen_item_id = None
 
     def regen_comment(self, item: dict) -> str | None:
         meta = item.get("meta") or {}
@@ -365,6 +371,11 @@ class Bot:
     def plan_slots(self) -> int:
         """Rédige le prochain créneau dont l'heure de rédaction est venue.
         Au plus UNE rédaction par tour. Retourne 1 si une rédaction a eu lieu."""
+        paused = getattr(self.llm, "paused", None)
+        if callable(paused) and paused():
+            # Claude en panne depuis peu : on réessaiera au tour suivant plutôt que de
+            # sauter (thread, actu) ou de remplir (texte de secours) un créneau.
+            return 0
         now = now_local()
         grace = timedelta(minutes=self.settings.approval_grace_minutes)
         for occ, slot in self._occurrences():

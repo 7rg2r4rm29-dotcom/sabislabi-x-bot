@@ -1102,3 +1102,13 @@ def test_news_slot_cannot_repeat_todays_reactive_post(settings, state, items):
     assert d is not None and d.texts == [NEWS_TEXT_2]
     first_prompt = [c for c in llm.calls if c["label"] == "post-news"][0]["user"]
     assert "never cover the same story" in first_prompt and "rehearse your salary talk" in first_prompt
+
+
+
+def test_regeneration_is_not_rejected_for_resembling_the_version_it_replaces(settings, state, items):
+    item = state.new_item("tip", [TIP_TEXT], status="awaiting")
+    w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT_2), "factcheck": FC_OK})
+    w.regen_item_id = item["id"]
+    d = w.draft_post("tip", items, [], "")
+    assert d is not None and d.texts == [TIP_TEXT_2]
+    assert TIP_TEXT.split("\n")[0] not in [c for c in llm.calls if c["label"] == "post-tip"][0]["user"]

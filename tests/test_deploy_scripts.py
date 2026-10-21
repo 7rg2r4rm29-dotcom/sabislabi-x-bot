@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,8 +34,9 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None or shutil.which("fl
 
 def run(script: str | Path, *args: str, env: dict | None = None, stdin: str = "",
         home: Path | None = None) -> subprocess.CompletedProcess:
+    # Jamais le vrai HOME : sur le serveur, deploy.sh lance ces tests depuis ~/xbv2_stage_<date>.
     base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
-            "HOME": str(home or Path.home())}
+            "HOME": str(home or tempfile.mkdtemp(prefix="xbot-home-"))}
     base.update(env or {})
     return subprocess.run(["bash", str(script), *args], input=stdin, capture_output=True, text=True,
                           env=base, timeout=120)
@@ -294,7 +296,8 @@ def wizard(tmp_path, prechecks, stdin, tgcheck=("TOKEN_OK @testbot\n",), tgchat=
     ssh.write_text(FAKE_SSH)
     ssh.chmod(0o755)
     env = deploy_env(app, XBOT_SSH=str(ssh), XBOT_HOST="botuser@example", XBOT_OPEN="true",
-                     XBOT_NO_TTY="1", FAKE_DIR=str(fake), XBOT_RETRY_SLEEP="0", XBOT_NO_TELEGRAM="1", **extra)
+                     XBOT_NO_TTY="1", FAKE_DIR=str(fake), XBOT_RETRY_SLEEP="0", XBOT_NO_TELEGRAM="1",
+                     XBOT_RESTART_CMD="echo RELANCE_DU_BOT", **extra)
     del env["XBOT_APP_DIR"]  # chemin par défaut : ~/x-degen-bot
     res = run(DEPLOY / "push_from_mac.sh", env=env, stdin=stdin, home=home)
     log = (fake / "log").read_text() if (fake / "log").exists() else ""
@@ -320,6 +323,22 @@ def test_wizard_asks_only_for_missing_x_keys_then_installs(tmp_path):
     assert len(stages) == 1
     assert not list(stages[0].rglob("__pycache__")) and not (stages[0] / "config" / ".env").exists()
     assert "nohup setsid bash" in log          # l'installation survit à une coupure
+
+
+@pytest.mark.skipif(shutil.which("tar") is None or shutil.which("setsid") is None, reason="tar/setsid")
+def test_wizard_rotates_keys_only_after_a_successful_install(tmp_path):
+    answers = "\n".join(["o",                      # remplacer les clés (après l'installation)
+                           "", "n1", "n2", "n3", "n4",   # X : Entrée + 4 clés
+                           "", "sk-ant-NEW",            # Claude
+                           "", "999:NEWTOKEN"]) + "\n"  # Telegram (/revoke)
+    res, app, home, log = wizard(tmp_path, [ALL_OK, ALL_OK], answers)
+    assert res.returncode == 0, out(res)
+    o = out(res)
+    assert o.index("V2_OK") < o.index("/revoke")          # rotation APRÈS l'installation réussie
+    assert "RELANCE_DU_BOT" in log or "RELANCE_DU_BOT" in o  # le bot reprend les nouvelles clés
+    assert "Nouvelles clés en place" in o
+    lines = env_lines(app)
+    assert {"X_API_KEY=n1", "ANTHROPIC_API_KEY=sk-ant-NEW", "TELEGRAM_BOT_TOKEN=999:NEWTOKEN"} <= set(lines)
 
 
 @pytest.mark.skipif(shutil.which("tar") is None, reason="tar nécessaire")
@@ -476,8 +495,9 @@ def test_incomplete_restore_is_reported_not_hidden(tmp_path):
     (stage / "deploy" / "restore_backup.sh").write_text(
         real.replace('main "$@"\nexit $?', 'echo "ERREUR en remettant bot"; echo "RESTAURATION INCOMPLÈTE : bot"\nexit 1'))
     res = run(DEPLOY / "deploy.sh", str(stage), env=deploy_env(app, XBOT_SKIP_CHECK=""))
-    assert res.returncode == 1
+    assert res.returncode == 5                          # code propre à ce cas (l'assistant le dit)
     assert "RESTAURATION INCOMPLÈTE" in res.stdout and "Rien n'est perdu" not in res.stdout
+    assert "FIN_DEPLOIEMENT 5" in res.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -530,3 +550,42 @@ def test_telegram_setup_finds_private_chat(tmp_path):
         assert stat.S_IMODE((app / "config" / ".env").stat().st_mode) == 0o600
     finally:
         srv.shutdown()
+
+
+
+def test_stage_cleanup_never_removes_the_running_stage(tmp_path):
+    """Sur le serveur, deploy.sh tourne depuis ~/xbv2_stage_<date> : le ménage ne
+    supprime que les envois PLUS ANCIENS, jamais celui en cours ni un plus récent."""
+    home = tmp_path / "home"
+    app = make_v1_app(home / "x-degen-bot")
+    stage = make_stage(home / "xbv2_stage_20261021120000")
+    older = home / "xbv2_stage_20261020090000"
+    newer = home / "xbv2_stage_20261021130000"
+    older.mkdir()
+    newer.mkdir()
+    env = deploy_env(app)
+    res = run(DEPLOY / "deploy.sh", str(stage), env=env, home=home)
+    assert res.returncode == 0, out(res)
+    assert stage.exists() and newer.exists() and not older.exists()
+
+
+def test_helper_never_uses_the_real_home():
+    script = Path(tempfile.mkdtemp()) / "probe.sh"
+    script.write_text('echo "$HOME"\n')
+    assert run(script).stdout.strip() != str(Path.home())
+
+
+@pytest.mark.skipif(bool(os.environ.get("XBOT_NESTED_DEPLOY_TEST")), reason="déjà dans une installation de test")
+def test_real_install_with_tests_from_a_home_stage(tmp_path):
+    """Le scénario exact du serveur : envoi dans ~/xbv2_stage_<date>, installation AVEC
+    la suite de tests. (Un ménage trop large supprimait le dossier en cours de test.)"""
+    home = tmp_path / "home"
+    app = make_v1_app(home / "x-degen-bot")
+    stage = make_stage(home / "xbv2_stage_20261021120000")
+    env = deploy_env(app, XBOT_SKIP_TESTS="", XBOT_NESTED_DEPLOY_TEST="1")
+    res = subprocess.run(["bash", str(DEPLOY / "deploy.sh"), str(stage)], capture_output=True, text=True,
+                         timeout=900, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
+                                           "HOME": str(home), **env})
+    assert res.returncode == 0, out(res)[-3000:]
+    assert "TESTS " in res.stdout and " passed" in res.stdout and "V2_OK" in res.stdout
+    assert stage.exists() and (app / "bot" / "publisher.py").exists()

@@ -881,8 +881,11 @@ class Writer:
         texts: list[str] = []
         for k in ("gm", "tip", "news", "reactive", "thread"):
             texts += [t for t in self.state.recent_texts(k) if isinstance(t, str)]
+        skip = getattr(self, "regen_item_id", None)
         for it in self.state.items(kinds=("gm", "tip", "news", "reactive", "thread"),
                                    statuses=("awaiting", "approved", "publishing")):
+            if skip and it.get("id") == skip:
+                continue  # 🔄 : la version remplacée n'est pas un « autre post »
             texts += [t for t in (it.get("texts") or [])[:1] if isinstance(t, str)]
         return texts
 

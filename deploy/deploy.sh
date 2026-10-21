@@ -27,6 +27,7 @@ main() {
   local INSTALL_FILES="requirements.txt README.md DESIGN.md"
   local KEEP_BACKUPS=5
   local BACKUP=""
+  ROLLBACK_INCOMPLETE=0
 
   svc() { [ -n "$SERVICE" ] || return 0; $SUDO systemctl "$@" "$SERVICE"; }
   svc_active() { [ -z "$SERVICE" ] || systemctl is-active --quiet "$SERVICE"; }
@@ -86,9 +87,16 @@ PY
       fi
       tg_alert "❌ Nouvelle version NON installée ($1) L'ancienne version tourne comme avant."
     else
-      svc stop 2>/dev/null || true
-      echo "⚠️ RESTAURATION INCOMPLÈTE : bot arrêté par sécurité. Sauvegarde intacte : backup_deploy/$(basename "$BACKUP")"
-      tg_alert "⚠️ Installation annulée mais restauration incomplète : bot arrêté par sécurité. Sauvegarde : backup_deploy/$(basename "$BACKUP")."
+      ROLLBACK_INCOMPLETE=1
+      if svc stop 2>/dev/null; then
+        echo "⚠️ RESTAURATION INCOMPLÈTE : bot arrêté par sécurité. Sauvegarde intacte : backup_deploy/$(basename "$BACKUP")"
+        tg_alert "⚠️ Installation annulée mais restauration incomplète : bot arrêté par sécurité. Sauvegarde : backup_deploy/$(basename "$BACKUP")."
+      else
+        echo "⚠️ RESTAURATION INCOMPLÈTE : le bot tourne encore, mais ses fichiers sont un mélange des deux versions."
+        echo "   Ne le relance pas. Commande pour finir la restauration :"
+        echo "   bash ~/x-degen-bot/deploy/restore_backup.sh $BACKUP"
+        tg_alert "⚠️ Installation annulée mais restauration incomplète : ne relance pas le bot. Sauvegarde : backup_deploy/$(basename "$BACKUP")."
+      fi
     fi
   }
 
@@ -202,7 +210,7 @@ PY
   done
   echo "Sauvegarde : backup_deploy/$(basename "$BACKUP")"
   # Coupure ou arrêt demandé à partir d'ici : on remet l'ancienne version.
-  trap 'rollback "Installation interrompue."; echo "FIN_DEPLOIEMENT 1"; exit 1' INT TERM HUP
+  trap 'rollback "Installation interrompue."; if [ "$ROLLBACK_INCOMPLETE" = 1 ]; then echo "FIN_DEPLOIEMENT 5"; exit 5; fi; echo "FIN_DEPLOIEMENT 1"; exit 1' INT TERM HUP
 
   local d f ok=1
   for d in $INSTALL_DIRS; do
@@ -261,14 +269,22 @@ PY
 
   # Ménage : 5 dernières sauvegardes datées, anciens dossiers d'envoi et journaux.
   ls -1d "$APP_DIR"/backup_deploy/20*/ 2>/dev/null | sort | head -n "-$KEEP_BACKUPS" | xargs -r rm -rf
-  local old
-  for old in "$HOME"/xbv2_stage_*; do
-    if [ -d "$old" ] && [ "$old" != "$STAGE" ]; then rm -rf "$old"; fi
-  done
-  ls -1t "$HOME"/xbv2_deploy_*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
+  # Seulement les envois PLUS ANCIENS que celui-ci, et seulement s'il en fait partie
+  # (jamais le dossier d'où l'on tourne, ni rien pendant les tests).
+  local old base
+  base="$(basename "$STAGE")"
+  case "$base" in
+    xbv2_stage_*)
+      for old in "$(dirname "$STAGE")"/xbv2_stage_*; do
+        if [ -d "$old" ] && [[ "$(basename "$old")" < "$base" ]]; then rm -rf "$old"; fi
+      done
+      ls -1t "$(dirname "$STAGE")"/xbv2_deploy_*.log 2>/dev/null | tail -n +6 | xargs -r rm -f ;;
+  esac
   echo "V2_OK : installation terminée, le bot tourne."
 }
 main "$@"
 rc=$?
+# 5 = restauration incomplète (le message ci-dessus dit quoi faire).
+if [ "$rc" != 0 ] && [ "${ROLLBACK_INCOMPLETE:-0}" = 1 ]; then rc=5; fi
 echo "FIN_DEPLOIEMENT $rc"
 exit $rc

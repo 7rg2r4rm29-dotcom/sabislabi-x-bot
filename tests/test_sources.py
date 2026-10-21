@@ -703,3 +703,17 @@ def test_radar_accounts_are_not_bought_twice(settings, state):
     items = hub.collect(use_x=True)
     assert [c for c in x.calls if c[0] == "user_posts"] == [("user_posts", "1", None)]   # seul OpenAI est lu
     assert any("project memory" in i.title or "project memory" in i.summary for i in items)
+
+
+
+def test_news_rereads_an_account_the_radar_stopped_reading(settings, state):
+    from bot.sources import NewsHub
+    from tests.fakes import FakeX
+    settings.radar_enabled = True
+    settings.radar_accounts = ["OpenAI"]
+    settings.x_news_accounts = ["OpenAI"]
+    x = FakeX()
+    x.ids_map = {"openai": "1"}
+    state.data["news_x_fetched_at"] = {"openai": (now_local() - timedelta(hours=3)).isoformat()}
+    NewsHub(settings, state, x, http_get=lambda *a, **k: None).collect(use_x=True)
+    assert ("user_posts", "1", None) in x.calls     # le radar n'a rien lu depuis 3 h : l'actu relit

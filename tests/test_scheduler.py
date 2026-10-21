@@ -807,3 +807,28 @@ def test_failed_news_slot_is_skipped_not_filled(settings, state, budget, parts, 
     bot.plan_slots()
     assert parts["approvals"].created == []
     assert any("Actu" in n for n in parts["approvals"].notes)
+
+
+
+def test_claude_paused_does_not_burn_slots(settings, state, budget, parts, clock):
+    parts["writer"].default_post = False
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = type("PausedLLM", (), {"paused": lambda self: True})()
+    clock(16, 30)                                         # actu de 18:00 à rédiger
+    assert bot.plan_slots() == 0
+    assert parts["approvals"].created == [] and parts["approvals"].notes == []
+    assert not state.data.get("slots_done")               # rien n'est marqué : on réessaiera
+
+
+def test_regenerate_tells_writer_which_item_is_replaced(settings, state, budget, parts, clock):
+    bot = make_bot(settings, state, budget, parts)
+    seen = {}
+    real = parts["writer"].draft_post
+
+    def spy(kind, news, notes, perf):
+        seen["id"] = getattr(parts["writer"], "regen_item_id", None)
+        return real(kind, news, notes, perf)
+
+    parts["writer"].draft_post = spy
+    bot.regenerate({"id": "abc123", "kind": "tip"})
+    assert seen["id"] == "abc123" and parts["writer"].regen_item_id is None

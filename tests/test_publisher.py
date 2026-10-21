@@ -85,11 +85,11 @@ def test_stale_limits_per_kind(pub, state, fake_x, clock):
     clock(9, 0)
     reactive = approved(state, kind="reactive", texts=["Big news: a model just shipped."])
     reply = approved(state, kind="comment_reply", texts=["thanks!"], meta={"comment_id": "555"})
-    tip = approved(state, texts=["A tip, 2h30 late."])
-    clock(11, 30)
-    assert pub.publish_due() == 2
-    assert reactive["status"] == "expired"           # réactif : 2 h max
-    assert tip["status"] == reply["status"] == "published"
+    tip = approved(state, texts=["A tip, 3h30 late."])
+    clock(12, 30)
+    assert pub.publish_due() == 1
+    assert reactive["status"] == tip["status"] == "expired"   # 3 h max (comme le délai de la carte)
+    assert reply["status"] == "published"                     # une réponse reste utile 12 h
 
 
 def test_half_published_thread_is_finished_even_late(pub, state, fake_x, clock):
@@ -565,3 +565,40 @@ def test_poll_is_counted_when_published(pub, state, fake_x, clock):
     assert pub.publish_due() == 1
     assert fake_x.posts[0]["poll"]["options"] == ["Claude", "ChatGPT"]
     assert len(state.data["poll_dates"]) == 1 and item["status"] == "published"
+
+
+
+def test_uncertain_comment_reply_found_despite_leading_mention(pub, state, fake_x, clock):
+    """Sur X, le texte d'une réponse commence par « @pseudo » : la réponse déjà en
+    ligne doit quand même être retrouvée, pas renvoyée."""
+    clock(14, 0)
+    item = approved(state, kind="comment_reply", texts=["Glad it helped!"], meta={"comment_id": "555"})
+    fake_x.lose_response_next = 1
+    pub.publish_due()
+    fake_x.posts[0]["text"] = "@alice Glad it helped!"          # forme réelle renvoyée par X
+    clock(14, 4)
+    assert pub.publish_due() == 1
+    assert len(fake_x.posts) == 1 and item["published_ids"] == [fake_x.posts[0]["id"]]
+
+
+def test_edit_prompt_opened_before_publication_is_dropped(pub, app, state, fake_x, fake_tg, clock):
+    clock(14, 0)
+    item = approved(state, kind="thread", texts=[HOOK, "two", "three"], publish_in_min=0)
+    app._waiting()["999"] = item["id"]                 # invite ✏️ ouverte avant 14:00
+    fake_x.lose_response_next = 0
+    real_post = fake_x.post
+    calls = {"n": 0}
+
+    def post(text, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            fake_x.lose_response_next = 1
+        return real_post(text, **kw)
+
+    fake_x.post = post
+    pub.publish_due()                                  # tweet 1 en ligne, tweet 2 incertain
+    assert "999" not in app._waiting()
+    fake_tg.push_message("totally new version\n---\nnew two", reply_to=999)
+    app.poll()
+    assert item["texts"] == [HOOK, "two", "three"]     # rien n'a changé
+    assert any("plus modifiable" in m["text"] or "pas compris" in m["text"] for m in fake_tg.sent)

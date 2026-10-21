@@ -794,7 +794,7 @@ def test_partially_published_thread_cannot_be_edited(app, state, fake_tg, clock)
     item = make_post(app, kind="thread", texts=["hook tweet here", "two", "three"])
     state.update_item(item["id"], status="approved", meta=dict(item["meta"], partial_ids=["1000"]))
     app.refresh_card(item)
-    assert labels(fake_tg.edits[-1]["buttons"]) == ["❌ Annuler la suite"]
+    assert labels(fake_tg.edits[-1]["buttons"]) == ["❌ Ne plus réessayer"]
     fake_tg.push_callback(f"edit:{item['id']}", message_id=item["tg_message_id"])
     app.poll()
     assert any("plus modifiable" in t for _, t in fake_tg.answers)
@@ -817,3 +817,31 @@ def test_regen_interrupted_card_is_restored_after_restart(settings, state, fake_
     app2 = Approvals(settings, state, fake_tg)
     app2.poll()
     assert "✅ Valider" in labels(fake_tg.edits[-1]["buttons"])
+
+
+
+def test_uncertain_post_cannot_be_edited_and_cancel_is_honest(app, state, fake_tg, clock):
+    clock(11, 0)
+    item = make_post(app)
+    state.update_item(item["id"], status="approved", meta=dict(item["meta"], uncertain=True))
+    app.refresh_card(item)
+    assert labels(fake_tg.edits[-1]["buttons"]) == ["❌ Ne plus réessayer"]
+    fake_tg.push_callback(f"edit:{item['id']}", message_id=item["tg_message_id"])
+    app.poll()
+    assert any("plus modifiable" in t for _, t in fake_tg.answers)
+    fake_tg.push_callback(f"no:{item['id']}", message_id=item["tg_message_id"])
+    app.poll()
+    assert item["status"] == "rejected"
+    assert "peut-être déjà en ligne" in fake_tg.edits[-1]["text"]
+
+
+def test_reactive_tap_within_card_deadline_is_accepted(app, state, fake_tg, clock):
+    from bot.models import Draft as D
+    clock(14, 0)
+    item = app.create_post_item(D(kind="reactive", texts=["Big model release today, what it changes."],
+                                  reason="actu chaude"), slot_key=None, slot_date=None,
+                                publish_at=at(14, 0), expires_at=at(17, 0))
+    clock(16, 30)                                       # la carte dit « avant 17:00 »
+    fake_tg.push_callback(callback_data_for(fake_tg, "✅"), message_id=item["tg_message_id"])
+    app.poll()
+    assert item["status"] == "approved"

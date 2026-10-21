@@ -37,7 +37,7 @@ STUCK_MINUTES = 15
 # Un post validé qui n'a pas pu partir à l'heure (bot arrêté, panne) n'est plus
 # publié au-delà de ce retard : un GM à 16 h ou une « actu » de la veille n'ont
 # plus de sens. Les réponses aux commentaires restent utiles plus longtemps.
-STALE_AFTER_MINUTES = {"reactive": 120, "comment_reply": 720}
+STALE_AFTER_MINUTES = {"reactive": 180, "comment_reply": 720}
 STALE_DEFAULT_MINUTES = 180
 
 def stale_after(kind: str | None) -> timedelta:
@@ -62,6 +62,7 @@ def is_stale(item: dict, now: datetime) -> bool:
 
 
 _TCO_RE = re.compile(r"https://t\.co/\S+")
+_LEADING_MENTIONS_RE = re.compile(r"^(?:\s*@\w{1,15})+\s*")
 
 
 def _norm(text: str) -> str:
@@ -171,6 +172,9 @@ class Publisher:
             meta = item["meta"] = {}
         meta["publishing_at"] = iso(now_local())
         meta.setdefault("first_attempt_at", meta["publishing_at"])
+        if self.approvals is not None and hasattr(self.approvals, "_forget_edit_prompts"):
+            # Une invite ✏️ ouverte avant la publication ne doit plus rien changer.
+            self.approvals._forget_edit_prompts(item_id)
         # L'heure prévue d'origine, avant tout report (limite de débit, nouvel essai).
         meta.setdefault("scheduled_at", item.get("publish_at") or meta["publishing_at"])
         self.state.update_item(item_id, status="publishing", meta=meta)
@@ -194,18 +198,27 @@ class Publisher:
         republie jamais sans savoir."""
         since = parse_iso(item["meta"].get("first_attempt_at"))
         want = _norm(text)
+        replies_here: list[str] = []
         for tw in self.x.recent_own_tweets(max_results=20) or []:
             created = parse_iso(str(tw.get("created_at") or "").replace("Z", "+00:00"))
             if since and created and created < since - timedelta(minutes=5):
                 continue
-            if _norm(str(tw.get("text") or "")) != want:
-                continue
+            got = str(tw.get("text") or "")
             if reply_to:
-                refs = [r.get("id") for r in (tw.get("referenced_tweets") or []) if r.get("type") == "replied_to"]
-                if refs and str(reply_to) not in [str(r) for r in refs]:
+                refs = [str(r.get("id")) for r in (tw.get("referenced_tweets") or [])
+                        if r.get("type") == "replied_to"]
+                if str(reply_to) not in refs:
                     continue
-            log.info("Item %s : déjà en ligne (%s), pas de nouvelle publication", item["id"], tw.get("id"))
-            return str(tw.get("id"))
+                replies_here.append(str(tw.get("id")))
+                # X ajoute « @pseudo » devant le texte d'une réponse.
+                got = _LEADING_MENTIONS_RE.sub("", html.unescape(got))
+            if _norm(got) == want:
+                log.info("Item %s : déjà en ligne (%s), pas de nouvelle publication", item["id"], tw.get("id"))
+                return str(tw.get("id"))
+        if reply_to and len(replies_here) == 1:
+            # Une seule de mes réponses à ce tweet depuis l'essai : c'est elle.
+            log.info("Item %s : réponse déjà en ligne (%s)", item["id"], replies_here[0])
+            return replies_here[0]
         return None
 
     def _send(self, item: dict, texts: list[str]) -> list[str]:

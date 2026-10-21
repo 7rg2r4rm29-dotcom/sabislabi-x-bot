@@ -83,6 +83,7 @@ FEED_TTL = timedelta(minutes=20)
 FEED_STALE_OK = timedelta(hours=6)
 X_CACHE_HOURS = 48
 X_REFRESH_MINUTES = 120
+RADAR_SHARE_FRESH_MIN = 90     # compte lu par le radar il y a moins de 90 min : pas relu ici
 X_UNRESOLVED_RETRY = timedelta(hours=6)
 X_MAX_RESULTS = 5
 
@@ -821,7 +822,15 @@ class NewsHub:
         # payé) : le radar dépose ses lectures dans le même cache (share_radar_posts).
         radar = {h.lower() for h in (self.settings.radar_accounts or [])} \
             if getattr(self.settings, "radar_enabled", False) else set()
-        to_read = [h for h in handles if h.lower() not in radar]
+        _, _, fetched_at = self._x_store()
+
+        def radar_fresh(h: str) -> bool:
+            # Le radar s'arrête parfois pour la journée (plafond, compte déjà servi) :
+            # au-delà de 90 min sans lecture, l'actu relit le compte elle-même.
+            last = parse_iso(fetched_at.get(h.lower()))
+            return last is not None and timedelta(0) <= now - last < timedelta(minutes=RADAR_SHARE_FRESH_MIN)
+
+        to_read = [h for h in handles if not (h.lower() in radar and radar_fresh(h))]
         if to_read and use_x and self.x is not None and getattr(self.x, "configured", False):
             try:
                 self._refresh_x(to_read, now)

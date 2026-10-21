@@ -368,6 +368,10 @@ def load_settings() -> Settings:
                            if isinstance(v, list)},
         evergreen_topics=[t for t in (content.get("evergreen_topics") or []) if isinstance(t, str)],
     )
+    if s.approval_grace_minutes > 170:
+        # Au-delà, une carte encore « à valider » serait déjà trop vieille pour partir (3 h).
+        w.append(f"APPROVAL_GRACE_MINUTES={s.approval_grace_minutes} ramené à 170 (max)")
+        s.approval_grace_minutes = 170
     s.weekly_report = _lenient("WEEKLY_REPORT_AT", _weekly, "sun@20:30", w)
     s.warnings = w
     return s

@@ -7,14 +7,15 @@ main() {
   set -u
   local log="$1" waited=0 max="${XBOT_FOLLOW_MAX_S:-2700}"
   while [ ! -f "$log" ] && [ "$waited" -lt 60 ]; do sleep 1; waited=$((waited + 1)); done
-  [ -f "$log" ] || { echo "Journal d'installation introuvable ($log)."; return 1; }
+  # 4 = on ne sait pas (encore) : l'installation continue peut-être sur le serveur.
+  [ -f "$log" ] || { echo "Journal d'installation introuvable ($log)."; return 4; }
   tail -n +1 -f "$log" &
   local tailpid=$! start=$SECONDS
   while ! grep -q '^FIN_DEPLOIEMENT' "$log" 2>/dev/null; do
     if [ $((SECONDS - start)) -ge "$max" ]; then
       kill "$tailpid" 2>/dev/null
       echo "L'installation est anormalement longue : elle continue sur le serveur, regarde Telegram."
-      return 1
+      return 4
     fi
     sleep 2
   done

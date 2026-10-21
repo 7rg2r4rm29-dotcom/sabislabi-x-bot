@@ -482,6 +482,10 @@ class Approvals:
         if status == "failed":
             return f"❌ Échec : {esc(item.get('last_error') or 'erreur inconnue')}"
         if status == "rejected":
+            m = item.get("meta") or {}
+            if m.get("uncertain") or m.get("partial_ids"):
+                return ("❌ Arrêté — mais X n'avait pas confirmé : il est peut-être déjà en ligne, "
+                        "vérifie ton profil")
             return "❌ Annulé — rien n'a été publié"
         if status == "expired":
             why = item.get("last_error")
@@ -507,8 +511,10 @@ class Approvals:
                 rows.append([button("📲 Publier moi-même", url=intent_post_url(texts[0]))])
             return rows
         if status == "approved" and pa and pa > now:
-            if (item.get("meta") or {}).get("partial_ids"):
-                return [[button("❌ Annuler la suite", f"no:{iid}")]]
+            m = item.get("meta") or {}
+            if m.get("partial_ids") or m.get("uncertain"):
+                # Peut-être (en partie) déjà en ligne : modifier ferait un 2e post.
+                return [[button("❌ Ne plus réessayer", f"no:{iid}")]]
             return [[button("✏️ Modifier", f"edit:{iid}"), button("❌ Annuler", f"no:{iid}")]]
         if status == "published":
             ids = item.get("published_ids") or []
@@ -820,8 +826,9 @@ class Approvals:
             ans("Le texte a changé : relis la carte, puis ✅")
             self.refresh_card(item)
             return
-        if action == "edit" and (item.get("meta") or {}).get("partial_ids"):
-            ans("Thread déjà en partie en ligne : il n'est plus modifiable")
+        if action == "edit" and ((item.get("meta") or {}).get("partial_ids")
+                                 or (item.get("meta") or {}).get("uncertain")):
+            ans("Peut-être déjà (en partie) en ligne : plus modifiable")
             return
         log.info("Telegram : bouton %s sur %s (%s)", action, item_id, item.get("kind"))
         {"ok": self._cb_ok, "no": self._cb_no, "regen": self._cb_regen, "edit": self._cb_edit}[action](item, ans)
@@ -973,12 +980,15 @@ class Approvals:
     def _apply_edit(self, item_id: str, prompt_id: str, text: str) -> None:
         waiting = self._waiting()
         item = self.state.item(item_id)
-        if item is None or item.get("status") not in _ACTIONABLE["edit"][self._family(item)]:
+        m = (item or {}).get("meta") or {}
+        if item is None or item.get("status") not in _ACTIONABLE["edit"][self._family(item)] \
+                or m.get("partial_ids") or m.get("uncertain"):
             waiting.pop(prompt_id, None)
             self.state.flush()
             status = (item or {}).get("status", "supprimé")
-            self.notify(f"⌛ Trop tard : ce brouillon n'est plus modifiable (statut : {esc(str(status))}). "
-                        "Rien n'a été changé.")
+            why = ("il est peut-être déjà (en partie) en ligne" if m.get("partial_ids") or m.get("uncertain")
+                   else f"statut : {esc(str(status))}")
+            self.notify(f"⌛ Trop tard : ce brouillon n'est plus modifiable ({why}). Rien n'a été changé.")
             return
         raw = (text or "").strip()
         if not raw:

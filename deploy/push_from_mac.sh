@@ -13,6 +13,7 @@ main() {
   local HOST="${XBOT_HOST:-botuser@178.128.194.190}"
   local SSH="${XBOT_SSH:-ssh}"
   local OPEN="${XBOT_OPEN:-open}"
+  local RESTART="${XBOT_RESTART_CMD:-sudo -n systemctl restart x-degen-bot}"
   local STAMP
   STAMP=$(date +%Y%m%d%H%M%S)
   local STAGE="xbv2_stage_$STAMP"
@@ -102,7 +103,7 @@ main() {
       remote_tty "bash ~/$STAGE/deploy/set_secrets.sh TELEGRAM_BOT_TOKEN" || return 1
       t=$(remote "bash ~/$STAGE/deploy/telegram_setup.sh check" 2>&1 | tail -n 1)
       if [ "${t%% *}" != TOKEN_OK ]; then
-        echo "Telegram refuse ce jeton. Rien n'a été modifié sur ton bot ; relance la commande pour réessayer."
+        echo "Telegram refuse ce jeton (copie incomplète ?). Relance la même commande pour le recoller."
         return 1
       fi
     fi
@@ -142,7 +143,7 @@ main() {
 
   echo "=== 2/4 Vérification de tes clés (celles déjà sur le serveur) ==="
   local round=0 rc
-  TG="" XS="" CL=""
+  TG="" XS="" CL="" KEYS_CHANGED=0
   while :; do
     check_keys
     rc=$?
@@ -153,22 +154,15 @@ main() {
       echo "Il reste un problème avec une clé (voir les lignes ❌). Rien n'a été modifié sur ton bot."
       return 1
     fi
+    case "$XS" in ok|credits|error) ;; *) KEYS_CHANGED=1 ;; esac
+    [ "$CL" = ok ] || KEYS_CHANGED=1
+    [ "$TG" = ok ] || KEYS_CHANGED=1
     [ "$XS" = ok ] || fix_x "$XS" || return 1
     [ "$CL" = ok ] || fix_claude || return 1
     [ "$TG" = ok ] || fix_telegram "$TG" || return 1
     echo "=== 2/4 Nouvelle vérification ==="
   done
   echo "✅ Telegram, l'API X et Claude fonctionnent."
-
-  local rot
-  rot=$(ask "Recommandé (vol du 9 octobre) : remplacer aussi les clés qui marchent, environ 5 min ? (o/N) ")
-  case "$rot" in
-    o|O|oui|OUI|y|Y|yes)
-      fix_x rotate && fix_claude rotate && fix_telegram rotate || return 1
-      echo "=== 2/4 Vérification des nouvelles clés ==="
-      check_keys || { echo "Une nouvelle clé ne marche pas (voir ❌). Relance la commande. Rien n'a été modifié."; return 1; }
-      echo "✅ Nouvelles clés OK. Pense à supprimer les anciennes clés X et Claude sur leurs sites." ;;
-  esac
 
   echo "=== 3/4 Installation (5 à 10 minutes, tu peux laisser cette fenêtre ouverte) ==="
   if ! remote "nohup setsid bash ~/$STAGE/deploy/deploy.sh ~/$STAGE > ~/$LOG 2>&1 < /dev/null & echo LANCEMENT_OK"; then
@@ -181,12 +175,43 @@ main() {
   echo "=== 4/4 Résultat ==="
   case "$rc" in
     0) echo "✅ C'est fait : la nouvelle version tourne. Sur Telegram, envoie /statut pour voir le planning." ;;
-    3) echo "⏳ Une publication était en cours : relance la même commande dans 20 minutes. Rien n'a été modifié." ;;
-    255) echo "La connexion s'est coupée, mais l'installation continue toute seule sur le serveur."
-         echo "Dans 10 minutes, regarde Telegram : « Bot v2 démarré » = c'est bon ; un message ❌ sinon." ;;
+    3) echo "⏳ Une publication était en cours : relance la même commande dans 20 minutes. Le bot n'a pas changé." ;;
+    4|255) echo "La connexion s'est coupée (ou l'installation est longue), mais elle continue toute seule sur le serveur."
+         echo "Dans 15 minutes, regarde Telegram : « Bot v2 démarré » = c'est bon ; un message ❌ sinon." ;;
+    5) echo "⚠️ L'installation a échoué ET la restauration est incomplète : suis les instructions juste au-dessus" ;;
     *) echo "❌ L'installation n'a pas abouti : l'ancienne version tourne comme avant (détails ci-dessus et sur Telegram)." ;;
   esac
-  return "$rc"
+  if [ "$rc" = 1 ] && [ "$KEYS_CHANGED" = 1 ]; then
+    # Les clés corrigées sont déjà sur le serveur : on relance le bot pour qu'il les prenne.
+    remote "$RESTART" >/dev/null 2>&1 \
+      && echo "Le bot a été relancé pour prendre en compte les clés que tu viens d'enregistrer."
+  fi
+  [ "$rc" = 0 ] || return "$rc"
+
+  # Après une installation réussie seulement : remplacer aussi les clés qui marchent.
+  local rot
+  echo
+  rot=$(ask "Dernière étape, recommandée (vol du 9 octobre) : remplacer aussi tes clés actuelles, environ 5 min ? (o/N) ")
+  case "$rot" in
+    o|O|oui|OUI|y|Y|yes)
+      fix_x rotate && fix_claude rotate && fix_telegram rotate || {
+        remote "$RESTART" >/dev/null 2>&1
+        echo "Remplacement interrompu. Le bot a été relancé avec les clés enregistrées ; relance la commande pour finir."
+        return 1
+      }
+      echo "Relance du bot avec les nouvelles clés…"
+      remote "$RESTART" >/dev/null 2>&1 \
+        || echo "(relance impossible d'ici : le bot prendra les nouvelles clés à son prochain redémarrage)"
+      echo "=== Vérification des nouvelles clés ==="
+      if check_keys; then
+        echo "✅ Nouvelles clés en place. Pense à supprimer les anciennes clés X et Claude sur leurs sites."
+      else
+        echo "⚠️ Une nouvelle clé ne marche pas (voir ❌) : relance la même commande, l'assistant te guidera."
+        return 1
+      fi ;;
+    *) echo "D'accord. Tu pourras le faire plus tard en relançant la même commande." ;;
+  esac
+  return 0
 }
 main "$@"
 exit $?

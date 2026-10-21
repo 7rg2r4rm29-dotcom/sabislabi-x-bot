@@ -154,11 +154,11 @@ Ensuite, laisse-toi guider :
    ce qui ne marche pas : il **ouvre lui-même la bonne page** et te dit où cliquer. Quand il te demande de
    coller une clé, **rien ne s'affiche, c'est normal**. Les clés vont directement sur le serveur.
    Ne les colle jamais ailleurs (Claude, Cowork, mail…).
-3. Il te propose de **remplacer aussi les clés qui marchent** : c'est recommandé à cause du vol du
-   9 octobre (environ 5 minutes, il te guide). Tu peux répondre **N** et le faire plus tard en relançant la
-   même commande.
-4. Il installe la nouvelle version (5 à 10 minutes) : tests, sauvegarde, vérification, puis redémarrage.
+3. Il installe la nouvelle version (5 à 10 minutes) : tests, sauvegarde, vérification, puis redémarrage.
    Si ta connexion se coupe, **l'installation continue toute seule** sur le serveur.
+4. Une fois l'installation réussie, il te propose de **remplacer aussi les clés qui marchent** : c'est
+   recommandé à cause du vol du 9 octobre (environ 5 minutes, il te guide, puis relance le bot avec les
+   nouvelles clés). Tu peux répondre **N** et le faire plus tard en relançant la même commande.
 
 C'est réussi quand tu lis **`✅ C'est fait`**, et que Telegram affiche « ✅ Test v2 OK » puis
 « 🤖 Bot v2 démarré ». Envoie `/statut` pour voir le planning.

@@ -93,6 +93,11 @@ class LLM:
 
     _last_was_outage = False
 
+    def paused(self) -> bool:
+        """Coupe-circuit ouvert : Claude n'est pas appelé en ce moment."""
+        import time
+        return time.monotonic() < self._paused_until
+
     def _call_once(self, label: str, kwargs: dict, anthropic) -> Any | None:
         self._last_was_outage = False
         with heartbeat(f"claude {label}", every_s=60.0, max_total_s=900.0):
