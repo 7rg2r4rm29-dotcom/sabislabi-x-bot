@@ -188,7 +188,7 @@ class Settings:
     # --- Radar (suggestions de réponses sous les gros comptes, publiées À LA MAIN) ---
     radar_enabled: bool = True
     radar_check_every_min: int = 30
-    radar_accounts_per_check: int = 6
+    radar_accounts_per_check: int = 20
     radar_max_age_min: int = 45
     radar_max_per_day: int = 8
     radar_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(22, 30))
@@ -346,7 +346,7 @@ def load_settings() -> Settings:
         comments_window=_lenient("COMMENTS_WINDOW", parse_window, "08:00-23:30", w),
         radar_enabled=_env_bool("RADAR_ENABLED", True),
         radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 30),
-        radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 6),
+        radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 20),
         radar_max_age_min=_env_int("RADAR_MAX_AGE_MINUTES", 45),
         radar_max_per_day=_env_int("RADAR_MAX_PER_DAY", 8),
         radar_window=_lenient("RADAR_WINDOW", parse_window, "08:00-22:30", w),

@@ -817,9 +817,14 @@ class NewsHub:
         handles = self._x_handles()
         if not handles:
             return []
-        if use_x and self.x is not None and getattr(self.x, "configured", False):
+        # Les comptes que le radar lit déjà ne sont pas relus ici (chaque post lu est
+        # payé) : le radar dépose ses lectures dans le même cache (share_radar_posts).
+        radar = {h.lower() for h in (self.settings.radar_accounts or [])} \
+            if getattr(self.settings, "radar_enabled", False) else set()
+        to_read = [h for h in handles if h.lower() not in radar]
+        if to_read and use_x and self.x is not None and getattr(self.x, "configured", False):
             try:
-                self._refresh_x(handles, now)
+                self._refresh_x(to_read, now)
             except Exception as e:
                 log.warning("Actu X : lecture interrompue (%s), je garde le cache", e)
         else:
@@ -996,3 +1001,21 @@ def x_post_item(handle: str, tweet_id: str, text: str, created: datetime | None,
         kind="x",
         engagement=_int(likes),
     )
+
+
+def share_radar_posts(state, handle: str, tweets: list[dict], newest: str | None) -> None:
+    """Le radar vient de lire (et de payer) les posts d'un compte d'actu : on les
+    range aussi dans le cache d'actu, pour ne jamais acheter deux fois le même post."""
+    data = state.data
+    for key in ("news_since", "news_x_cache", "news_x_fetched_at"):
+        if not isinstance(data.get(key), dict):
+            data[key] = {}
+    now = now_local()
+    low = handle.lower()
+    for tw in tweets or []:
+        entry = NewsHub._cache_entry(handle, tw, now)
+        if entry is not None:
+            data["news_x_cache"][str(tw.get("id"))] = entry
+    if newest:
+        data["news_since"][low] = str(newest)
+    data["news_x_fetched_at"][low] = iso(now)

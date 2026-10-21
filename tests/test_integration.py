@@ -25,6 +25,8 @@ TIP = ('before you trust an AI answer, ask it: "what would make this answer wron
        "you'll catch more mistakes than you think.")
 REPLY = "Yes: paste the full stack trace, not a summary. It changes everything."
 RADAR = "Tried this yesterday: it works best when you paste the full error, not a summary."
+NEWS = ("the people winning with AI this week aren't chasing every launch.\n"
+        "they picked one boring task and automated it. which one would you start with?")
 RADAR_POST = "We just shipped a new way to build small apps directly inside the chat window."
 
 
@@ -36,13 +38,17 @@ def responder(label, system, user, schema):
         return post(GM)
     if label == "post-tip":
         return post(TIP)
+    if label == "post-news":
+        return post(NEWS)
+    if label == "factcheck":
+        return {"ok": True, "issues": ""}
     if label == "reactive":
         return {"post": False, "reason": "rien d'assez chaud"}
     if label == "comment-reply":
         return {"reply": True, "reason": "vraie question", "text": REPLY}
     if label == "radar-reply":
         return {"reply": True, "reason": "vrai apport", "text": RADAR, "angle": "test perso"}
-    return None  # actu : pas de source -> texte de secours
+    return None
 
 
 def iso_utc(minutes_ago: float) -> str:
@@ -118,11 +124,11 @@ def test_simulated_day(settings, state, budget, clock):
         seen["reply"] = d.approve("stack traces")
 
     def approve_news_then_pause():
-        seen["news"] = d.approve("fallback news")
+        seen["news"] = d.approve("winning with AI this week")
         d.tg.push_message("/pause")
 
     def resume():
-        assert [p for p in d.x.posts if p["text"] == "fallback news"] == [], "rien pendant la pause"
+        assert [p for p in d.x.posts if p["text"] == NEWS] == [], "rien pendant la pause"
         d.tg.push_message("/reprendre")
 
     d.run((15, 6, 0), (16, 9, 0), {
@@ -143,7 +149,7 @@ def test_simulated_day(settings, state, budget, clock):
     # GM à l'heure, réponse au commentaire, actu après la pause
     assert texts[0] == GM
     assert posts[1]["text"] == REPLY and posts[1]["reply_to"] == "901"
-    assert texts[2] == "fallback news"
+    assert texts[2] == NEWS
     news = state.item(seen["news"]["id"])
     assert utils.parse_iso(news["publish_at"]) == clock(18, 33)   # /reprendre à 18:30 + 3 min
     # 2. L'astuce jamais validée a expiré sans partir ; le GM de vendredi attend toujours.

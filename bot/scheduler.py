@@ -33,6 +33,7 @@ from .utils import at_local, in_window, iso, minutes_between, now_local, parse_i
 log = logging.getLogger("xbot.scheduler")
 
 TICK_SLEEP_S = 20
+THREAD_CLEAR_MIN = 180  # un jour de thread, pas d'autre post (hors gm) à moins de 3 h de lui
 TICK_BUDGET_S = 240     # au-delà, les étapes facultatives attendent le tour suivant
 ERROR_SLEEP_S = 60
 WATCHDOG_S = 420
@@ -346,8 +347,15 @@ class Bot:
         out: list[tuple[datetime, Slot]] = []
         for off in day_offsets:
             day = now + timedelta(days=off)
+            threads = [at_local(day, sl.at) for sl in self.settings.thread_slots or []
+                       if sl.weekday == day.weekday()]
             for slot in self.settings.post_slots or []:
-                out.append((at_local(day, slot.at), slot))
+                occ = at_local(day, slot.at)
+                # Jour de thread : le thread prend la place du post le plus proche (pas
+                # plus de 3 posts par jour, et jamais deux posts à moins de 3 h).
+                if slot.kind != "gm" and any(abs(minutes_between(occ, t)) < THREAD_CLEAR_MIN for t in threads):
+                    continue
+                out.append((occ, slot))
             for slot in self.settings.thread_slots or []:
                 if slot.weekday == day.weekday():
                     out.append((at_local(day, slot.at), slot))
@@ -398,6 +406,15 @@ class Bot:
                         f"🧵 Thread de {JOURS[occ.weekday()]} {_hm(occ)} : Claude n'a rien trouvé d'assez "
                         "solide, créneau sauté. Mieux vaut pas de thread qu'un thread faible (les « pas "
                         "intéressé » coûtent cher dans l'algorithme).")
+                    return None
+                if kind == "news":
+                    # Pas de texte bouche-trou sur le créneau « actu » : une maxime de
+                    # développement perso sur un compte d'actu IA fait fuir.
+                    self.state.mark_slot(date, slot.key, SLOT_SKIPPED)
+                    self.approvals.notify(
+                        f"📰 Actu de {JOURS[occ.weekday()]} {_hm(occ)} : rien d'assez solide ou de vérifiable "
+                        "aujourd'hui, créneau sauté. Mieux vaut pas d'actu qu'une actu creuse ou fausse.",
+                        silent=True)
                     return None
                 draft = self.writer.fallback_post(kind)
             image_path, image_kind = self._visual(draft, f"{kind}_{date}")

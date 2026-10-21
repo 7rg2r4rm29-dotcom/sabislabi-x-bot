@@ -14,7 +14,7 @@ import pytest
 
 from bot import scheduler as sched
 from bot import utils
-from bot.config import Slot, parse_post_slots
+from bot.config import Slot, parse_post_slots, parse_thread_slots
 from bot.models import Draft, NewsItem, Visual
 from bot.scheduler import SLOT_FAILED, SLOT_PENDING, SLOT_SKIPPED, Bot, NullTelegram
 from bot.utils import iso, parse_iso
@@ -327,9 +327,10 @@ class TestPlanSlots:
         assert bot.plan_slots() == 0
 
     def test_one_drafting_per_call(self, settings, state, budget, parts, clock):
-        # Mardi 20/10 à 11:00 : le tip de 13:30 ET le thread de 15:00 sont dus.
+        # Mardi 20/10 à 13:30 : le tip de 13:30 ET le thread de 17:30 sont dus.
+        settings.thread_slots = parse_thread_slots("tue@17:30")
         bot = make_bot(settings, state, budget, parts)
-        clock(11, 0, day=20)
+        clock(13, 30, day=20)
         assert bot.plan_slots() == 1
         assert [i["kind"] for i in parts["approvals"].created] == ["tip"]
         assert bot.plan_slots() == 1
@@ -532,8 +533,9 @@ class TestTick:
         settings.reactive_window = (dtime(0, 0), dtime(23, 59))
         settings.reactive_min_gap_min = 0
         parts["writer"].default_reactive = True
+        settings.thread_slots = parse_thread_slots("tue@17:30")
         bot = make_bot(settings, state, budget, parts)
-        clock(11, 0, day=20)   # tip et thread dus
+        clock(13, 30, day=20)   # tip et thread dus
         bot.tick()
         assert parts["writer"].names() == ["draft_post"]
         bot.tick()
@@ -782,3 +784,26 @@ def test_default_construction_wires_real_modules(settings, state, budget, fake_l
         pytest.skip(f"module manquant : {e}")
     assert bot.approvals.hooks["plan"] == bot.plan_text
     assert bot.publisher.approvals is bot.approvals
+
+
+
+def test_thread_day_drops_the_post_slot_next_to_the_thread(settings, state, budget, parts, clock):
+    settings.post_slots = parse_post_slots("gm@08:30,tip@14:00,news@18:30")
+    settings.thread_slots = parse_thread_slots("tue@15:00,sun@17:00")
+    bot = make_bot(settings, state, budget, parts)
+    clock(7, 0, day=20)                                   # mardi
+    kinds = [sl.kind for occ, sl in bot._occurrences((0,))]
+    assert kinds == ["gm", "thread", "news"]              # le tip de 14 h laisse la place au thread
+    clock(7, 0, day=25)                                   # dimanche
+    assert [sl.kind for occ, sl in bot._occurrences((0,))] == ["gm", "tip", "thread"]
+    clock(7, 0, day=21)                                   # mercredi : journée normale
+    assert [sl.kind for occ, sl in bot._occurrences((0,))] == ["gm", "tip", "news"]
+
+
+def test_failed_news_slot_is_skipped_not_filled(settings, state, budget, parts, clock):
+    parts["writer"].default_post = False
+    bot = make_bot(settings, state, budget, parts)
+    clock(16, 30)
+    bot.plan_slots()
+    assert parts["approvals"].created == []
+    assert any("Actu" in n for n in parts["approvals"].notes)

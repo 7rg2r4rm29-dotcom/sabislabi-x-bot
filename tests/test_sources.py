@@ -21,8 +21,9 @@ NOW_UTC = datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
-def _frozen(clock):
+def _frozen(clock, settings):
     clock(10, 0)
+    settings.radar_enabled = False   # ici on teste la lecture d'actu seule (sans partage avec le radar)
     yield
 
 
@@ -682,3 +683,23 @@ def test_default_http_get_caps_size_and_decodes(monkeypatch):
     monkeypatch.setattr(sources, "HTTP_MAX_SECONDS", -1)   # serveur qui distille : on coupe
     status, text = sources.default_http_get("https://feed.example/slow")
     assert status == 200 and text == ""
+
+
+
+def test_radar_accounts_are_not_bought_twice(settings, state):
+    """Un compte d'actu que le radar lit déjà n'est pas relu par l'actu : ses posts
+    arrivent par le cache partagé."""
+    from bot.sources import NewsHub, share_radar_posts
+    from tests.fakes import FakeX, make_tweet
+    settings.radar_enabled = True
+    settings.radar_accounts = ["claudeai"]
+    settings.x_news_accounts = ["OpenAI", "claudeai"]
+    x = FakeX()
+    x.ids_map = {"openai": "1", "claudeai": "2"}
+    created = (now_local() - timedelta(minutes=20)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    share_radar_posts(state, "claudeai", [make_tweet("901", "Claude now has project memory for everyone.",
+                                                     author_id="2", created_at=created, likes=500)], "901")
+    hub = NewsHub(settings, state, x, http_get=lambda *a, **k: None)
+    items = hub.collect(use_x=True)
+    assert [c for c in x.calls if c[0] == "user_posts"] == [("user_posts", "1", None)]   # seul OpenAI est lu
+    assert any("project memory" in i.title or "project memory" in i.summary for i in items)

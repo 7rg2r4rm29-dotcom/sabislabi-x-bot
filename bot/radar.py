@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta
 
 from . import filters
+from .sources import share_radar_posts
 from .utils import in_window, now_local, today_str
 from .x_api import XError, tweet_text, tweet_url
 
@@ -203,6 +204,7 @@ class Radar:
             return 0
 
         rd = self._rd
+        news_accounts = {h.lower() for h in (self.settings.x_news_accounts or [])}
         priority = {h.lower() for h in accounts[:PRIORITY_ACCOUNTS]}
         now = now_local()
         candidates: list[tuple[float, str, dict, float, int]] = []
@@ -220,6 +222,8 @@ class Radar:
                 continue
             if newest:
                 rd["since_ids"][handle.lower()] = str(newest)
+            if handle.lower() in news_accounts:
+                share_radar_posts(self.state, handle, tweets or [], newest)
             for tw in tweets or []:
                 tid = str(tw.get("id") or "")
                 if not tid or self.state.is_handled(tid):
