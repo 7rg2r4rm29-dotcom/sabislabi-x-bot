@@ -93,6 +93,9 @@ _CRYPTO_RE = re.compile("|".join([
     r"\bbinance\b", r"\bcoinbase\b", r"\bmetamask\b", r"\bdogecoin\b", r"\bsatoshi\b", r"\busdt\b",
     r"\busdc\b", r"\bjpegs\b", r"\bfloor prices?\b", r"\bseed phrase\b", r"\bfrens\b", r"\bser\b",
     r"\banon\b", r"\blfg\b", r"\brekt\b",
+    # Paris / trading spéculatif (proches du crypto, contraires à la ligne éditoriale)
+    r"\bpolymarket\b", r"\bkalshi\b", r"\bprediction markets?\b", r"\b(?:day|swing|copy)[ -]?trad\w*",
+    r"\bforex\b", r"\bxrp\b", r"\btokens? (?:sale|launch)\b", r"\bico\b", r"\bmemestocks?\b",
 ]), re.I)
 
 _SENSITIVE_RE = re.compile("|".join([
@@ -156,11 +159,21 @@ def off_limits_term(text: str) -> str | None:
     return mentions_crypto(text) or mentions_sensitive(text) or mentions_haram(text)
 
 
+def _hard_block_regex(term: str) -> re.Pattern:
+    """Le mot-clé doit COMMENCER un mot (« killed » ne touche pas « skilled », ni
+    « shooting » « troubleshooting », ni « rip » « trip »). Espace final = mot entier."""
+    core = term.strip()
+    right = r"(?![a-z0-9])" if term.endswith(" ") else ""
+    return re.compile(r"(?<![a-z0-9])" + re.escape(core) + right, re.I)
+
+
+_HARD_BLOCK_RES = tuple((t.strip(), _hard_block_regex(t)) for t in HARD_BLOCK if t.strip())
+
+
 def hard_blocked(text: str) -> str | None:
-    low = f" {(text or '').lower()} "
-    for k in HARD_BLOCK:
-        if k in low:
-            return k.strip()
+    for term, rx in _HARD_BLOCK_RES:
+        if rx.search(text or ""):
+            return term
     return None
 
 

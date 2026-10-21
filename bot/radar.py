@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 from . import filters
 from .utils import in_window, now_local, today_str
-from .x_api import XError, tweet_url
+from .x_api import XError, tweet_text, tweet_url
 
 log = logging.getLogger("xbot.radar")
 
@@ -173,7 +173,7 @@ class Radar:
         early_priority = handle.lower() in priority and age < PRIORITY_MAX_AGE_MIN
         if not (fast or early_priority):
             return "trop lent", age, rate
-        text = (tw.get("text") or "").strip()
+        text = tweet_text(tw).strip()
         if text.startswith("RT @"):
             return "repost", age, rate
         if len(_URL_RE.sub("", text).strip()) < MIN_TEXT_LEN:
@@ -248,7 +248,7 @@ class Radar:
                 break
             if handle.lower() in {d.lower() for d in done}:
                 continue  # un seul post par compte et par jour
-            text = tw.get("text") or ""
+            text = tweet_text(tw)
             result = self.writer.draft_radar_reply(handle, text, round(age, 1), likes)
             if not result:
                 continue

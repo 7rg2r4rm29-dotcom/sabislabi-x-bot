@@ -5,14 +5,23 @@ ne lit os.environ directement (sauf utils.tz pour le fuseau).
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import time as dtime
 
 from .utils import CONFIG_DIR, load_json, parse_hhmm, parse_window
 
+# Les 7 premières clés (mon..sun) servent aussi aux identifiants de créneaux.
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
-            "lun": 0, "mar": 1, "mer": 2, "jeu": 3, "ven": 4, "sam": 5, "dim": 6}
+            "lun": 0, "mar": 1, "mer": 2, "jeu": 3, "ven": 4, "sam": 5, "dim": 6,
+            "lundi": 0, "mardi": 1, "mercredi": 2, "jeudi": 3, "vendredi": 4, "samedi": 5, "dimanche": 6,
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5,
+            "sunday": 6}
+HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+
+log = logging.getLogger("xbot.config")
 
 POST_KINDS = ("gm", "tip", "news")
 
@@ -35,7 +44,21 @@ class ConfigError(ValueError):
 
 
 def _env(key: str, default: str = "") -> str:
-    return os.getenv(key, default).strip()
+    """Valeur de l'environnement ; vide ou absente -> la valeur par défaut."""
+    raw = (os.getenv(key) or "").strip()
+    return raw or default.strip()
+
+
+def _lenient(key: str, parse, default: str, warnings: list[str]):
+    """Réglage facultatif mal écrit : on garde la valeur par défaut et on prévient
+    (Telegram + journal) au lieu d'empêcher le bot de démarrer."""
+    raw = _env(key, default)
+    try:
+        return parse(raw)
+    except (ValueError, TypeError) as e:
+        warnings.append(f"{key}={raw!r} illisible ({e}) : valeur par défaut {default!r} utilisée")
+        log.warning("Réglage %s illisible (%s) : défaut %r", key, e, default)
+        return parse(default)
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -146,6 +169,7 @@ class Settings:
     quiet_hours: tuple[dtime, dtime] | None = None
     health_report_at: dtime = dtime(8, 30)
     weekly_report: Slot | None = None
+    warnings: list[str] = field(default_factory=list)
     thread_candidates: int = 3
 
     # --- Posts réactifs ---
@@ -243,14 +267,26 @@ def _json_config() -> tuple[dict, dict]:
     return settings, content
 
 
-def _handles(raw) -> list[str]:
+def _handles(raw, warnings: list[str] | None = None) -> list[str]:
+    """Pseudos X valides seulement (un seul pseudo invalide ferait refuser toute la
+    requête de résolution par X). Accepte « @sama » et « https://x.com/sama »."""
     out: list[str] = []
     seen: set[str] = set()
     for h in raw or []:
         if isinstance(h, dict):
             h = h.get("handle", "")
-        h = str(h or "").strip().lstrip("@")
-        if h and h.lower() not in seen:
+        h = str(h or "").strip()
+        m = re.match(r"^(?:https?://)?(?:www\.)?(?:x|twitter)\.com/([^/?#\s]+)", h, re.I)
+        if m:
+            h = m.group(1)
+        h = h.lstrip("@").strip()
+        if not h:
+            continue
+        if not HANDLE_RE.match(h):
+            if warnings is not None:
+                warnings.append(f"compte X ignoré (pseudo invalide) : {h!r}")
+            continue
+        if h.lower() not in seen:
             seen.add(h.lower())
             out.append(h)
     return out
@@ -262,8 +298,18 @@ def _quiet_hours(raw: str) -> tuple[dtime, dtime] | None:
     return parse_window(raw)
 
 
+def _weekly(raw: str) -> Slot | None:
+    if not raw or raw.lower() in ("off", "none", "non", "0"):
+        return None
+    day, _, hhmm = raw.lower().partition("@")
+    if day.strip() not in WEEKDAYS:
+        raise ConfigError(f"jour inconnu {day!r}")
+    return Slot("weekly", parse_hhmm(hhmm), WEEKDAYS[day.strip()])
+
+
 def load_settings() -> Settings:
     js, content = _json_config()
+    w: list[str] = []
     s = Settings(
         x_api_key=_env("X_API_KEY"),
         x_api_secret=_env("X_API_SECRET"),
@@ -282,28 +328,28 @@ def load_settings() -> Settings:
         llm_model=_env("LLM_MODEL") or "claude-opus-5-5",
         llm_effort=_env("LLM_EFFORT", "medium").lower() or "medium",
         llm_effort_thread=_env("LLM_EFFORT_THREAD", "high").lower() or "high",
-        post_slots=parse_post_slots(_env("POST_SLOTS", DEFAULT_POST_SLOTS)),
-        thread_slots=parse_thread_slots(_env("THREAD_SLOTS", DEFAULT_THREAD_SLOTS)),
+        post_slots=_lenient("POST_SLOTS", parse_post_slots, DEFAULT_POST_SLOTS, w),
+        thread_slots=_lenient("THREAD_SLOTS", parse_thread_slots, DEFAULT_THREAD_SLOTS, w),
         draft_leads=parse_leads(_env("DRAFT_LEAD_MINUTES")),
         approval_grace_minutes=_env_int("APPROVAL_GRACE_MINUTES", 120),
-        quiet_hours=_quiet_hours(_env("QUIET_HOURS", "23:30-07:30")),
-        health_report_at=parse_hhmm(_env("HEALTH_REPORT_AT", "08:30")),
+        quiet_hours=_lenient("QUIET_HOURS", _quiet_hours, "23:30-07:30", w),
+        health_report_at=_lenient("HEALTH_REPORT_AT", parse_hhmm, "08:30", w),
         thread_candidates=max(1, _env_int("THREAD_CANDIDATES", 3)),
         reactive_enabled=_env_bool("REACTIVE_ENABLED", True),
         reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 1),
         reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 150),
-        reactive_window=parse_window(_env("REACTIVE_WINDOW", "09:30-22:00")),
+        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "09:30-22:00", w),
         reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 90),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),
         comments_max_drafts_per_day=_env_int("COMMENTS_MAX_DRAFTS_PER_DAY", 40),
-        comments_window=parse_window(_env("COMMENTS_WINDOW", "08:00-23:30")),
+        comments_window=_lenient("COMMENTS_WINDOW", parse_window, "08:00-23:30", w),
         radar_enabled=_env_bool("RADAR_ENABLED", True),
         radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 30),
         radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 6),
         radar_max_age_min=_env_int("RADAR_MAX_AGE_MINUTES", 45),
         radar_max_per_day=_env_int("RADAR_MAX_PER_DAY", 8),
-        radar_window=parse_window(_env("RADAR_WINDOW", "08:00-22:30")),
+        radar_window=_lenient("RADAR_WINDOW", parse_window, "08:00-22:30", w),
         radar_min_likes_per_min=_env_float("RADAR_MIN_LIKES_PER_MIN", 1.0),
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
@@ -313,8 +359,8 @@ def load_settings() -> Settings:
         image_model=_env("IMAGE_MODEL", "gpt-image-1") or "gpt-image-1",
         image_size=_env("IMAGE_SIZE", "1024x1024") or "1024x1024",
         image_quality=_env("IMAGE_QUALITY", "medium") or "medium",
-        radar_accounts=_handles(js.get("radar_accounts")),
-        x_news_accounts=_handles(js.get("x_news_accounts")),
+        radar_accounts=_handles(js.get("radar_accounts"), w),
+        x_news_accounts=_handles(js.get("x_news_accounts"), w),
         news_feeds=[f for f in (js.get("news_feeds") or []) if isinstance(f, dict) and f.get("url")],
         blacklist_users=[u.lower().lstrip("@") for u in (js.get("blacklist", {}).get("users") or [])],
         blacklist_keywords=[k.lower() for k in (js.get("blacklist", {}).get("keywords") or [])],
@@ -322,10 +368,6 @@ def load_settings() -> Settings:
                            if isinstance(v, list)},
         evergreen_topics=[t for t in (content.get("evergreen_topics") or []) if isinstance(t, str)],
     )
-    weekly = _env("WEEKLY_REPORT_AT", "sun@20:30")
-    if weekly:
-        day, _, hhmm = weekly.lower().partition("@")
-        if day not in WEEKDAYS:
-            raise ConfigError(f"WEEKLY_REPORT_AT : jour inconnu {day!r}")
-        s.weekly_report = Slot("weekly", parse_hhmm(hhmm), WEEKDAYS[day])
+    s.weekly_report = _lenient("WEEKLY_REPORT_AT", _weekly, "sun@20:30", w)
+    s.warnings = w
     return s

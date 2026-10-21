@@ -320,3 +320,13 @@ def test_writer_calls_per_check_are_bounded(setup, state, fake_x):
     desk.check()
     assert len(writer.calls) == cmod.MAX_WRITER_CALLS_PER_CHECK
     assert state.data["mentions_since_id"] == str(2000 + cmod.MAX_WRITER_CALLS_PER_CHECK - 1)
+
+
+def test_comment_text_is_html_unescaped(setup, state, fake_x, clock):
+    desk, writer, approvals = setup
+    clock(10, 0)
+    fake_x.mention_batches.append((
+        [reply_to_me("905", "@sabislabi Q&amp;A tomorrow? &lt;3")], users(("7", "alice")), "905"))
+    assert desk.check() == 1
+    assert writer.calls[0][2] == "Q&A tomorrow? <3"
+    assert approvals.comment_items[0]["comment_text"] == "Q&A tomorrow? <3"

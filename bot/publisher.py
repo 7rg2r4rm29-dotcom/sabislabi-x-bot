@@ -13,7 +13,9 @@ jamais d'exception : un item raté ne bloque pas la boucle.
 """
 from __future__ import annotations
 
+import html
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,6 +30,7 @@ PUBLISHABLE = POST_KINDS + ("thread", "comment_reply")
 FATAL_KINDS = ("auth", "credits", "budget", "forbidden", "invalid", "duplicate")
 MAX_ATTEMPTS = 3
 RETRY_MINUTES = 10
+UNCERTAIN_RETRY_MINUTES = 3   # le temps que le post apparaisse sur le profil
 RATE_LIMIT_FALLBACK_MINUTES = 15
 RATE_LIMIT_MAX_WAIT_HOURS = 24
 STUCK_MINUTES = 15
@@ -41,14 +44,31 @@ def stale_after(kind: str | None) -> timedelta:
     return timedelta(minutes=STALE_AFTER_MINUTES.get(kind or "", STALE_DEFAULT_MINUTES))
 
 
-def is_stale(item: dict, now: datetime) -> bool:
-    """Item validé dont l'heure de publication est dépassée de trop. Un thread
-    déjà en partie en ligne n'est jamais « trop vieux » : on le termine."""
-    pa = parse_iso(item.get("publish_at"))
+def scheduled_at(item: dict) -> datetime | None:
+    """Heure prévue d'origine (créneau). `publish_at` peut être repoussé (limite de
+    débit, nouvel essai, validation tardive) : le retard se mesure depuis celle-ci."""
     meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-    if pa is None or meta.get("partial_ids"):
+    return parse_iso(meta.get("scheduled_at")) or parse_iso(item.get("publish_at"))
+
+
+def is_stale(item: dict, now: datetime) -> bool:
+    """Item dont l'heure prévue est dépassée de trop. Un thread déjà en partie en
+    ligne, ou une publication peut-être faite, n'est jamais « trop vieux »."""
+    pa = scheduled_at(item)
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    if pa is None or meta.get("partial_ids") or meta.get("uncertain"):
         return False
     return now - pa > stale_after(item.get("kind"))
+
+
+_TCO_RE = re.compile(r"https://t\.co/\S+")
+
+
+def _norm(text: str) -> str:
+    """Texte comparable : sans entités HTML, sans le lien t.co qu'X ajoute pour
+    une image, espaces normalisés."""
+    t = _TCO_RE.sub(" ", html.unescape(text or ""))
+    return " ".join(t.split()).casefold()
 
 
 # (sujet, participe accordé) pour les messages d'échec.
@@ -74,6 +94,7 @@ def reason_fr(e: XError) -> str:
                         "réponds toi-même avec le bouton 📲",
         "rate_limited": "Limite de débit X atteinte",
         "network": "Réseau indisponible",
+        "uncertain": "X n'a pas confirmé la publication (réponse perdue)",
         "server": f"Erreur du serveur X : {detail}",
         "not_found": f"Post introuvable (supprimé ?) : {detail}",
     }.get(e.kind, f"Erreur : {detail}")
@@ -149,6 +170,9 @@ class Publisher:
         if not isinstance(meta, dict):
             meta = item["meta"] = {}
         meta["publishing_at"] = iso(now_local())
+        meta.setdefault("first_attempt_at", meta["publishing_at"])
+        # L'heure prévue d'origine, avant tout report (limite de débit, nouvel essai).
+        meta.setdefault("scheduled_at", item.get("publish_at") or meta["publishing_at"])
         self.state.update_item(item_id, status="publishing", meta=meta)
         log.info("Publication de %s (%s, %d texte(s))", item_id, kind, len(texts))
         try:
@@ -164,6 +188,26 @@ class Publisher:
         return True
 
     # ------------------------------------------------------------------
+    def _find_live(self, item: dict, text: str, reply_to: str | None = None) -> str | None:
+        """Après une publication incertaine : ce texte est-il déjà sur mon profil ?
+        (owned read, 0,001 $ le tweet). Lève XError si X ne répond pas : on ne
+        republie jamais sans savoir."""
+        since = parse_iso(item["meta"].get("first_attempt_at"))
+        want = _norm(text)
+        for tw in self.x.recent_own_tweets(max_results=20) or []:
+            created = parse_iso(str(tw.get("created_at") or "").replace("Z", "+00:00"))
+            if since and created and created < since - timedelta(minutes=5):
+                continue
+            if _norm(str(tw.get("text") or "")) != want:
+                continue
+            if reply_to:
+                refs = [r.get("id") for r in (tw.get("referenced_tweets") or []) if r.get("type") == "replied_to"]
+                if refs and str(reply_to) not in [str(r) for r in refs]:
+                    continue
+            log.info("Item %s : déjà en ligne (%s), pas de nouvelle publication", item["id"], tw.get("id"))
+            return str(tw.get("id"))
+        return None
+
     def _send(self, item: dict, texts: list[str]) -> list[str]:
         kind = item["kind"]
         meta = item["meta"]
@@ -171,11 +215,19 @@ class Publisher:
             cid = str(meta.get("comment_id") or "").strip()
             if not cid:
                 raise XError("invalid", "identifiant du commentaire manquant")
+            if meta.get("uncertain"):
+                live = self._find_live(item, texts[0], reply_to=cid)
+                if live:
+                    return [live]
             return [str(self.x.post(texts[0], reply_to=cid))]
         if kind == "thread":
             return self._send_thread(item, texts)
         if len(texts) > 1:
             log.warning("Item %s (%s) : %d textes, seul le premier est publié", item["id"], kind, len(texts))
+        if meta.get("uncertain"):
+            live = self._find_live(item, texts[0])
+            if live:
+                return [live]
         media_ids, ai = self._media(item)
         tid = self.x.post(texts[0], media_ids=media_ids or None, poll=item.get("poll") or None,
                           made_with_ai=ai)
@@ -183,6 +235,11 @@ class Publisher:
 
     def _send_thread(self, item: dict, texts: list[str]) -> list[str]:
         partial = [str(i) for i in (item["meta"].get("partial_ids") or []) if i]
+        if item["meta"].get("uncertain") and len(partial) < len(texts):
+            live = self._find_live(item, texts[len(partial)], reply_to=partial[-1] if partial else None)
+            if live:
+                partial.append(live)
+                item["meta"]["partial_ids"] = list(partial)
         if partial:
             # Reprise : on enchaîne en réponse au dernier tweet déjà en ligne.
             if len(partial) >= len(texts):
@@ -227,7 +284,7 @@ class Publisher:
         item_id = item["id"]
         kind = item["kind"]
         meta = item["meta"]
-        for k in ("partial_ids", "retry_at", "publishing_at"):
+        for k in ("partial_ids", "retry_at", "publishing_at", "uncertain"):
             meta.pop(k, None)
         # Le statut d'abord : quoi qu'il arrive ensuite, on ne republie pas.
         self.state.update_item(item_id, status="published", published_ids=[str(i) for i in ids],
@@ -243,6 +300,9 @@ class Publisher:
                 self.state.remember_text(kind, texts[0])
             if kind == "thread":
                 self._remember_thread_kind(item)
+            if item.get("poll"):
+                dates = [d for d in (self.state.data.get("poll_dates") or []) if isinstance(d, str)]
+                self.state.data["poll_dates"] = (dates + [iso(now_local())])[-20:]
             notes = [n for n in (meta.get("used_notes") or []) if isinstance(n, str) and n]
             if notes:
                 self.state.mark_notes_used(notes)
@@ -290,8 +350,29 @@ class Publisher:
                 self._notify(f"💬 X refuse que le bot réponde{(' à @' + esc(who)) if who else ''} : "
                              "réponds toi-même avec le bouton 📲 sur la carte.", silent=True)
             return
+        if e.kind == "duplicate" and (meta.get("uncertain") or int(item.get("attempts") or 0) > 0):
+            # « Doublon » juste après une publication incertaine : il est sans doute
+            # déjà en ligne. On vérifie au prochain passage au lieu d'annoncer un échec.
+            e = XError("uncertain", "X signale un doublon après une réponse perdue")
+            reason = reason_fr(e)
         if e.kind in FATAL_KINDS:
             self._fail(item, reason)
+            return
+        if e.kind == "uncertain":
+            attempts = int(item.get("attempts") or 0) + 1
+            meta["uncertain"] = True
+            if attempts >= MAX_ATTEMPTS + 1:
+                self.state.update_item(item_id, attempts=attempts)
+                self._fail(item, "X n'a jamais confirmé la publication — regarde ton profil X avant de "
+                                 "republier (elle est peut-être en ligne)")
+                return
+            when = now + timedelta(minutes=UNCERTAIN_RETRY_MINUTES)
+            meta["retry_at"] = iso(when)
+            self.state.update_item(item_id, status="approved", publish_at=iso(when), attempts=attempts,
+                                   last_error=f"{reason} — vérification sur ton profil avant tout nouvel essai",
+                                   meta=meta)
+            log.info("Item %s : publication incertaine, vérification à %s", item_id, iso(when))
+            self._refresh(item)
             return
         if e.kind == "rate_limited":
             when = now + timedelta(minutes=RATE_LIMIT_FALLBACK_MINUTES)
@@ -303,10 +384,16 @@ class Publisher:
                 except (OverflowError, OSError, ValueError):
                     pass
             meta["retry_at"] = iso(when)
+            first = not meta.get("rate_limited_notified")
+            meta["rate_limited_notified"] = True
             self.state.update_item(item_id, status="approved", publish_at=iso(when),
                                    last_error=reason, meta=meta)
             log.info("Item %s : limite de débit, nouvel essai à %s", item_id, iso(when))
             self._refresh(item)
+            if first:
+                label, _ = KIND_FR.get(kind, ("Le post", "publié"))
+                self._notify(f"⏳ X limite le nombre de publications : {label.lower()} repartira vers "
+                             f"{when.astimezone(tz()):%H:%M} (s'il n'est pas trop tard d'ici là).", silent=True)
             return
         # Réseau, serveur, introuvable, autre : nouvel essai dans 10 min, 3 essais au total.
         attempts = int(item.get("attempts") or 0) + 1
@@ -324,6 +411,8 @@ class Publisher:
     def _fail(self, item: dict, reason: str, notify: bool = True) -> None:
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         meta.pop("publishing_at", None)
+        if meta.get("uncertain") and "profil" not in reason:
+            reason += " — il est peut-être quand même en ligne : regarde ton profil X avant de republier"
         self.state.update_item(item["id"], status="failed", last_error=reason, meta=meta)
         log.error("Item %s (%s) en échec : %s", item["id"], item.get("kind"), reason)
         self._refresh(item)
@@ -336,16 +425,16 @@ class Publisher:
             self._notify(msg)
 
     def _expire_late(self, item: dict) -> None:
-        pa = parse_iso(item.get("publish_at"))
+        pa = scheduled_at(item)
         when = f"{pa.astimezone(tz()):%H:%M}" if pa else "?"
         hours = int(stale_after(item.get("kind")).total_seconds() // 3600)
-        reason = f"pas parti à l'heure (prévu à {when}, bot arrêté ?) : trop tard pour le publier"
+        reason = f"pas parti à l'heure (prévu à {when}, bot arrêté ou X saturé ?) : trop tard pour le publier"
         self.state.update_item(item["id"], status="expired", last_error=reason)
         log.warning("Item %s (%s) : prévu à %s, plus de %d h de retard, pas publié",
                     item["id"], item.get("kind"), when, hours)
         self._refresh(item)
         label, verb = KIND_FR.get(item.get("kind") or "", ("Le post", "publié"))
-        self._notify(f"⌛ {label} validé pour {when} n'a pas pu partir à temps (bot arrêté ?). "
+        self._notify(f"⌛ {label} validé pour {when} n'a pas pu partir à temps (bot arrêté ou X saturé ?). "
                      f"Avec plus de {hours} h de retard, je ne le publie pas : rien n'est parti. "
                      "Le prochain créneau suit son cours.")
 

@@ -82,7 +82,7 @@ def test_create_post_item_card(app, state, fake_tg, clock):
     assert labels(fake_tg.sent[-1]["buttons"]) == [
         "✅ Valider", "✏️ Modifier", "🔄 Autre version", "❌ Annuler", "📲 Publier moi-même"]
     assert url_of(fake_tg.sent[-1]["buttons"], "📲").startswith("https://x.com/intent/post?text=Ask%20Claude")
-    assert callback_data_for(fake_tg, "✅") == f"ok:{item['id']}"
+    assert callback_data_for(fake_tg, "✅") == f"ok:{item['id']}:0"
     for b in fake_tg.buttons_of():
         if "callback_data" in b:
             assert len(b["callback_data"].encode()) <= 64
@@ -611,11 +611,27 @@ def test_notify_retries_as_plain_text(app, fake_tg, monkeypatch):
 
     def flaky(text, **kw):
         calls.append(text)
-        return None if len(calls) == 1 else real_send(text, **kw)
+        if len(calls) == 1:
+            fake_tg.last_error = "Bad Request: can't parse entities: unsupported start tag"
+            return None
+        return real_send(text, **kw)
 
     monkeypatch.setattr(fake_tg, "send", flaky)
     assert app.notify("cost < 5 $") is not None
     assert calls[1] == "cost &lt; 5 $"
+
+
+def test_notify_not_resent_after_network_error(app, fake_tg, monkeypatch):
+    calls = []
+
+    def lost(text, **kw):
+        calls.append(text)
+        fake_tg.last_error = "network"   # réponse perdue : le message est peut-être arrivé
+        return None
+
+    monkeypatch.setattr(fake_tg, "send", lost)
+    assert app.notify("✅ <b>Publié</b>") is None
+    assert calls == ["✅ <b>Publié</b>"]
 
 
 def test_refresh_card_failed_offers_manual_publish(app, state, fake_tg):
@@ -728,3 +744,76 @@ def test_radar_regen_updates_intent_and_dismiss(app, state, fake_tg):
     click(fake_tg, app, f"no:{item['id']}", item)
     assert item["status"] == "dismissed"
     assert "❌ Passé" in fake_tg.edits[-1]["text"] and fake_tg.edits[-1]["buttons"] == []
+
+
+
+# ---------------------------------------------------------------------------
+# Garde-fous ajoutés après relecture
+# ---------------------------------------------------------------------------
+def test_late_tap_after_expiry_publishes_nothing(app, state, fake_tg, clock):
+    clock(11, 0)
+    item = make_post(app)                       # prévu 14:00, expire 16:00
+    data = callback_data_for(fake_tg, "✅")
+    clock(17, 0)                                 # le bot était arrêté, le ✅ arrive maintenant
+    fake_tg.push_callback(data, message_id=item["tg_message_id"])
+    app.poll()
+    assert item["status"] == "expired"
+    assert any("Trop tard" in t for _, t in fake_tg.answers)
+
+
+def test_ok_on_a_text_that_changed_is_refused(app, state, fake_tg, clock):
+    clock(11, 0)
+    item = make_post(app)
+    old_ok = callback_data_for(fake_tg, "✅")
+    app.hooks["regenerate"] = lambda it: Draft(kind="tip", texts=["A brand new version of the tip."],
+                                               reason="nouvelle")
+    # 🔄 puis ✅ (sur l'ancienne carte) dans le même lot
+    fake_tg.push_callback(f"regen:{item['id']}", message_id=item["tg_message_id"])
+    fake_tg.push_callback(old_ok, message_id=item["tg_message_id"])
+    app.poll()
+    assert item["texts"] == ["A brand new version of the tip."]
+    assert item["status"] == "awaiting"
+    assert any("Le texte a changé" in t for _, t in fake_tg.answers)
+    # Le ✅ de la carte à jour, lui, fonctionne
+    new_ok = [b["callback_data"] for b in fake_tg.edits[-1]["buttons"][0] if b["text"].startswith("✅")][0]
+    fake_tg.push_callback(new_ok, message_id=item["tg_message_id"])
+    app.poll()
+    assert item["status"] == "approved"
+
+
+def test_other_member_of_a_group_cannot_approve(app, state, fake_tg, clock):
+    item = make_post(app)
+    fake_tg.push_callback(callback_data_for(fake_tg, "✅"), message_id=item["tg_message_id"], from_id="555")
+    fake_tg.push_message("/reprendre", from_id="555")
+    app.poll()
+    assert item["status"] == "awaiting"
+
+
+def test_partially_published_thread_cannot_be_edited(app, state, fake_tg, clock):
+    clock(11, 0)
+    item = make_post(app, kind="thread", texts=["hook tweet here", "two", "three"])
+    state.update_item(item["id"], status="approved", meta=dict(item["meta"], partial_ids=["1000"]))
+    app.refresh_card(item)
+    assert labels(fake_tg.edits[-1]["buttons"]) == ["❌ Annuler la suite"]
+    fake_tg.push_callback(f"edit:{item['id']}", message_id=item["tg_message_id"])
+    app.poll()
+    assert any("plus modifiable" in t for _, t in fake_tg.answers)
+
+
+def test_regen_interrupted_card_is_restored_after_restart(settings, state, fake_tg, clock):
+    app1 = Approvals(settings, state, fake_tg)
+    state.data["telegram"]["offset"] = 0
+    item = make_post(app1)
+
+    def killed(it):
+        raise KeyboardInterrupt  # bot tué pendant la rédaction
+
+    app1.hooks["regenerate"] = killed
+    fake_tg.push_callback(f"regen:{item['id']}", message_id=item["tg_message_id"])
+    with pytest.raises(KeyboardInterrupt):
+        app1.poll()
+    assert labels(fake_tg.edits[-1]["buttons"]) == ["❌ Annuler"]   # jamais une carte sans bouton
+    item["meta"]["regen_in_progress"] = True                         # comme si le processus était mort
+    app2 = Approvals(settings, state, fake_tg)
+    app2.poll()
+    assert "✅ Valider" in labels(fake_tg.edits[-1]["buttons"])

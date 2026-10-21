@@ -243,6 +243,7 @@ class Approvals:
             "sources": sources,
             "used_notes": list(getattr(draft, "used_notes", None) or []),
             "from_fallback": bool(draft.from_fallback),
+            "scheduled_at": iso(publish_at),
         }
         fields: dict[str, Any] = {
             "status": "awaiting",
@@ -495,7 +496,8 @@ class Approvals:
         now = now_local()
         pa = parse_iso(item.get("publish_at"))
         if status == "awaiting":
-            rows = [[button("✅ Valider", f"ok:{iid}"), button("✏️ Modifier", f"edit:{iid}")]]
+            rows = [[button("✅ Valider", f"ok:{iid}:{int(item.get('rev') or 0)}"),
+                     button("✏️ Modifier", f"edit:{iid}")]]
             row2 = []
             if int(item.get("regen_count") or 0) < MAX_REGEN:
                 row2.append(button("🔄 Autre version", f"regen:{iid}"))
@@ -505,6 +507,8 @@ class Approvals:
                 rows.append([button("📲 Publier moi-même", url=intent_post_url(texts[0]))])
             return rows
         if status == "approved" and pa and pa > now:
+            if (item.get("meta") or {}).get("partial_ids"):
+                return [[button("❌ Annuler la suite", f"no:{iid}")]]
             return [[button("✏️ Modifier", f"edit:{iid}"), button("❌ Annuler", f"no:{iid}")]]
         if status == "published":
             ids = item.get("published_ids") or []
@@ -557,7 +561,8 @@ class Approvals:
         post_url = str(meta.get("post_url") or "")
         voir = [button("🔗 Voir", url=post_url)] if post_url else []
         if status == "awaiting":
-            rows = [[button("✅ Envoyer", f"ok:{iid}"), button("✏️ Modifier", f"edit:{iid}")]]
+            rows = [[button("✅ Envoyer", f"ok:{iid}:{int(item.get('rev') or 0)}"),
+                     button("✏️ Modifier", f"edit:{iid}")]]
             row2 = []
             if int(item.get("regen_count") or 0) < MAX_REGEN:
                 row2.append(button("🔄 Autre", f"regen:{iid}"))
@@ -661,8 +666,9 @@ class Approvals:
         silent = silent or self._quiet()
         try:
             mid = self.tg.send(text, silent=silent)
-            if mid is None:
+            if mid is None and "parse" in str(getattr(self.tg, "last_error", "") or "").lower():
                 # HTML invalide (un « < » non échappé…) : on réessaie en texte brut.
+                # (Pas après une coupure réseau : le message est peut-être déjà arrivé.)
                 mid = self.tg.send(esc(text), silent=silent)
             return mid
         except Exception as e:  # noqa: BLE001
@@ -700,9 +706,23 @@ class Approvals:
     # ------------------------------------------------------------------
     # Lecture des messages Telegram
     # ------------------------------------------------------------------
+    def _recover_interrupted_regens(self) -> None:
+        """Bot tué pendant un 🔄 : la carte affichait « en cours » sans ✅. On la remet."""
+        for it in self.state.items(statuses=("awaiting", "suggested", "approved")):
+            meta = it.get("meta") or {}
+            if meta.pop("regen_in_progress", None):
+                self.state.update_item(it["id"], meta=meta)
+                self.refresh_card(it, notice="⚠️ La nouvelle version a été interrompue : voici la version actuelle.")
+
     def poll(self) -> int:
         if self.tg is None:
             return 0
+        if not getattr(self, "_regens_recovered", False):
+            self._regens_recovered = True
+            try:
+                self._recover_interrupted_regens()
+            except Exception as e:  # noqa: BLE001
+                log.warning("Cartes interrompues : remise en état impossible (%s)", e)
         try:
             self._resend_missing_cards()
         except Exception as e:  # noqa: BLE001
@@ -767,16 +787,22 @@ class Approvals:
         ans = _Answer(self.tg, str(cq.get("id") or ""))
         try:
             chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
-            if not self.tg.is_owner_chat(chat_id):
-                log.warning("Telegram : bouton venant d'un autre chat ignoré")
+            if not self._from_owner(chat_id, cq.get("from")):
+                log.warning("Telegram : bouton venant d'un autre chat ou d'une autre personne ignoré")
                 return False
-            action, _, item_id = str(cq.get("data") or "").partition(":")
-            self._callback(action, item_id.strip(), ans)
+            action, item_id, rev = (str(cq.get("data") or "").split(":") + ["", ""])[:3]
+            self._callback(action, item_id.strip(), ans, rev.strip() or None)
             return True
         finally:
             ans("")
 
-    def _callback(self, action: str, item_id: str, ans: _Answer) -> None:
+    def _from_owner(self, chat_id: Any, sender: Any) -> bool:
+        """Seul le propriétaire, dans son chat privé avec le bot, peut agir (dans un
+        groupe, n'importe quel membre pourrait sinon valider une publication)."""
+        sender_id = (sender or {}).get("id") if isinstance(sender, dict) else None
+        return self.tg.is_owner_chat(chat_id) and sender_id is not None and self.tg.is_owner_chat(sender_id)
+
+    def _callback(self, action: str, item_id: str, ans: _Answer, rev: str | None = None) -> None:
         item = self.state.item(item_id) if item_id else None
         if item is None:
             ans("Introuvable (trop ancien ?)")
@@ -788,13 +814,35 @@ class Approvals:
         if item.get("status") not in allowed[self._family(item)]:
             ans("Déjà traité")
             return
+        if action == "ok" and rev is not None and rev != str(int(item.get("rev") or 0)):
+            # Le texte a changé depuis l'affichage de ce bouton (🔄 ou ✏️ en cours) :
+            # on ne valide jamais une version que tu n'as pas lue.
+            ans("Le texte a changé : relis la carte, puis ✅")
+            self.refresh_card(item)
+            return
+        if action == "edit" and (item.get("meta") or {}).get("partial_ids"):
+            ans("Thread déjà en partie en ligne : il n'est plus modifiable")
+            return
         log.info("Telegram : bouton %s sur %s (%s)", action, item_id, item.get("kind"))
         {"ok": self._cb_ok, "no": self._cb_no, "regen": self._cb_regen, "edit": self._cb_edit}[action](item, ans)
 
     def _cb_ok(self, item: dict, ans: _Answer) -> None:
+        from .publisher import is_stale
         now = now_local()
         pa = parse_iso(item.get("publish_at")) or now
-        fields: dict[str, Any] = {"status": "approved", "approved_at": iso(now)}
+        exp = parse_iso(item.get("expires_at"))
+        meta = item.setdefault("meta", {})
+        if item.get("kind") == "comment_reply":
+            meta["scheduled_at"] = iso(now)
+        # Bouton touché trop tard (ou traité au redémarrage du bot) : rien ne part.
+        if (exp is not None and exp < now) or is_stale(item, now):
+            self.state.update_item(item["id"], status="expired", meta=meta,
+                                   last_error="validé trop tard, après le délai")
+            self._forget_edit_prompts(item["id"])
+            ans("⌛ Trop tard : délai dépassé, rien n'est publié")
+            self.refresh_card(item)
+            return
+        fields: dict[str, Any] = {"status": "approved", "approved_at": iso(now), "meta": meta}
         immediate = item.get("kind") == "comment_reply" or pa <= now
         if immediate:
             fields["publish_at"] = iso(now)
@@ -827,12 +875,13 @@ class Approvals:
             return
         # Réponse tout de suite : Claude peut mettre un moment, Telegram n'attend pas.
         ans("🔄 Je rédige une autre version…")
-        self.state.update_item(item["id"], regen_count=count + 1)
+        item.setdefault("meta", {})["regen_in_progress"] = True
+        self.state.update_item(item["id"], regen_count=count + 1, meta=item["meta"])
         mid = item.get("tg_message_id")
         if mid:
             try:
                 text, _ = self._render(item, "🔄 Nouvelle version en cours…")
-                self.tg.edit(int(mid), text, None)
+                self.tg.edit(int(mid), text, [[button("❌ Annuler", f"no:{item['id']}")]])
             except Exception:  # noqa: BLE001
                 pass
         try:
@@ -840,6 +889,9 @@ class Approvals:
         except Exception as e:  # noqa: BLE001
             log.exception("Nouvelle version de %s : le crochet %s a planté : %s", item["id"], hook_name, e)
             result = None
+        finally:
+            item["meta"].pop("regen_in_progress", None)
+            self.state.update_item(item["id"], meta=item["meta"])
         if not self._apply_regen(item, family, result):
             self.refresh_card(item, notice="⚠️ Pas de nouvelle version publiable cette fois. "
                                            "Garde celle-ci, ✏️ modifie-la ou ❌ annule.")
@@ -881,7 +933,7 @@ class Approvals:
             meta["from_fallback"] = bool(getattr(result, "from_fallback", False))
         meta["edited"] = False
         meta["warnings"] = []
-        self.state.update_item(item["id"], texts=texts, meta=meta)
+        self.state.update_item(item["id"], texts=texts, meta=meta, rev=int(item.get("rev") or 0) + 1)
         return True
 
     def _cb_edit(self, item: dict, ans: _Answer) -> None:
@@ -906,8 +958,8 @@ class Approvals:
     # ---- Messages -----------------------------------------------------
     def _on_message(self, msg: dict) -> bool:
         chat_id = (msg.get("chat") or {}).get("id")
-        if not self.tg.is_owner_chat(chat_id):
-            log.warning("Telegram : message venant d'un autre chat ignoré")
+        if not self._from_owner(chat_id, msg.get("from")):
+            log.warning("Telegram : message venant d'un autre chat ou d'une autre personne ignoré")
             return False
         text = str(msg.get("text") or msg.get("caption") or "")
         reply_id = (msg.get("reply_to_message") or {}).get("message_id")
@@ -955,7 +1007,7 @@ class Approvals:
         meta["warnings"] = warnings
         if item.get("kind") == "radar":
             meta["intent_url"] = intent_reply_url(str(meta.get("tweet_id") or ""), parts[0])
-        self.state.update_item(item_id, texts=parts, meta=meta)
+        self.state.update_item(item_id, texts=parts, meta=meta, rev=int(item.get("rev") or 0) + 1)
         waiting.pop(prompt_id, None)
         self.state.flush()
         log.info("Item %s : texte modifié à la main (%d partie(s))", item_id, len(parts))
@@ -1016,8 +1068,9 @@ class Approvals:
             # Les posts en retard partent dans quelques minutes (le temps d'annuler),
             # ceux qui ont trop attendu ne partent plus (même règle que le Publisher).
             resume_at = now + timedelta(minutes=RESUME_DELAY_MINUTES)
-            go = [it for it in late if not is_stale(it, now)]
-            old = [it for it in late if is_stale(it, now)]
+            # Évalué à l'heure où ils partiraient, pour ne rien annoncer qui expirerait entre-temps.
+            go = [it for it in late if not is_stale(it, resume_at)]
+            old = [it for it in late if is_stale(it, resume_at)]
             for it in go:
                 self.state.update_item(it["id"], publish_at=iso(resume_at))
                 self.refresh_card(it)

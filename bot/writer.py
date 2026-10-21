@@ -875,6 +875,17 @@ class Writer:
         cited_urls = [c.url for c in cited if c.url]
         return url if is_allowed_screenshot_url(url, cited_urls) else None
 
+    def recent_all(self) -> list[str]:
+        """Textes récents de TOUS les types de posts + ceux en attente ou programmés :
+        une actu de 18 h 30 ne doit pas répéter le post réactif de 14 h."""
+        texts: list[str] = []
+        for k in ("gm", "tip", "news", "reactive", "thread"):
+            texts += [t for t in self.state.recent_texts(k) if isinstance(t, str)]
+        for it in self.state.items(kinds=("gm", "tip", "news", "reactive", "thread"),
+                                   statuses=("awaiting", "approved", "publishing")):
+            texts += [t for t in (it.get("texts") or [])[:1] if isinstance(t, str)]
+        return texts
+
     # ---- Sondages ------------------------------------------------------
     def _poll_dates(self) -> list:
         dates = self.state.data.setdefault("poll_dates", [])
@@ -883,13 +894,15 @@ class Writer:
         return dates
 
     def polls_left(self) -> int:
-        """Sondages encore permis sur les 7 derniers jours glissants (max 2)."""
+        """Sondages encore permis sur les 7 derniers jours glissants (max 2) : ceux
+        publiés (notés par le Publisher) + ceux en attente ou programmés."""
         limit = now_local() - timedelta(days=7)
         recent = 0
         for d in self._poll_dates():
             dt = parse_iso(d) if isinstance(d, str) else None
             if dt is not None and dt > limit:
                 recent += 1
+        recent += sum(1 for it in self.state.items(statuses=("awaiting", "approved")) if it.get("poll"))
         return max(0, POLL_MAX_PER_WEEK - recent)
 
     def _record_poll(self) -> None:
@@ -1012,6 +1025,9 @@ class Writer:
                     "releases. source_ids must be empty.")
         recent_b = self._recent_block(f"Your last {kind} posts (don't repeat their idea or structure):",
                                       self.state.recent_texts(kind))
+        others = [t for t in self.recent_all() if t not in self.state.recent_texts(kind)]
+        recent_b += self._recent_block("Your other recent or scheduled posts (never cover the same story "
+                                       "or idea again):", others[-8:], 8)
         poll_b = self._poll_line(polls_left) if kind in POLL_KINDS else ""
         return (
             f"Time slot: {mood}\n"
@@ -1031,7 +1047,7 @@ class Writer:
         system = GM_SYSTEM_PROMPT if kind == "gm" else SYSTEM_PROMPT
         sch = self._post_schema(kind)
         base_user = self._post_user(kind, items, notes, perf, polls_left)
-        recent = self.state.recent_texts(kind)
+        recent = self.recent_all()
         source_texts = [_item_text(i) for i in items]
         label = f"post-{kind}"
         feedback = ""
@@ -1040,18 +1056,19 @@ class Writer:
             if obj is None:
                 return None
             cand, problem = self._parse_post(kind, obj, items, notes, polls_left, recent, source_texts)
-            # Actu : toujours vérifiée (même sans source citée, pour attraper
-            # une « nouveauté » inventée) ; astuce : vérifiée si elle cite une actu.
-            if problem is None and (kind == "news" or cand.sources):
+            # Toujours vérifié : une actu inventée, mais aussi une « expérience
+            # perso » inventée (« j'ai trié 40 mails en 5 min ») dans un gm ou une astuce.
+            if problem is None:
                 verdict, issues = self._factcheck(cand.texts, cand.sources, cand.used_notes)
-                if verdict is None:
+                if verdict is None and (kind == "news" or cand.sources):
                     log.warning("Post %s : vérification factuelle indisponible, rien n'est proposé", kind)
                     return None
-                if not verdict:
+                if verdict is None:
+                    log.warning("Post %s : vérification factuelle indisponible, à relire de près", kind)
+                    cand.reason = f"{cand.reason} (⚠️ vérification des faits indisponible : relis bien)"
+                elif not verdict:
                     problem = f"vérification factuelle : {issues}"
             if problem is None:
-                if cand.poll:
-                    self._record_poll()
                 log.info("Post %s rédigé (essai %d) : %r | sources=%d | notes=%d | visuel=%s | sondage=%s",
                          kind, attempt, cand.texts[0][:120], len(cand.sources), len(cand.used_notes),
                          cand.visual.kind if cand.visual else "non", "oui" if cand.poll else "non")
@@ -1214,7 +1231,7 @@ class Writer:
         label = f"thread-{genre}"
         base_user = self._thread_user(genre, items, notes, perf)
         sch = self._thread_schema()
-        recent = self.state.recent_texts("thread")
+        recent = self.recent_all()
         source_texts = [_item_text(i) for i in items]
         feedback = ""
         for attempt in (1, 2):
@@ -1223,13 +1240,17 @@ class Writer:
             if obj is None:
                 return None
             cand, problem = self._parse_thread(genre, obj, items, notes, recent, source_texts)
-            # Thread d'actu : toujours vérifié ; les autres s'ils citent une actu.
-            if problem is None and (genre == "timely" or cand.sources):
+            # Toujours vérifié : faits d'actu, mais aussi anecdotes perso ou histoires
+            # « connues » (dates, chiffres, citations inventés).
+            if problem is None:
                 verdict, issues = self._factcheck(cand.texts, cand.sources, cand.used_notes)
-                if verdict is None:
+                if verdict is None and (genre == "timely" or cand.sources):
                     log.warning("Candidat thread [%s] : vérification factuelle indisponible", genre)
                     return None
-                if not verdict:
+                if verdict is None:
+                    log.warning("Candidat thread [%s] : vérification factuelle indisponible, à relire", genre)
+                    cand.reason = f"{cand.reason} (⚠️ vérification des faits indisponible : relis bien)"
+                elif not verdict:
                     problem = f"vérification factuelle : {issues}"
             if problem is None:
                 return cand
@@ -1327,7 +1348,7 @@ class Writer:
         if not fresh:
             log.info("Réactif : aucune actu fraîche (< %.0f h) exploitable", REACTIVE_MAX_AGE_H)
             return None
-        recent = self.state.recent_texts("reactive") + self.state.recent_texts("news")
+        recent = self.recent_all()
         sch = schema({"post": BOOL, "reason": STR, "text": STR, "source_ids": INT_LIST,
                       "used_note_ids": INT_LIST, "visual_url": STR, "image_prompt": STR})
         recent_b = self._recent_block("Posts this account published recently (never react twice to the same "

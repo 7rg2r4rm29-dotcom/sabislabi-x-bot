@@ -15,6 +15,7 @@ n'en fait pas.
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
@@ -26,14 +27,33 @@ import requests
 log = logging.getLogger("xbot.x_api")
 
 API = "https://api.x.com"
-URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\b[a-z0-9-]+\.(?:com|io|ai|org|net|co|dev|app)\b/?", re.I)
+# X transforme en lien tout nom de domaine sur un vrai TLD (« bolt.new »,
+# « labs.google », « t3.chat »…) et un post avec lien coûte 0,20 $ au lieu de
+# 0,015 $ : la détection est volontairement large (un faux positif fait juste
+# réécrire le texte).
+_TLDS = (
+    "com|net|org|io|ai|co|dev|app|new|google|xyz|tech|chat|studio|page|so|me|gg|tv|video|tools|site|"
+    "online|store|shop|blog|news|im|sh|fm|ly|to|art|design|run|cloud|inc|world|life|live|space|info|biz|"
+    "pro|one|plus|zone|wiki|link|click|top|vip|website|today|media|global|group|company|academy|ventures|"
+    "capital|fund|finance|money|codes|build|agency|digital|systems|works|network|work|email|cafe|guru|"
+    "ninja|rocks|social|team|bot|science|ink|mobi|asia|games|game|watch|stream|exchange|market|trade|club|"
+    "land|city|place|lol|wtf|fyi|edu|gov|us|uk|de|fr|ch|cn|jp|ca|eu|be|cc|in|it|es|nl|se|fi|dk|pl|pt|ru|"
+    "br|mx|ar|au|nz|kr|tw|hk|sg|vn|th|ph|za|ng|ke|ma|tn|il|ae|tr|gr|cz|at|ie|lu|li|is|ws|la|nu|sx|ac|gl|pw"
+)
+URL_RE = re.compile(
+    r"https?://\S+|\bwww\.\S+"
+    r"|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:" + _TLDS + r")\b(?![-.]?[a-z0-9])"
+    r"|\b[a-z0-9][a-z0-9-]*\.[a-z]{2,}/\S",
+    re.I,
+)
 
 TWEET_FIELDS = "created_at,author_id,conversation_id,in_reply_to_user_id,referenced_tweets,public_metrics,lang"
 
 
 class XError(RuntimeError):
     """Erreur API X. `kind` : auth | credits | rate_limited | not_summoned |
-    duplicate | forbidden | not_found | invalid | server | network | budget | dry_run"""
+    duplicate | forbidden | not_found | invalid | server | network | budget | dry_run |
+    uncertain (écriture envoyée mais réponse perdue : le post est PEUT-ÊTRE en ligne)"""
 
     def __init__(self, kind: str, message: str, status: int | None = None, reset_at: float | None = None):
         super().__init__(message)
@@ -105,20 +125,34 @@ class XClient:
         return XError("server", detail, status)
 
     def _req(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None,
-             files: dict | None = None, data: dict | None = None) -> dict:
+             files: dict | None = None, data: dict | None = None, retry: bool | None = None) -> dict:
+        """Une écriture n'est JAMAIS renvoyée à l'aveugle (sauf `retry=True`) : si X a
+        pu la recevoir (délai dépassé, coupure, erreur 5xx), XError("uncertain") et le
+        Publisher vérifie sur le profil avant de republier (sinon : doublon)."""
         if not self.configured:
             raise XError("auth", "Clés API X absentes")
+        if retry is None:
+            retry = method.upper() == "GET"
         url = f"{API}{path}"
         last_exc: Exception | None = None
         for attempt in (1, 2):
             try:
                 resp = self.session.request(method, url, params=params, json=json_body, files=files,
                                             data=data, timeout=(10, 45))
-            except requests.RequestException as e:
+            except requests.ConnectTimeout as e:  # connexion jamais établie : rien n'est parti
                 last_exc = e
-                log.warning("API X %s %s : réseau (%s), essai %d/2", method, path, e, attempt)
+                log.warning("API X %s %s : connexion impossible, essai %d/2", method, path, attempt)
                 time.sleep(3)
                 continue
+            except requests.RequestException as e:
+                last_exc = e
+                if not retry:
+                    raise XError("uncertain", f"réponse de X perdue ({type(e).__name__})") from e
+                log.warning("API X %s %s : réseau (%s), essai %d/2", method, path, type(e).__name__, attempt)
+                time.sleep(3)
+                continue
+            if resp.status_code >= 500 and not retry:
+                raise XError("uncertain", f"HTTP {resp.status_code} de X", resp.status_code)
             if resp.status_code >= 500 and attempt == 1:
                 log.warning("API X %s %s : HTTP %s, nouvel essai", method, path, resp.status_code)
                 time.sleep(3)
@@ -164,7 +198,7 @@ class XClient:
             raise XError("budget", "Budget mensuel API X atteint")
         with open(path, "rb") as f:
             data = self._req("POST", "/2/media/upload", files={"media": f},
-                             data={"media_category": "tweet_image"})
+                             data={"media_category": "tweet_image"}, retry=True)  # sans effet visible
         self.budget.record("media")
         media_id = str((data.get("data") or {}).get("id") or "")
         if not media_id:
@@ -216,8 +250,10 @@ class XClient:
     # ------------------------------------------------------------------
     # Lecture
     # ------------------------------------------------------------------
-    def mentions(self, since_id: str | None = None, max_results: int = 50) -> tuple[list[dict], dict, str | None]:
+    def mentions(self, since_id: str | None = None, max_results: int = 50,
+                 max_pages: int = 4) -> tuple[list[dict], dict, str | None]:
         """Mentions de mon compte (dont les réponses à mes posts). Owned read.
+        Suit la pagination (une nuit chargée dépasse vite 50 mentions).
         Retourne (posts, {author_id: user}, newest_id)."""
         if not self.configured:
             return [], {}, since_id
@@ -229,15 +265,40 @@ class XClient:
         }
         if since_id:
             params["since_id"] = since_id
-        data = self._req("GET", f"/2/users/{self.user_id()}/mentions", params=params)
-        tweets = data.get("data") or []
-        users = {u["id"]: u for u in (data.get("includes") or {}).get("users", [])}
-        self.budget.record("owned_read", len(tweets))
-        newest = (data.get("meta") or {}).get("newest_id") or since_id
+        tweets: list[dict] = []
+        users: dict = {}
+        newest = since_id
+        for page in range(max(1, max_pages)):
+            data = self._req("GET", f"/2/users/{self.user_id()}/mentions", params=params)
+            batch = data.get("data") or []
+            tweets.extend(batch)
+            users.update({u["id"]: u for u in (data.get("includes") or {}).get("users", [])})
+            self.budget.record("owned_read", len(batch))
+            meta = data.get("meta") or {}
+            if page == 0:
+                newest = meta.get("newest_id") or since_id
+            token = meta.get("next_token")
+            if not token or not batch:
+                break
+            params = dict(params, pagination_token=token)
+        else:
+            log.info("Mentions : plus de %d pages d'un coup, les plus anciennes sont ignorées", max_pages)
         return tweets, users, newest
 
     def my_recent_posts(self, max_results: int = 50) -> list[dict]:
-        """Mes posts récents avec leurs statistiques publiques. Owned read."""
+        """Mes posts récents (sans mes réponses) avec leurs statistiques. Owned read."""
+        if not self.configured:
+            return []
+        params = {"max_results": max(5, min(100, max_results)), "tweet.fields": TWEET_FIELDS,
+                  "exclude": "retweets,replies"}
+        data = self._req("GET", f"/2/users/{self.user_id()}/tweets", params=params)
+        tweets = data.get("data") or []
+        self.budget.record("owned_read", len(tweets))
+        return tweets
+
+    def recent_own_tweets(self, max_results: int = 20) -> list[dict]:
+        """Mes derniers tweets, réponses comprises (vérifier si une publication
+        incertaine est en ligne). Owned read."""
         if not self.configured:
             return []
         params = {"max_results": max(5, min(100, max_results)), "tweet.fields": TWEET_FIELDS,
@@ -280,6 +341,11 @@ class XClient:
             for u in users:
                 out[str(u["username"]).lower()] = str(u["id"])
         return out
+
+
+def tweet_text(tw: dict) -> str:
+    """Texte d'un tweet tel que l'API le renvoie, sans les entités HTML (&amp;…)."""
+    return html.unescape(str((tw or {}).get("text") or ""))
 
 
 def intent_reply_url(tweet_id: str, text: str) -> str:

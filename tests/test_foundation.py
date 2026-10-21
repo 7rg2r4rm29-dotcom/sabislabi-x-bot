@@ -229,10 +229,39 @@ class TestXClient:
             x.post("hello")
         assert ei.value.kind == kind
 
-    def test_server_error_retried_once(self, settings, state, clock, monkeypatch):
+    def test_server_error_on_post_is_uncertain_never_resent(self, settings, state, clock, monkeypatch):
         monkeypatch.setattr("bot.x_api.time.sleep", lambda s: None)
         x, _ = self._client(settings, state, [FakeResp(503), FakeResp(201, {"data": {"id": "7"}})])
-        assert x.post("hello") == "7"
+        with pytest.raises(XError) as ei:
+            x.post("hello")
+        assert ei.value.kind == "uncertain"
+        assert len(x.session.requests) == 1        # pas de 2e envoi à l'aveugle
+
+    def test_server_error_on_read_retried_once(self, settings, state, clock, monkeypatch):
+        monkeypatch.setattr("bot.x_api.time.sleep", lambda s: None)
+        x, _ = self._client(settings, state, [FakeResp(503), FakeResp(200, {"data": {"id": "42",
+                                                                                 "username": "sabislabi"}})])
+        assert x.me()["username"] == "sabislabi"
+        assert len(x.session.requests) == 2
+
+    def test_lost_response_on_post_is_uncertain(self, settings, state, clock, monkeypatch):
+        import requests as rq
+        monkeypatch.setattr("bot.x_api.time.sleep", lambda s: None)
+        x, _ = self._client(settings, state, [rq.ReadTimeout("slow"), FakeResp(201, {"data": {"id": "7"}})])
+        with pytest.raises(XError) as ei:
+            x.post("hello")
+        assert ei.value.kind == "uncertain" and len(x.session.requests) == 1
+
+    @pytest.mark.parametrize("text", ["bolt.new is wild", "try t3.chat", "check notebooklm.google",
+                                      "deepmind.google just posted", "kimi.moonshot.cn", "manus.im/app",
+                                      "youtu.be/abc", "claude.ai", "the x.ai team"])
+    def test_domains_count_as_links(self, text):
+        assert contains_url(text)
+
+    @pytest.mark.parametrize("text", ["e.g. this", "node.js rocks", "gpt-4.5 is out", "U.S. users",
+                                      "claude.md file", "9 a.m. sharp", "vs. chatgpt", "gpt-5.5 vs claude 5"])
+    def test_ordinary_text_is_not_a_link(self, text):
+        assert not contains_url(text)
 
     def test_thread_partial_ids(self, settings, state, clock):
         x, _ = self._client(settings, state, [FakeResp(201, {"data": {"id": "1"}}),
@@ -341,3 +370,71 @@ class TestLLM:
         llm = LLM(settings, state, client=fake)
         assert llm.json("t", "s", "u", SCHEMA)["ok"] is True
         assert fake.calls[1][0] == "std"
+
+    def test_circuit_breaker_after_repeated_outages(self, settings, state, clock, monkeypatch):
+        import anthropic
+        import httpx2 as httpx  # noqa: F401  (anthropic 1.x)
+        from bot import llm as llm_mod
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        t = {"now": 1000.0}
+        monkeypatch.setattr("time.monotonic", lambda: t["now"])
+        fake = FakeAnthropic([anthropic.APITimeoutError(request=req), anthropic.APITimeoutError(request=req),
+                              _resp('{"ok": true, "text": "back"}')])
+        llm = LLM(settings, state, client=fake)
+        assert llm.json("a", "s", "u", SCHEMA) is None
+        assert llm.json("b", "s", "u", SCHEMA) is None
+        assert llm.json("c", "s", "u", SCHEMA) is None      # coupe-circuit : pas d'appel
+        assert len(fake.calls) == 2
+        t["now"] += llm_mod.BREAKER_PAUSE_S + 1
+        assert llm.json("d", "s", "u", SCHEMA)["text"] == "back"
+
+    def test_real_client_timeout_is_long_enough(self, settings, state):
+        settings.anthropic_api_key = "sk-test"
+        c = LLM(settings, state).client
+        assert c.timeout.read >= 400 and c.max_retries <= 1
+
+
+# ---------------------------------------------------------------------------
+# Garde-fous ajoutés après relecture
+# ---------------------------------------------------------------------------
+class TestReviewFixes:
+    @pytest.mark.parametrize("text", ["I use the same trick when troubleshooting my prompts",
+                                      "Strip your prompt down to the task", "skilled workers + AI",
+                                      "devote 10 minutes a day", "a trip to the lab"])
+    def test_hard_block_no_longer_hits_inside_words(self, text):
+        assert filters.hard_blocked(text) is None
+
+    @pytest.mark.parametrize("text", ["he was killed", "RIP to my old workflow", "the election"])
+    def test_hard_block_still_blocks_real_terms(self, text):
+        assert filters.hard_blocked(text)
+
+    @pytest.mark.parametrize("text", ["polymarket traders bet on gpt-6", "day trading with chatgpt",
+                                      "prediction markets think", "xrp holders", "the token sale"])
+    def test_speculation_is_off_limits(self, text):
+        assert filters.off_limits_term(text)
+
+    def test_handles_are_validated(self):
+        w = []
+        out = cfg._handles(["@sama", "https://x.com/OpenAI", "twitter.com/karpathy/", "Sam Altman",
+                            "this_handle_is_way_too_long", "SAMA"], w)
+        assert out == ["sama", "OpenAI", "karpathy"]
+        assert len(w) == 2
+
+    def test_bad_optional_setting_falls_back_with_warning(self, monkeypatch):
+        monkeypatch.setenv("THREAD_SLOTS", "mardi@15:00,dimanche@17h")
+        monkeypatch.setenv("POST_SLOTS", "gm@8h30,tip@25:00")
+        monkeypatch.setenv("QUIET_HOURS", "")
+        monkeypatch.setenv("HEALTH_REPORT_AT", "")
+        monkeypatch.setenv("WEEKLY_REPORT_AT", "off")
+        s = cfg.load_settings()
+        assert [(sl.weekday, sl.at.hour) for sl in s.thread_slots] == [(1, 15), (6, 17)]  # français accepté
+        assert [sl.kind for sl in s.post_slots] == ["gm", "tip", "news"]                   # défaut
+        assert any("POST_SLOTS" in w for w in s.warnings)
+        assert s.quiet_hours is not None and s.health_report_at.hour == 8
+        assert s.weekly_report is None
+
+    def test_watchdog_is_fed_even_at_warning_level(self):
+        from bot import utils
+        utils._last_log_time = 0.0
+        utils.touch_watchdog()
+        assert utils._last_log_time > 0

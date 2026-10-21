@@ -33,6 +33,7 @@ from .utils import at_local, in_window, iso, minutes_between, now_local, parse_i
 log = logging.getLogger("xbot.scheduler")
 
 TICK_SLEEP_S = 20
+TICK_BUDGET_S = 240     # au-delà, les étapes facultatives attendent le tour suivant
 ERROR_SLEEP_S = 60
 WATCHDOG_S = 420
 ANALYTICS_EVERY_MIN = 180
@@ -225,16 +226,28 @@ class Bot:
         started = time.monotonic()
         self._ticks += 1
         res: dict[str, Any] = {}
+        # Expiration d'abord : un ✅ en attente depuis un arrêt du bot ne doit pas
+        # faire partir un post dont le délai est passé.
+        res["expire"] = self._step("expiration", self.approvals.expire_due)
         res["poll"] = self._step("Telegram", self.approvals.poll)
         res["publish"] = self._step("publication", self.publisher.publish_due)
-        res["expire"] = self._step("expiration", self.approvals.expire_due)
         paused = bool(self.state.data.get("paused"))
         if not paused:
             res["plan"] = self._step("créneaux", self.plan_slots)
-            if not res["plan"]:  # une seule rédaction (lente) par tour
-                res["reactive"] = self._step("post réactif", self.maybe_reactive)
-            res["comments"] = self._step("commentaires", self.comments.check)
-            res["radar"] = self._step("radar", self.radar.check)
+            # Entre deux étapes lentes (Claude), on traite les boutons et ce qui doit
+            # partir : un ✅ ou un post à l'heure n'attend jamais la fin du tour.
+            res["publish_mid"] = self._between()
+            optional = (("post réactif", "reactive", self.maybe_reactive),
+                        ("commentaires", "comments", self.comments.check),
+                        ("radar", "radar", self.radar.check))
+            for label, key, fn in optional:
+                if key == "reactive" and res["plan"]:
+                    continue  # une seule rédaction (lente) par tour
+                if time.monotonic() - started > TICK_BUDGET_S:
+                    log.info("Tour long (%.0f s) : %s reporté au tour suivant", time.monotonic() - started, label)
+                    continue
+                res[key] = self._step(label, fn)
+                res["publish_mid"] += self._between()
         res["metrics"] = self._step("statistiques", self.maybe_analytics)
         res["daily"] = self._step("récap du matin", self.maybe_daily_report)
         res["weekly"] = self._step("bilan de la semaine", self.maybe_weekly_report)
@@ -244,12 +257,17 @@ class Bot:
         self._heartbeat(paused, time.monotonic() - started, res)
         return res
 
+    def _between(self) -> int:
+        self._step("Telegram", self.approvals.poll)
+        return int(self._step("publication", self.publisher.publish_due) or 0)
+
     def _heartbeat(self, paused: bool, duration: float, res: dict) -> None:
         try:
             awaiting = len(self.state.items(statuses=("awaiting",)))
             approved = len(self.state.items(statuses=("approved",)))
             done = [k for k in ("plan", "reactive", "comments", "radar") if res.get(k)]
-            published = int(res.get("publish") or 0) + int(res.get("publish2") or 0)
+            published = (int(res.get("publish") or 0) + int(res.get("publish2") or 0)
+                         + int(res.get("publish_mid") or 0))
             log.info("Tour %d (%.0f s)%s : %d à valider, %d programmé(s)%s%s", self._ticks, duration,
                      " EN PAUSE" if paused else "", awaiting, approved,
                      f", {published} publié(s)" if published else "",
@@ -270,6 +288,7 @@ class Bot:
             try:
                 try:
                     self.tick()
+                    utils.touch_watchdog()
                     pause = TICK_SLEEP_S
                 except Exception as e:  # noqa: BLE001
                     log.exception("Erreur inattendue dans la boucle : %s", e)
@@ -311,6 +330,8 @@ class Bot:
             bits.append("🧪 simulation (DRY_RUN=true) : rien ne sera vraiment publié")
         if self.state.data.get("paused"):
             bits.append("⏸️ en pause : /reprendre pour relancer")
+        for w in (getattr(s, "warnings", None) or [])[:8]:
+            bits.append(f"⚠️ Réglage ignoré : {esc(w)}")
         bits.append("/aide pour les commandes")
         self.approvals.notify("\n".join(bits), silent=True)
 

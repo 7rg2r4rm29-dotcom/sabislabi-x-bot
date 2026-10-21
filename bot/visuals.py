@@ -469,7 +469,11 @@ def _prepare(settings, draft, writer, tag: str) -> tuple[str | None, str | None]
         if not getattr(settings, "screenshots_enabled", False):
             log.info("Capture ignorée : SCREENSHOTS_ENABLED=false")
             return None, None
-        if not is_allowed_url(target):
+        cited = {str(getattr(src, "url", "") or "").strip().rstrip("/").lower()
+                 for src in (getattr(draft, "sources", None) or [])}
+        is_cited = target.rstrip("/").lower() in cited and not is_x_url(target) \
+            and urlparse(target).scheme in ("http", "https")
+        if not (is_allowed_url(target) or is_cited):
             log.warning("Capture refusée (x.com / twitter.com ou site hors liste) : %s", target[:120])
             return None, None
         shot = capture_with_timeout(target, tag)

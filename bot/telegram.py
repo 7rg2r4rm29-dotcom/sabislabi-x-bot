@@ -32,17 +32,23 @@ class Telegram:
         self.chat_id = str(chat_id)
         self.api = f"https://api.telegram.org/bot{token}"
         self.session = session or requests.Session()
+        self.last_error = ""
 
     def _call(self, method: str, payload: dict) -> Any:
+        """Résultat, ou None. `last_error` dit pourquoi : "network" (réponse perdue :
+        le message est peut-être arrivé) ou la description renvoyée par Telegram."""
+        self.last_error = ""
         try:
             r = self.session.post(f"{self.api}/{method}", json=payload, timeout=20)
             data = r.json()
         except (requests.RequestException, ValueError) as e:
-            # Ne jamais logger l'URL : elle contient le jeton du bot.
+            # Ne jamais logger l'URL ni l'exception brute : elles contiennent le jeton du bot.
             log.warning("Telegram %s : réseau (%s)", method, type(e).__name__)
+            self.last_error = "network"
             return None
         if not data.get("ok"):
-            log.warning("Telegram %s : %s", method, str(data.get("description"))[:200])
+            self.last_error = str(data.get("description") or "erreur")[:200]
+            log.warning("Telegram %s : %s", method, self.last_error)
             return None
         return data.get("result")
 

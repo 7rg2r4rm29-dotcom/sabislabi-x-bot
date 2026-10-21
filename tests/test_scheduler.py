@@ -491,8 +491,9 @@ class TestTick:
         bot = make_bot(settings, state, budget, parts)
         clock(10, 0)
         bot.tick()
-        assert parts["approvals"].polls == 2
-        assert parts["publisher"].publish_due.n == 2
+        # début + après chaque étape lente (créneaux, réactif, commentaires, radar) + fin
+        assert parts["approvals"].polls == 6
+        assert parts["publisher"].publish_due.n == 6
         assert parts["approvals"].expires == 1
         assert parts["comments"].check.n == 1
         assert parts["radar"].check.n == 1
@@ -516,7 +517,16 @@ class TestTick:
         res = bot.tick()
         assert res["comments"] is None
         assert parts["radar"].check.n == 1
-        assert parts["approvals"].polls == 2
+        assert parts["approvals"].polls == 6
+
+    def test_long_tick_postpones_optional_steps(self, settings, state, budget, parts, clock, monkeypatch):
+        bot = make_bot(settings, state, budget, parts)
+        clock(10, 0)
+        t = iter([0.0] + [1000.0] * 50)
+        monkeypatch.setattr(sched.time, "monotonic", lambda: next(t))
+        bot.tick()
+        assert parts["comments"].check.n == 0 and parts["radar"].check.n == 0
+        assert parts["publisher"].publish_due.n >= 2
 
     def test_one_drafting_per_tick_skips_reactive(self, settings, state, budget, parts, clock):
         settings.reactive_window = (dtime(0, 0), dtime(23, 59))

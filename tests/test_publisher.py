@@ -43,8 +43,9 @@ def test_publish_simple_post(pub, state, fake_x, fake_tg, clock):
     assert pub.publish_due() == 1
     assert item["status"] == "published"
     assert item["published_ids"] == ["1000"]
-    assert fake_x.posts == [{"id": "1000", "text": "A tip worth trying today.", "reply_to": None,
-                             "media_ids": None, "poll": None, "made_with_ai": False}]
+    assert [{k: v for k, v in p.items() if k != "created_at"} for p in fake_x.posts] == [
+        {"id": "1000", "text": "A tip worth trying today.", "reply_to": None,
+         "media_ids": None, "poll": None, "made_with_ai": False}]
     last = state.data["published"][-1]
     assert last["tweet_id"] == "1000" and last["kind"] == "tip" and last["item_id"] == item["id"]
     assert last["slot_key"] == "tip-1400"
@@ -98,6 +99,88 @@ def test_half_published_thread_is_finished_even_late(pub, state, fake_x, clock):
     assert pub.publish_due() == 1
     assert th["status"] == "published"
     assert th["published_ids"][0] == "900"
+
+
+# ---------------------------------------------------------------------------
+# Réponse de X perdue : jamais de doublon
+# ---------------------------------------------------------------------------
+def test_lost_response_is_checked_on_profile_not_reposted(pub, state, fake_x, fake_tg, clock):
+    clock(14, 0)
+    item = approved(state, texts=["A tip worth trying today."])
+    fake_x.lose_response_next = 1          # X crée le post mais la réponse se perd
+    assert pub.publish_due() == 0
+    assert item["status"] == "approved" and item["meta"]["uncertain"] is True
+    assert len(fake_x.posts) == 1
+    clock(14, 4)
+    assert pub.publish_due() == 1
+    assert len(fake_x.posts) == 1          # retrouvé sur le profil, pas republié
+    assert item["status"] == "published" and item["published_ids"] == [fake_x.posts[0]["id"]]
+    assert "uncertain" not in item["meta"]
+    assert state.data["published"][-1]["tweet_id"] == fake_x.posts[0]["id"]
+
+
+def test_lost_response_really_failed_is_posted_once(pub, state, fake_x, clock):
+    clock(14, 0)
+    item = approved(state, texts=["A tip worth trying today."])
+    fake_x.lose_response_next = 1
+    pub.publish_due()
+    fake_x.posts.clear()                    # en réalité rien n'était parti
+    clock(14, 4)
+    assert pub.publish_due() == 1
+    assert [p["text"] for p in fake_x.posts] == ["A tip worth trying today."]
+    assert item["status"] == "published"
+
+
+def test_duplicate_after_lost_response_is_not_reported_as_failure(pub, state, fake_x, fake_tg, clock):
+    clock(14, 0)
+    item = approved(state, texts=["A tip worth trying today."])
+    fake_x.fail_next = [XError("network", "coupure")]
+    pub.publish_due()                       # 1er essai raté (réseau) -> nouvel essai
+    clock(14, 11)
+    fake_x.fail_next = [XError("duplicate", "duplicate content")]
+    fake_x.posts.append({"id": "777", "text": "A tip worth trying today.", "reply_to": None,
+                         "media_ids": None, "poll": None, "made_with_ai": False,
+                         "created_at": "2026-10-15T12:05:00.000Z"})
+    pub.publish_due()
+    assert item["status"] == "approved" and item["meta"].get("uncertain")
+    assert not any("n'a pas été publiée" in m["text"] for m in fake_tg.sent)
+    clock(14, 15)
+    assert pub.publish_due() == 1
+    assert item["published_ids"] == ["777"]
+
+
+def test_thread_lost_response_mid_thread_resumes_without_duplicate(pub, state, fake_x, clock):
+    clock(15, 0)
+    item = approved(state, kind="thread", texts=[HOOK, "two", "three"])
+    fake_x.fail_next = []
+    real_post = fake_x.post
+    calls = {"n": 0}
+
+    def post(text, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            fake_x.lose_response_next = 1
+        return real_post(text, **kw)
+
+    fake_x.post = post
+    pub.publish_due()
+    assert item["meta"]["partial_ids"] == ["1000"] and item["meta"]["uncertain"]
+    clock(15, 4)
+    assert pub.publish_due() == 1
+    assert [p["text"] for p in fake_x.posts] == [HOOK, "two", "three"]
+    assert item["published_ids"] == ["1000", "1001", "1002"]
+
+
+def test_uncertain_forever_ends_with_check_your_profile(pub, state, fake_x, fake_tg, clock):
+    clock(14, 0)
+    item = approved(state, texts=["A tip worth trying today."])
+    for minute in (0, 4, 8, 12, 16):
+        clock(14, minute)
+        fake_x.fail_next = [XError("uncertain", "perdu")]
+        fake_x.posts.clear()
+        pub.publish_due()
+    assert item["status"] == "failed"
+    assert "profil" in item["last_error"]
 
 
 def test_awaiting_items_are_never_published(pub, state, fake_x):
@@ -343,12 +426,25 @@ def test_rate_limited_with_reset(pub, state, fake_x, fake_tg, clock):
     when = parse_iso(item["publish_at"])
     assert reset <= when <= reset + timedelta(minutes=1)
     assert item["meta"]["retry_at"] == item["publish_at"]
-    assert "Nouvel essai à 10:07" in fake_tg.sent[-1]["text"]
+    assert any("Nouvel essai à 10:07" in m["text"] for m in fake_tg.sent)
+    assert "X limite le nombre de publications" in fake_tg.sent[-1]["text"]
     assert pub.publish_due() == 0  # pas avant l'heure
     clock(10, 8)
     assert pub.publish_due() == 1
     assert item["status"] == "published" and item["last_error"] == ""
     assert "retry_at" not in item["meta"]
+
+
+def test_rate_limit_for_hours_does_not_publish_a_stale_gm(pub, state, fake_x, fake_tg, clock):
+    clock(8, 30)
+    gm = approved(state, kind="gm", texts=["gm. one small thing today."])
+    reset = now_local() + timedelta(hours=20)
+    fake_x.fail_next = [XError("rate_limited", "Too Many Requests", 429, reset_at=reset.timestamp())]
+    pub.publish_due()
+    clock(4, 31, day=16)
+    assert pub.publish_due() == 0
+    assert fake_x.posts == [] and gm["status"] == "expired"
+    assert "08:30" in gm["last_error"]
 
 
 def test_rate_limited_without_reset(pub, state, fake_x):
@@ -460,3 +556,12 @@ def test_full_flow_through_telegram(settings, state, fake_tg, fake_x, clock):
     assert pub.publish_due() == 1
     assert fake_tg.edits[-1]["id"] == item["tg_message_id"]
     assert "https://x.com/sabislabi/status/1000" in fake_tg.edits[-1]["text"]
+
+
+
+def test_poll_is_counted_when_published(pub, state, fake_x, clock):
+    item = approved(state, texts=["quick one: where do you draft your emails?"],
+                    poll={"options": ["Claude", "ChatGPT"], "duration_minutes": 1440})
+    assert pub.publish_due() == 1
+    assert fake_x.posts[0]["poll"]["options"] == ["Claude", "ChatGPT"]
+    assert len(state.data["poll_dates"]) == 1 and item["status"] == "published"

@@ -35,22 +35,34 @@ class LLMError(RuntimeError):
     pass
 
 
+# Coupe-circuit : après 2 pannes réseau / délais dépassés / surcharges de suite,
+# on n'appelle plus Claude pendant 10 min (sinon chaque appel bloque la boucle
+# plusieurs minutes et les publications validées attendent).
+BREAKER_FAILURES = 2
+BREAKER_PAUSE_S = 600
+
+
 class LLM:
     def __init__(self, settings, state=None, client=None) -> None:
         self.settings = settings
         self.state = state
         self._client = client
         self._fallback_ok = settings.use_server_fallback
+        self._failures = 0
+        self._paused_until = 0.0
 
     # ------------------------------------------------------------------
     @property
     def client(self):
         if self._client is None:
             import anthropic
+            # Réflexion + 16 000 jetons sans streaming : une réponse peut prendre
+            # plusieurs minutes (l'API compte jusqu'à ~450 s). 150 s coupait des
+            # réponses valides, refacturées à chaque nouvel essai.
             self._client = anthropic.Anthropic(
                 api_key=self.settings.anthropic_api_key,
-                timeout=anthropic.Timeout(150.0, connect=10.0),
-                max_retries=2,
+                timeout=anthropic.Timeout(420.0, connect=10.0),
+                max_retries=1,
             )
         return self._client
 
@@ -61,8 +73,29 @@ class LLM:
         return self.client.messages.create(**kwargs)
 
     def _call(self, label: str, kwargs: dict) -> Any | None:
+        import time
+
         import anthropic
-        with heartbeat(f"claude {label}", every_s=60.0, max_total_s=480.0):
+        if time.monotonic() < self._paused_until:
+            log.info("Claude [%s] : en pause après des pannes répétées, appel sauté", label)
+            return None
+        resp = self._call_once(label, kwargs, anthropic)
+        if resp is None and self._last_was_outage:
+            self._failures += 1
+            if self._failures >= BREAKER_FAILURES:
+                self._paused_until = time.monotonic() + BREAKER_PAUSE_S
+                self._failures = 0
+                log.error("Claude : %d pannes de suite, plus d'appel pendant %d min", BREAKER_FAILURES,
+                          BREAKER_PAUSE_S // 60)
+        elif resp is not None:
+            self._failures = 0
+        return resp
+
+    _last_was_outage = False
+
+    def _call_once(self, label: str, kwargs: dict, anthropic) -> Any | None:
+        self._last_was_outage = False
+        with heartbeat(f"claude {label}", every_s=60.0, max_total_s=900.0):
             try:
                 return self._request(kwargs)
             except anthropic.BadRequestError as e:
@@ -84,10 +117,12 @@ class LLM:
                 log.warning("Claude [%s] : limite de débit, on réessaiera plus tard", label)
                 return None
             except anthropic.APIStatusError as e:
+                self._last_was_outage = int(getattr(e, "status_code", 0) or 0) >= 500
                 log.error("Claude [%s] : erreur API %s : %s", label, e.status_code, str(e)[:200])
                 return None
-            except anthropic.APIConnectionError as e:
-                log.error("Claude [%s] : réseau indisponible : %s", label, e)
+            except anthropic.APIConnectionError as e:  # dont APITimeoutError
+                self._last_was_outage = True
+                log.error("Claude [%s] : réseau indisponible ou délai dépassé : %s", label, type(e).__name__)
                 return None
 
     # ------------------------------------------------------------------

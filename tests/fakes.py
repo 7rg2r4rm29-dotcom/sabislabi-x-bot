@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import itertools
+from datetime import timezone
 from typing import Any, Callable
 
+from bot import utils
 from bot.x_api import XError
 
 
@@ -44,6 +46,7 @@ class FakeX:
         self.ids_map: dict[str, str] = {}
         self.recent_posts: list[dict] = []
         self.fail_next: list[XError] = []
+        self.lose_response_next = 0   # n prochains posts : créés sur X, mais réponse perdue
         self.calls: list[tuple] = []
         self.me_id = "42"
 
@@ -64,7 +67,11 @@ class FakeX:
             raise self.fail_next.pop(0)
         tid = str(next(self._ids))
         self.posts.append({"id": tid, "text": text, "reply_to": reply_to, "media_ids": media_ids,
-                           "poll": poll, "made_with_ai": made_with_ai})
+                           "poll": poll, "made_with_ai": made_with_ai,
+                           "created_at": utils.now_local().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")})
+        if self.lose_response_next:
+            self.lose_response_next -= 1
+            raise XError("uncertain", "réponse de X perdue (ReadTimeout)")
         return tid
 
     def post_thread(self, texts, media_ids_first=None, made_with_ai=False) -> list[str]:
@@ -83,6 +90,16 @@ class FakeX:
         if self.mention_batches:
             return self.mention_batches.pop(0)
         return [], {}, since_id
+
+    def recent_own_tweets(self, max_results: int = 20):
+        self.calls.append(("recent_own_tweets",))
+        out = []
+        for p in reversed(self.posts[-max_results:]):
+            tw = {"id": p["id"], "text": p["text"], "created_at": p["created_at"]}
+            if p["reply_to"]:
+                tw["referenced_tweets"] = [{"type": "replied_to", "id": p["reply_to"]}]
+            out.append(tw)
+        return out
 
     def my_recent_posts(self, max_results: int = 50):
         self.calls.append(("my_recent_posts",))
@@ -137,17 +154,19 @@ class FakeTelegram:
     # --- aides pour fabriquer des updates ---
     _uid = itertools.count(1)
 
-    def push_callback(self, data: str, message_id: int | None = None) -> None:
+    def push_callback(self, data: str, message_id: int | None = None, from_id: str | None = None) -> None:
         self.pending_updates.append({
             "update_id": next(self._uid),
             "callback_query": {"id": f"cb{next(self._uid)}", "data": data,
                                "message": {"message_id": message_id or 0, "chat": {"id": self.chat_id}},
-                               "from": {"id": 1}},
+                               "from": {"id": int(from_id or self.chat_id)}},
         })
 
-    def push_message(self, text: str, reply_to: int | None = None, chat_id: str | None = None) -> None:
+    def push_message(self, text: str, reply_to: int | None = None, chat_id: str | None = None,
+                     from_id: str | None = None) -> None:
         msg: dict[str, Any] = {"message_id": next(self._ids), "text": text,
-                               "chat": {"id": chat_id or self.chat_id}}
+                               "chat": {"id": chat_id or self.chat_id},
+                               "from": {"id": int(from_id or chat_id or self.chat_id)}}
         if reply_to:
             msg["reply_to_message"] = {"message_id": reply_to}
         self.pending_updates.append({"update_id": next(self._uid), "message": msg})

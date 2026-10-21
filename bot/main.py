@@ -129,7 +129,8 @@ def config_summary(settings) -> list[str]:
         has_openai = importlib.util.find_spec("openai") is not None
     except (ImportError, ValueError):
         has_pw = has_openai = False
-    return [
+    warn = [f"⚠️ {w}" for w in (getattr(s, "warnings", None) or [])]
+    return warn + [
         f"Compte : @{s.handle or '?'} (X_USER_ID {_defined(s.x_user_id)})",
         f"Mode : {'validation sur Telegram' if s.approval_mode == 'telegram' else 'AUTOMATIQUE'} · "
         f"DRY_RUN : {'oui (simulation, rien n’est publié)' if s.dry_run else 'non (publication réelle)'}",
@@ -275,6 +276,39 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
 
 
 # ---------------------------------------------------------------------------
+# Le service ne peut pas démarrer : le dire dans le journal ET sur Telegram
+# ---------------------------------------------------------------------------
+CONFIG_ALERT_EVERY_S = 6 * 3600
+
+
+def alert_config_problem(errors: list[str]) -> None:
+    """Sinon le bot redémarre en boucle sans que personne ne le sache (le message ne
+    partirait que sur la sortie standard). Une alerte Telegram toutes les 6 h au plus."""
+    import os
+    import time
+    for err in errors:
+        log.error("Démarrage impossible : %s", err)
+    token, chat = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not (token and chat):
+        return
+    marker = utils.STATE_DIR / "config_alert.ts"
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < CONFIG_ALERT_EVERY_S:
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(int(time.time())))
+    except OSError:
+        pass
+    try:
+        from .telegram import Telegram, esc
+        Telegram(token, chat).send("❌ <b>Le bot ne peut pas démarrer</b> (config/.env) :\n• "
+                                   + "\n• ".join(esc(e) for e in errors[:6])
+                                   + "\nCorrige le réglage puis relance le bot. Rien n'est publié en attendant.")
+    except Exception as e:  # noqa: BLE001
+        log.warning("Alerte Telegram impossible (%s)", type(e).__name__)
+
+
+# ---------------------------------------------------------------------------
 # Verrou : une seule instance à la fois sur un même état
 # ---------------------------------------------------------------------------
 def acquire_lock(state_path: str | Path | None):
@@ -370,14 +404,18 @@ def main(argv: list[str] | None = None) -> int:
     from .config import load_settings
     try:
         settings = load_settings()
-    except ValueError as e:  # ConfigError en hérite (horaire mal écrit, jour inconnu…)
+    except ValueError as e:  # ConfigError en hérite
         print(f"❌ Configuration invalide : {e}")
+        if not (args.check or args.once):
+            alert_config_problem([str(e)])
         return EXIT_CONFIG
     errors = settings.validate()
     if errors:
         print("❌ Configuration incomplète (config/.env) :")
         for err in errors:
             print(f"  - {err}")
+        if not (args.check or args.once):
+            alert_config_problem(errors)
         return EXIT_CONFIG
     if args.check:
         return run_check(settings)

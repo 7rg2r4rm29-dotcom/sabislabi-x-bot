@@ -22,7 +22,7 @@ from datetime import timedelta
 
 from . import filters
 from .utils import in_window, now_local, today_str
-from .x_api import XError, tweet_url
+from .x_api import XError, tweet_text, tweet_url
 
 log = logging.getLogger("xbot.comments")
 
@@ -170,7 +170,7 @@ class CommentDesk:
             return "moi-même"
         if username and username.lower() in (self.settings.blacklist_users or []):
             return "auteur blacklisté"
-        text = strip_leading_mentions(tw.get("text") or "")
+        text = strip_leading_mentions(tweet_text(tw))
         if len(text) < 2:
             return "vide"
         if filters.is_noise(text):
@@ -230,7 +230,7 @@ class CommentDesk:
             log.info("Commentaire de @%s : déjà un brouillon aujourd'hui sous ce post, ignoré", username)
             return 0, False
 
-        comment = strip_leading_mentions(tw.get("text") or "")
+        comment = strip_leading_mentions(tweet_text(tw))
         reply = self.writer.draft_comment_reply(my_post_text, username, comment)
         if not reply:
             return 0, True

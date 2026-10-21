@@ -60,11 +60,17 @@ _last_log_time = time.time()
 _last_log_lock = threading.Lock()
 
 
+def touch_watchdog() -> None:
+    """Signe de vie explicite (indépendant du niveau de log choisi : avec
+    --log-level WARNING, les logs INFO n'arrivent plus au watchdog)."""
+    global _last_log_time
+    with _last_log_lock:
+        _last_log_time = time.time()
+
+
 class _HeartbeatFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        global _last_log_time
-        with _last_log_lock:
-            _last_log_time = time.time()
+        touch_watchdog()
         return True
 
 
@@ -117,6 +123,7 @@ class heartbeat:
                 lg.warning("heartbeat [%s] : %.0fs > %.0fs max, le watchdog jugera",
                            self.label, elapsed, self.max_total_s)
                 return
+            touch_watchdog()
             lg.info("heartbeat [%s] : en cours depuis %.0fs", self.label, elapsed)
 
     def __enter__(self):
@@ -175,8 +182,12 @@ def set_clock(dt: datetime | None) -> None:
 
 
 def parse_hhmm(value: str) -> dtime:
-    h, m = value.strip().split(":")
-    return dtime(int(h), int(m))
+    """'08:30', '8:30', '8h30', '8h' -> 08:30 / 08:00."""
+    raw = value.strip().lower().replace("h", ":")
+    if raw.endswith(":"):
+        raw += "00"
+    h, m = raw.split(":")
+    return dtime(int(h), int(m or 0))
 
 
 def parse_window(value: str) -> tuple[dtime, dtime]:
