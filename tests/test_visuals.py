@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -245,8 +246,32 @@ class TestCaptureMachinery:
         out = tmp_path / "out.png"
         assert visuals.frame_image(raw, out, "openai.com") is True
         img = Image.open(out)
-        assert img.size[0] == 1600 + 2 * 28
-        assert img.size[1] == int(1600 * 0.62) + 2 * 28 + 44
+        assert img.size == (1600, 900)          # 16:9 : X l'affiche entière dans le fil
+
+    def test_compute_clip_full_width_16_9(self):
+        clip = visuals.compute_clip({"top": 64, "bottom": 180, "vw": 1100, "vh": 900, "lines": []})
+        assert clip == {"x": 0, "y": 32, "width": 1100, "height": 619}
+
+    def test_compute_clip_never_slices_a_line_at_the_bottom(self):
+        # une ligne de texte (600-624) traverse le bas prévu (32+619=651) ? non ; celle-ci (640-664) oui
+        m = {"top": 64, "bottom": 180, "vw": 1100, "vh": 900, "lines": [[600, 624], [640, 664], [300, 320]]}
+        clip = visuals.compute_clip(m)
+        assert clip["y"] + clip["height"] == 632          # remonté au-dessus de la ligne coupée
+        assert all(not (t < 632 - 2 and b > 632 + 2) for t, b in m["lines"])
+
+    def test_compute_clip_never_slices_a_line_at_the_top(self):
+        # « < News » (20-44) est tranché par le haut prévu (64-32=32) : on descend sous lui
+        clip = visuals.compute_clip({"top": 64, "bottom": 180, "vw": 1100, "vh": 900,
+                                     "lines": [[20, 44], [64, 180]]})
+        assert clip["y"] == 50
+
+    def test_compute_clip_short_page(self):
+        clip = visuals.compute_clip({"top": 700, "bottom": 760, "vw": 1100, "vh": 900, "lines": []})
+        assert clip["y"] == 668 and clip["y"] + clip["height"] == 900
+
+    def test_compute_clip_rejects_garbage(self):
+        assert visuals.compute_clip({}) is None
+        assert visuals.compute_clip({"top": 10, "bottom": 5, "vw": 1100, "vh": 900}) is None
 
     def test_cleanup_keeps_latest(self, tmp_path):
         import os
@@ -256,3 +281,48 @@ class TestCaptureMachinery:
             os.utime(f, (1000 + i, 1000 + i))
         visuals._cleanup_old(tmp_path, keep=2)
         assert sorted(p.name for p in tmp_path.iterdir()) == ["3.png", "4.png"]
+
+
+class CleanCheckWriter(StubWriter):
+    def __init__(self, clean: bool, **kw) -> None:
+        super().__init__(**kw)
+        self.clean = clean
+        self.clean_calls: list[str] = []
+
+    def screenshot_is_clean(self, path):
+        self.clean_calls.append(str(path))
+        return self.clean, "bandeau cookies au milieu" if not self.clean else "propre"
+
+
+class TestScreenshotQualityGate:
+    def test_messy_capture_is_dropped(self, settings, shots):
+        w = CleanCheckWriter(clean=False)
+        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), w, "news") == (None, None)
+        assert len(w.clean_calls) == 1
+        assert not any((utils.MEDIA_DIR / "shots").glob("*.png"))   # image supprimée
+
+    def test_clean_capture_is_kept(self, settings, shots):
+        w = CleanCheckWriter(clean=True)
+        path, kind = visuals.prepare(settings, _draft("https://openai.com/index/x"), w, "news")
+        assert kind == "screenshot" and path and len(w.clean_calls) == 1
+
+    def test_writer_sends_the_image_to_claude(self, settings, state, tmp_path):
+        from PIL import Image
+        from bot.writer import Writer
+        from tests.fakes import FakeLLM
+        img = tmp_path / "shot.png"
+        Image.new("RGB", (1600, 900), (255, 255, 255)).save(img)
+        llm = FakeLLM({"screenshot-check": {"ok": False, "issue": "titre coupé"}})
+        ok, why = Writer(settings, llm, state).screenshot_is_clean(img)
+        assert (ok, why) == (False, "titre coupé")
+        assert llm.calls[0]["images"] == [img]
+
+    def test_llm_builds_an_image_block(self):
+        from PIL import Image
+        from bot.llm import _image_block
+        import tempfile
+        p = Path(tempfile.mkdtemp()) / "x.png"
+        Image.new("RGB", (3200, 1800), (10, 20, 30)).save(p)
+        b = _image_block(p)
+        assert b["type"] == "image" and b["source"]["media_type"] == "image/jpeg" and b["source"]["data"]
+        assert _image_block(Path("/nonexistent.png")) is None

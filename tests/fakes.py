@@ -18,9 +18,9 @@ class FakeLLM:
         self.calls: list[dict] = []
 
     def json(self, label: str, system: str, user: str, schema: dict,
-             effort: str | None = None, max_tokens: int = 16000) -> dict | None:
+             effort: str | None = None, max_tokens: int = 16000, images: list | None = None) -> dict | None:
         self.calls.append({"label": label, "system": system, "user": user, "schema": schema,
-                           "effort": effort})
+                           "effort": effort, "images": list(images or [])})
         for prefix, resp in self.responses.items():
             if label.startswith(prefix):
                 if callable(resp):

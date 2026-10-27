@@ -71,6 +71,9 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
   plutôt que rempli avec un texte creux.
 - Chaque texte est **vérifié** par une seconde lecture de Claude : faits d'actu, chiffres, et surtout
   aucune « expérience perso » inventée.
+- Les **captures d'écran** sont recadrées sur le titre de l'article (sans menus ni bandeaux), au format
+  16:9 qu'X affiche en entier, puis **regardées par Claude** : une capture pas nette n'est pas utilisée, le
+  post part sans image.
 - Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**,
   même si tu appuies sur ✅ plus tard.
 - Si le bot a été arrêté et qu'un post validé a plus de 3 h de retard, il ne part pas non plus

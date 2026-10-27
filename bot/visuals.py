@@ -72,6 +72,120 @@ _DISMISS_SELECTORS = (
     '#onetrust-accept-btn-handler', '.cc-btn.cc-dismiss',
 )
 
+# Recadrage : on masque ce qui « flotte » (menus fixes, bandeaux collants) et les
+# barres de navigation, on repère le titre de l'article et on le place en haut.
+_PREPARE_JS = """() => {
+  const hide = el => el.style.setProperty('display', 'none', 'important');
+  const visible = e => {
+    const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+    return r.width > 150 && r.height > 18 && cs.visibility !== 'hidden' && cs.display !== 'none'
+      && parseFloat(cs.opacity || '1') > 0.1 && (e.innerText || '').trim().length > 8;
+  };
+  // Le titre d'abord : sur certains sites il est lui-même dans un bloc « collant ».
+  let h = null;
+  for (const sel of ['article h1', 'main h1', '[role="main"] h1', 'h1']) {
+    h = [...document.querySelectorAll(sel)].find(visible);
+    if (h) break;
+  }
+  if (!h) return false;
+  for (const el of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+    if (el.contains(h)) el.style.setProperty('position', 'static', 'important');  // on le « décolle »
+    else hide(el);
+  }
+  // Bandeaux cookies, pop-ups, newsletters, chats (jamais la page ni le bloc du titre).
+  for (const el of document.querySelectorAll("[class*='cookie'],[id*='cookie'],[class*='consent'],"
+      + "[id*='consent'],[class*='newsletter'],[class*='popup'],[class*='modal'],iframe[src*='chat'],"
+      + "[class*='intercom'],[class*='drift']")) {
+    if (el === document.body || el === document.documentElement || el.contains(h)) continue;
+    hide(el);
+  }
+  for (const el of [document.documentElement, document.body]) el.style.setProperty('overflow', 'visible', 'important');
+  // Menus du site (jamais le bloc qui contient le titre).
+  for (const el of document.querySelectorAll('nav, [role="navigation"], [role="banner"], header, '
+      + '[class*="navbar"], [class*="site-header"], [class*="SiteHeader"], [id*="header"]')) {
+    if (!el.contains(h) && !h.contains(el)) hide(el);
+  }
+  window.__xbotHeadline = h;
+  const y = h.getBoundingClientRect().top + window.scrollY;
+  window.scrollTo(0, Math.max(0, y - 64));
+  return true;
+}"""
+
+# Position du titre + lignes de texte proches du bas de la zone (pour ne pas en couper une).
+_MEASURE_JS = """() => {
+  const h = window.__xbotHeadline;
+  if (!h) return null;
+  const r = h.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  const lines = [];
+  const limit = r.top + vw * 9 / 16 + 80;
+  for (const el of document.querySelectorAll('p, li, span, a, time, h2, h3, h4, figcaption, blockquote, div, button')) {
+    const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 1);
+    if (!own) continue;
+    const b = el.getBoundingClientRect();
+    if (b.height <= 0 || b.width <= 0 || b.bottom < r.top - 80 || b.top > limit) continue;
+    lines.push([b.top, b.bottom]);
+    if (lines.length > 400) break;
+  }
+  return {top: r.top, bottom: r.bottom, vw: vw, vh: vh, lines: lines};
+}"""
+
+CLIP_MIN_HEIGHT_BELOW_TITLE = 60   # px CSS sous le titre, au minimum
+
+
+def compute_clip(m: dict) -> dict | None:
+    """Zone à capturer : toute la largeur de la page (rien de coupé sur les côtés),
+    du dessus du titre jusqu'à 16:9 au plus, en remontant le bas pour ne trancher
+    aucune ligne de texte. None si la mesure est absurde."""
+    try:
+        vw, vh = float(m["vw"]), float(m["vh"])
+        top, bottom = float(m["top"]), float(m["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if vw <= 0 or vh <= 0 or bottom <= top:
+        return None
+    y = max(0.0, top - 32)
+    lines = m.get("lines") or []
+    # Une ligne tranchée par le haut (ex. « < Retour aux actus ») : on descend sous elle.
+    for _ in range(20):
+        cut_top = [lb for lt, lb in lines if lt < y - 2 and lb > y + 2 and lb <= top - 2]
+        if not cut_top:
+            break
+        y = max(cut_top) + 6
+    h = min(vw * 9 / 16, vh - y)
+    end = y + h
+    floor = bottom + CLIP_MIN_HEIGHT_BELOW_TITLE
+    for _ in range(50):  # remonter tant qu'une ligne est coupée par le bas
+        cut = [lt for lt, lb in (m.get("lines") or []) if lt < end - 2 and lb > end + 2]
+        if not cut:
+            break
+        new_end = min(cut) - 8
+        if new_end <= floor or new_end >= end:
+            break
+        end = new_end
+    if end - y < (bottom - y) + 20:
+        return None
+    return {"x": 0, "y": round(y), "width": round(vw), "height": round(end - y)}
+
+
+def _browser_launch_options() -> tuple[dict, dict]:
+    """Options du navigateur. XBOT_BROWSER_PATH / XBOT_BROWSER_PROXY : seulement pour
+    les environnements de test (navigateur préinstallé, proxy) ; vides en production."""
+    import os
+    launch: dict = {"headless": True, "args": ["--disable-dev-shm-usage", "--no-first-run", "--disable-extensions"]}
+    # 1100 px : mise en page sur une seule colonne pour la plupart des sites (capture plus nette).
+    context: dict = {"viewport": {"width": 1100, "height": 900}, "device_scale_factor": 2, "locale": "en-US",
+                     "accept_downloads": False}
+    if os.getenv("XBOT_BROWSER_PATH"):
+        launch["executable_path"] = os.environ["XBOT_BROWSER_PATH"]
+    if os.getenv("XBOT_BROWSER_PROXY"):
+        launch["proxy"] = {"server": os.environ["XBOT_BROWSER_PROXY"]}
+        context["ignore_https_errors"] = True
+    return launch, context
+
+
 # Signatures de pages d'erreur / vides, toutes langues (v1). Phrases complètes,
 # non ambiguës : dans le titre OU en haut du texte visible → page cassée.
 _ERROR_PHRASES = (
@@ -204,20 +318,19 @@ def frame_image(raw_path: Path, out_path: Path, source: str) -> bool:
         return False
     try:
         img = Image.open(raw_path).convert("RGB")
+        # Image finale exactement en 16:9 : X l'affiche entière dans le fil, sans recadrer.
+        cw, ch = 1600, 900
+        pad, bar = 32, 48
+        box_w, box_h = cw - 2 * pad, ch - 2 * pad - bar
+        scale = min(box_w / img.width, box_h / img.height)
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.LANCZOS)
         w, h = img.size
-        target_w = 1600
-        if w > target_w:
-            img = img.resize((target_w, int(h * target_w / w)), Image.LANCZOS)
-            w, h = img.size
-        max_h = int(w * 0.62)
-        if h > max_h:
-            img = img.crop((0, 0, w, max_h))
-            w, h = img.size
-        pad, bar = 28, 44
-        canvas = Image.new("RGB", (w + 2 * pad, h + 2 * pad + bar), (16, 18, 24))
+        canvas = Image.new("RGB", (cw, ch), (16, 18, 24))
         mask = Image.new("L", (w, h), 0)
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, w, h), radius=18, fill=255)
-        canvas.paste(img, (pad, pad), mask)
+        x0 = (cw - w) // 2
+        y0 = max(pad, (ch - (h + bar)) // 2)   # bloc image + « source » centré verticalement
+        canvas.paste(img, (x0, y0), mask)
         d = ImageDraw.Draw(canvas)
         font = None
         for candidate in ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -232,7 +345,7 @@ def frame_image(raw_path: Path, out_path: Path, source: str) -> bool:
                 font = ImageFont.load_default(size=22)
             except TypeError:  # Pillow ancien
                 font = ImageFont.load_default()
-        d.text((pad, h + pad + 10), f"source: {source}", fill=(150, 156, 170), font=font)
+        d.text((x0, y0 + h + 12), f"source: {source}", fill=(150, 156, 170), font=font)
         canvas.save(out_path, "PNG", optimize=True)
         return True
     except Exception as e:  # noqa: BLE001
@@ -269,11 +382,10 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
     out_path = folder / f"{tag}_{stamp}.png"
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--no-first-run",
-                                                              "--disable-extensions"])
+            launch_opts, context_opts = _browser_launch_options()
+            browser = pw.chromium.launch(**launch_opts)
             try:
-                context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="en-US",
-                                              accept_downloads=False)
+                context = browser.new_context(**context_opts)
                 # Aucun appel aux serveurs de X, même pour un tweet intégré dans un article.
                 context.route(_X_REQUEST_RE, lambda route: route.abort())
                 page = context.new_page()
@@ -311,14 +423,8 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                             time.sleep(0.5)
                     except Exception:  # noqa: BLE001
                         continue
-                try:
-                    page.add_style_tag(content=(
-                        "[class*='cookie'],[id*='cookie'],[class*='consent'],[id*='consent'],"
-                        "[class*='newsletter'],[class*='popup'],[class*='modal'],"
-                        "iframe[src*='chat'],[class*='intercom'],[class*='drift']"
-                        "{display:none !important}"))
-                except Exception:  # noqa: BLE001
-                    pass
+                # (Les bandeaux restants sont masqués par _PREPARE_JS, sans jamais toucher à
+                # la page elle-même : sur certains sites, <body> a une classe « modal… ».)
                 time.sleep(0.8)
                 check()
                 # Certains sites ne révèlent leur 404 / mur qu'après le bandeau cookies.
@@ -331,7 +437,18 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                     log.warning("Capture refusée : la page a quitté les sites autorisés (%s)", url)
                     return None
                 text = visible_text(title, body)
-                page.screenshot(path=str(raw_path), full_page=False)
+                # Recadrage autour du titre de l'article ; sans titre repérable, pas d'image
+                # (mieux vaut un post sans image qu'une capture de menu ou de bandeau).
+                if not page.evaluate(_PREPARE_JS):
+                    log.warning("Capture refusée : aucun titre d'article repérable sur %s", url)
+                    return None
+                time.sleep(1.5)  # images chargées à l'arrivée dans l'écran
+                check()
+                clip = compute_clip(page.evaluate(_MEASURE_JS) or {})
+                if clip is None:
+                    log.warning("Capture refusée : cadrage impossible sur %s", url)
+                    return None
+                page.screenshot(path=str(raw_path), clip=clip)
             finally:
                 try:
                     browser.close()
@@ -489,6 +606,16 @@ def _prepare(settings, draft, writer, tag: str) -> tuple[str | None, str | None]
             log.info("Capture écartée, elle n'illustre pas le post : %s", why)
             _safe_unlink(path)
             return None, None
+        clean_check = getattr(writer, "screenshot_is_clean", None)
+        if callable(clean_check):
+            try:
+                clean, issue = clean_check(path)
+            except Exception as e:  # noqa: BLE001
+                clean, issue = False, f"vérification impossible ({type(e).__name__})"
+            if not clean:
+                log.info("Capture écartée, pas assez propre : %s", issue)
+                _safe_unlink(path)
+                return None, None
         log.info("Capture retenue : %s (%s)", Path(path).name, why)
         return str(path), "screenshot"
 

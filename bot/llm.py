@@ -174,14 +174,22 @@ class LLM:
 
     # ------------------------------------------------------------------
     def json(self, label: str, system: str, user: str, schema: dict,
-             effort: str | None = None, max_tokens: int = 16000) -> dict | None:
-        """Retourne l'objet JSON produit par Claude, conforme à `schema`, ou None."""
+             effort: str | None = None, max_tokens: int = 16000,
+             images: list | None = None) -> dict | None:
+        """Retourne l'objet JSON produit par Claude, conforme à `schema`, ou None.
+        `images` : chemins d'images (PNG/JPEG) que Claude doit regarder."""
+        content: Any = user
+        if images:
+            content = [_image_block(p) for p in images] + [{"type": "text", "text": user}]
+            if any(b is None for b in content):
+                log.warning("Claude [%s] : image illisible", label)
+                return None
         kwargs = {
             "model": self.settings.llm_model,
             "max_tokens": max_tokens,
             "system": [{"type": "text", "text": system,
                         "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
-            "messages": [{"role": "user", "content": user}],
+            "messages": [{"role": "user", "content": content}],
             "output_config": {"effort": effort or self.settings.llm_effort,
                               "format": {"type": "json_schema", "schema": schema}},
         }
@@ -203,6 +211,24 @@ class LLM:
         if not isinstance(obj, dict):
             return None
         return obj
+
+
+def _image_block(path) -> dict | None:
+    """Image envoyée à Claude : JPEG ≤ 1600 px de large (léger, bien lisible)."""
+    import base64
+    import io
+    try:
+        from PIL import Image
+        img = Image.open(path).convert("RGB")
+        if img.width > 1600:
+            img = img.resize((1600, int(img.height * 1600 / img.width)))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=85)
+        data = buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return None
+    return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                        "data": base64.b64encode(data).decode("ascii")}}
 
 
 def schema(properties: dict[str, dict], required: list[str] | None = None) -> dict:

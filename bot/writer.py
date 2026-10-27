@@ -571,6 +571,17 @@ OUTPUT — reply: true or false; reason: one short line in FRENCH for the owner;
 # ---------------------------------------------------------------------------
 # Vérification d'une capture d'écran
 # ---------------------------------------------------------------------------
+SCREENSHOT_CHECK_PROMPT = """You review a screenshot of a web page that will be attached to a post on X,
+seen by people who never visited the page. Be strict: a messy image hurts the account more than no image.
+Answer ok=true ONLY if ALL of these are true:
+- the page's main headline is fully visible and readable (not cut at the top, bottom or sides);
+- nothing covers the content: no cookie or consent banner, newsletter or login pop-up, ad, chat widget,
+  "open in app" bar, video player overlay or dark overlay;
+- the image is not mostly empty space, a loading placeholder, a navigation menu or a page header;
+- no line of text is sliced in half at the top edge;
+- it looks clean and intentional, like a well-cropped preview of the article.
+Otherwise ok=false and say in a few words what is wrong (issue)."""
+
 VISUAL_CHECK_PROMPT = """You are a strict editor. A post is about to be published on X with a screenshot of a web page attached. You are given the post text, the page URL, and the text visible on that page. Decide whether the screenshot genuinely illustrates what the post says.
 
 Say YES only if a reader would immediately understand why this page is attached: the page shows the announcement, product, headline, article or data the post is talking about.
@@ -715,9 +726,13 @@ class Writer:
     # ==================================================================
     # Outils communs
     # ==================================================================
-    def _ask(self, label: str, system: str, user: str, sch: dict, effort: str | None = None) -> dict | None:
+    def _ask(self, label: str, system: str, user: str, sch: dict, effort: str | None = None,
+             images: list | None = None) -> dict | None:
         try:
-            obj = self.llm.json(label, system, user, sch, effort=effort)
+            if images:
+                obj = self.llm.json(label, system, user, sch, effort=effort, images=images)
+            else:
+                obj = self.llm.json(label, system, user, sch, effort=effort)
         except Exception as e:  # noqa: BLE001 — jamais de plantage de la boucle
             log.exception("Claude [%s] : erreur inattendue : %s", label, e)
             return None
@@ -1547,6 +1562,22 @@ class Writer:
     # ==================================================================
     # Capture d'écran : la page illustre-t-elle vraiment le post ?
     # ==================================================================
+    def screenshot_is_clean(self, image_path) -> tuple[bool, str]:
+        """Claude REGARDE la capture finale : titre entier et lisible, rien qui la
+        masque (bandeau cookies, pub, pop-up), pas coupée au milieu d'une ligne,
+        pas majoritairement vide. En cas de doute ou de panne : pas d'image."""
+        try:
+            obj = self._ask("screenshot-check", SCREENSHOT_CHECK_PROMPT,
+                            "Is this screenshot clean enough to attach to a post on X?",
+                            schema({"ok": BOOL, "issue": STR}), effort="low", images=[image_path])
+            if obj is None:
+                return False, "vérification de l'image indisponible"
+            ok = obj.get("ok") is True
+            return ok, (_s(obj, "issue")[:120] or ("capture propre" if ok else "capture pas assez propre"))
+        except Exception as e:  # noqa: BLE001
+            log.exception("screenshot_is_clean a planté : %s", e)
+            return False, "erreur de vérification"
+
     def visual_matches(self, post_text: str, url: str, visible_text: str) -> tuple[bool, str]:
         try:
             if not url or is_x_url(url):
