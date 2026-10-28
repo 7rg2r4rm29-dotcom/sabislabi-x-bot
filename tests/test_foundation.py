@@ -388,6 +388,26 @@ class TestLLM:
         t["now"] += llm_mod.BREAKER_PAUSE_S + 1
         assert llm.json("d", "s", "u", SCHEMA)["text"] == "back"
 
+    def test_no_credit_is_reported_and_pauses_claude(self, settings, state, clock, monkeypatch):
+        import anthropic
+        import httpx2 as httpx  # noqa: F401  (anthropic 1.x)
+        from bot import llm as llm_mod
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        err = anthropic.BadRequestError(
+            "Your credit balance is too low to access the Anthropic API.",
+            response=httpx.Response(400, request=req),
+            body={"error": {"message": "Your credit balance is too low to access the Anthropic API."}})
+        t = {"now": 1000.0}
+        monkeypatch.setattr("time.monotonic", lambda: t["now"])
+        fake = FakeAnthropic([err, _resp('{"ok": true, "text": "back"}')])
+        llm = LLM(settings, state, client=fake)
+        assert llm.json("a", "s", "u", SCHEMA) is None
+        assert "crédit" in llm.account_problem and llm.paused()
+        assert llm.json("b", "s", "u", SCHEMA) is None and len(fake.calls) == 1   # pas d'appel inutile
+        t["now"] += llm_mod.ACCOUNT_PAUSE_S + 1
+        assert llm.json("c", "s", "u", SCHEMA)["text"] == "back"
+        assert llm.account_problem is None
+
     def test_real_client_timeout_is_long_enough(self, settings, state):
         settings.anthropic_api_key = "sk-test"
         c = LLM(settings, state).client

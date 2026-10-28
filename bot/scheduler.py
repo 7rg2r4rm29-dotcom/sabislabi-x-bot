@@ -33,6 +33,7 @@ from .utils import at_local, in_window, iso, minutes_between, now_local, parse_i
 log = logging.getLogger("xbot.scheduler")
 
 TICK_SLEEP_S = 20
+CLAUDE_ALERT_EVERY_MIN = 720   # alerte « crédit Claude » au plus toutes les 12 h
 THREAD_CLEAR_MIN = 180  # un jour de thread, pas d'autre post (hors gm) à moins de 3 h de lui
 TICK_BUDGET_S = 240     # au-delà, les étapes facultatives attendent le tour suivant
 ERROR_SLEEP_S = 60
@@ -236,6 +237,7 @@ class Bot:
         # Expiration d'abord : un ✅ en attente depuis un arrêt du bot ne doit pas
         # faire partir un post dont le délai est passé.
         res["expire"] = self._step("expiration", self.approvals.expire_due)
+        res["claude_alert"] = self._step("alerte Claude", self.maybe_alert_claude)
         res["poll"] = self._step("Telegram", self.approvals.poll)
         res["publish"] = self._step("publication", self.publisher.publish_due)
         paused = bool(self.state.data.get("paused"))
@@ -263,6 +265,21 @@ class Bot:
         res["publish2"] = self._step("publication", self.publisher.publish_due)
         self._heartbeat(paused, time.monotonic() - started, res)
         return res
+
+    def maybe_alert_claude(self) -> bool:
+        """Crédit Claude épuisé ou clé refusée : un message Telegram (au plus toutes
+        les 12 h). En attendant, aucun créneau n'est sauté : ils seront rédigés dès que
+        Claude répondra de nouveau (s'il n'est pas trop tard)."""
+        problem = getattr(self.llm, "account_problem", None)
+        if not problem:
+            return False
+        since = self.state.minutes_since("claude_alert")
+        if since is not None and since < CLAUDE_ALERT_EVERY_MIN:
+            return False
+        self.state.set_last_run("claude_alert")
+        self.approvals.notify(f"💳 Claude ne peut plus écrire : {esc(problem)}.\n"
+                              "Rien n'est publié en attendant ; tout reprend tout seul dès que c'est réglé.")
+        return True
 
     def _between(self) -> int:
         self._step("Telegram", self.approvals.poll)

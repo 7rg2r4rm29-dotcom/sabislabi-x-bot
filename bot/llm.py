@@ -40,6 +40,7 @@ class LLMError(RuntimeError):
 # plusieurs minutes et les publications validées attendent).
 BREAKER_FAILURES = 2
 BREAKER_PAUSE_S = 600
+ACCOUNT_PAUSE_S = 900    # plus de crédit / clé refusée : on réessaie toutes les 15 min
 
 
 class LLM:
@@ -50,6 +51,9 @@ class LLM:
         self._fallback_ok = settings.use_server_fallback
         self._failures = 0
         self._paused_until = 0.0
+        # Problème de compte Claude (crédit épuisé, clé refusée) : le bot le signale
+        # sur Telegram et attend au lieu de sauter ou de remplir des créneaux.
+        self.account_problem: str | None = None
 
     # ------------------------------------------------------------------
     @property
@@ -89,6 +93,9 @@ class LLM:
                           BREAKER_PAUSE_S // 60)
         elif resp is not None:
             self._failures = 0
+            self.account_problem = None
+        if resp is None and self.account_problem:
+            self._paused_until = time.monotonic() + ACCOUNT_PAUSE_S
         return resp
 
     _last_was_outage = False
@@ -113,9 +120,12 @@ class LLM:
                     except Exception as e2:  # noqa: BLE001
                         log.error("Claude [%s] : échec sans bascule : %s", label, e2)
                         return None
+                if "credit balance" in msg.lower():
+                    self.account_problem = "plus de crédit sur ton compte Claude (console.anthropic.com → Billing)"
                 log.error("Claude [%s] : requête invalide : %s", label, msg[:300])
                 return None
             except anthropic.AuthenticationError:
+                self.account_problem = "clé ANTHROPIC_API_KEY refusée (console.anthropic.com → API Keys)"
                 log.error("Claude [%s] : clé ANTHROPIC_API_KEY refusée", label)
                 return None
             except anthropic.RateLimitError:

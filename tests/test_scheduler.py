@@ -832,3 +832,18 @@ def test_regenerate_tells_writer_which_item_is_replaced(settings, state, budget,
     parts["writer"].draft_post = spy
     bot.regenerate({"id": "abc123", "kind": "tip"})
     assert seen["id"] == "abc123" and parts["writer"].regen_item_id is None
+
+
+
+def test_claude_account_problem_is_reported_once_per_12h(settings, state, budget, parts, clock):
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = type("NoCredit", (), {"account_problem": "plus de crédit", "paused": lambda self: True})()
+    clock(10, 0)
+    bot.tick()
+    bot.tick()
+    alerts = [n for n in parts["approvals"].notes if "Claude ne peut plus écrire" in n]
+    assert len(alerts) == 1 and "plus de crédit" in alerts[0]
+    assert parts["approvals"].created == []          # rien de rédigé ni de sauté en attendant
+    clock(23, 0)
+    bot.tick()
+    assert len([n for n in parts["approvals"].notes if "Claude ne peut plus écrire" in n]) == 2
