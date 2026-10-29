@@ -174,9 +174,9 @@ class Settings:
 
     # --- Posts réactifs ---
     reactive_enabled: bool = True
-    reactive_max_per_day: int = 1
-    reactive_check_every_min: int = 150
-    reactive_window: tuple[dtime, dtime] = (dtime(9, 30), dtime(22, 0))
+    reactive_max_per_day: int = 2
+    reactive_check_every_min: int = 60
+    reactive_window: tuple[dtime, dtime] = (dtime(11, 0), dtime(23, 0))
     reactive_min_gap_min: int = 90
 
     # --- Commentaires sous mes posts ---
@@ -336,9 +336,10 @@ def load_settings() -> Settings:
         health_report_at=_lenient("HEALTH_REPORT_AT", parse_hhmm, "08:30", w),
         thread_candidates=max(1, _env_int("THREAD_CANDIDATES", 3)),
         reactive_enabled=_env_bool("REACTIVE_ENABLED", True),
-        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 1),
-        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 150),
-        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "09:30-22:00", w),
+        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 2),
+        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 60),
+        # 11 h - 23 h (Paris) : l'Europe l'après-midi, puis toute la journée américaine.
+        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "11:00-23:00", w),
         reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 90),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),

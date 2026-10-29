@@ -435,13 +435,15 @@ class Bot:
                         "solide, créneau sauté. Mieux vaut pas de thread qu'un thread faible (les « pas "
                         "intéressé » coûtent cher dans l'algorithme).")
                     return None
-                if kind == "news":
+                if kind == "news" or self.settings.approval_mode == "auto":
+                    # Mode automatique : personne ne relit, donc jamais de texte « de secours »
+                    # générique publié tout seul. Le créneau est sauté.
                     # Pas de texte bouche-trou sur le créneau « actu » : une maxime de
                     # développement perso sur un compte d'actu IA fait fuir.
                     self.state.mark_slot(date, slot.key, SLOT_SKIPPED)
                     self.approvals.notify(
-                        f"📰 Actu de {JOURS[occ.weekday()]} {_hm(occ)} : rien d'assez solide ou de vérifiable "
-                        "aujourd'hui, créneau sauté. Mieux vaut pas d'actu qu'une actu creuse ou fausse.",
+                        f"📰 {esc(self._slot_label(slot, occ))} : rien d'assez solide ou de vérifiable, créneau "
+                        "sauté. Mieux vaut pas de post qu'un post creux ou faux.",
                         silent=True)
                     return None
                 draft = self.writer.fallback_post(kind)

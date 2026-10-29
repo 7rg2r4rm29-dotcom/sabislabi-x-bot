@@ -436,9 +436,9 @@ class TestReactive:
 
     def test_outside_window(self, settings, state, budget, parts, clock):
         bot = self._bot(settings, state, budget, parts)
-        clock(9, 0)   # fenêtre 09:30-22:00
+        clock(10, 30)   # fenêtre 11:00-23:00 (après-midi européen + journée américaine)
         assert bot.maybe_reactive() == 0
-        clock(22, 30)
+        clock(23, 30)
         assert bot.maybe_reactive() == 0
         assert parts["writer"].calls == []
 
@@ -479,7 +479,8 @@ class TestReactive:
 
     def test_force_ignores_window_but_not_cap(self, settings, state, budget, parts, clock):
         bot = self._bot(settings, state, budget, parts)
-        clock(23, 0)
+        settings.reactive_max_per_day = 1
+        clock(23, 40)
         assert bot.maybe_reactive(force=True) == 1
         assert bot.maybe_reactive(force=True) == 0   # plafond 1/jour
 
@@ -806,7 +807,7 @@ def test_failed_news_slot_is_skipped_not_filled(settings, state, budget, parts, 
     clock(16, 30)
     bot.plan_slots()
     assert parts["approvals"].created == []
-    assert any("Actu" in n for n in parts["approvals"].notes)
+    assert any("actu" in n.lower() and "créneau sauté" in n for n in parts["approvals"].notes)
 
 
 
@@ -847,3 +848,14 @@ def test_claude_account_problem_is_reported_once_per_12h(settings, state, budget
     clock(23, 0)
     bot.tick()
     assert len([n for n in parts["approvals"].notes if "Claude ne peut plus écrire" in n]) == 2
+
+
+def test_auto_mode_never_publishes_canned_text(settings, state, budget, parts, clock):
+    settings.approval_mode = "auto"
+    parts["writer"].default_post = False          # Claude ne propose rien de publiable
+    bot = make_bot(settings, state, budget, parts)
+    clock(11, 0)                                   # astuce de 13:30 à rédiger
+    bot.plan_slots()
+    assert parts["approvals"].created == []
+    assert ("fallback_post", "tip") not in parts["writer"].calls
+    assert any("créneau sauté" in n for n in parts["approvals"].notes)

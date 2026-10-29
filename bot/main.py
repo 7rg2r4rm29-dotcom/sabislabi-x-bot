@@ -66,6 +66,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--once", choices=JOBS, metavar="JOB", help=f"une seule étape : {', '.join(JOBS)}")
     p.add_argument("--busy-check", action="store_true",
                    help="code 3 si une publication est en cours ou prévue dans les 15 min")
+    p.add_argument("--report", action="store_true",
+                   help="derniers posts, réponses, coûts et erreurs (lecture seule, aucun secret)")
     p.add_argument("--state", metavar="CHEMIN", help="fichier d'état (défaut : state/state.json)")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING…")
     return p.parse_args(argv)
@@ -107,6 +109,66 @@ def busy_check(state_path: str | Path | None = None, now=None) -> tuple[int, str
     if busy:
         return EXIT_BUSY, "Occupé : " + " ; ".join(busy[:5])
     return EXIT_OK, "Libre : aucune publication en cours ni dans les 15 prochaines minutes."
+
+
+# ---------------------------------------------------------------------------
+# --report : ce que le bot a vraiment écrit et publié (LECTURE SEULE, aucun secret)
+# ---------------------------------------------------------------------------
+POST_FAMILY = ("gm", "tip", "news", "thread", "reactive")
+
+
+def report(state_path: str | Path | None = None, log_path: str | Path | None = None, n: int = 15) -> str:
+    path = Path(state_path) if state_path else utils.STATE_DIR / "state.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return f"État illisible ({type(e).__name__})."
+    items = [i for i in (data.get("items") or {}).values() if isinstance(i, dict)]
+    items.sort(key=lambda i: str(i.get("created_at") or ""))
+    out = [f"=== {n} derniers posts (du plus ancien au plus récent) ==="]
+    for it in [i for i in items if i.get("kind") in POST_FAMILY][-n:]:
+        meta = it.get("meta") if isinstance(it.get("meta"), dict) else {}
+        flags = []
+        if meta.get("from_fallback"):
+            flags.append("TEXTE DE SECOURS")
+        if it.get("image_kind"):
+            flags.append(f"image {it['image_kind']}")
+        if it.get("poll"):
+            flags.append("sondage")
+        texts = [str(t) for t in (it.get("texts") or [])]
+        body = " // ".join(texts).replace("\n", " / ")
+        out.append(f"- {str(it.get('created_at') or '')[:16]} {it.get('kind')} [{it.get('status')}]"
+                   + (f" ({', '.join(flags)})" if flags else ""))
+        out.append(f"  texte : {body[:600]}")
+        if meta.get("reason"):
+            out.append(f"  raison : {str(meta['reason'])[:200]}")
+        srcs = [str(x.get("title") or "")[:90] for x in (meta.get("sources") or []) if isinstance(x, dict)]
+        out.append("  sources : " + (" | ".join(srcs[:3]) if srcs else "aucune"))
+        if it.get("last_error"):
+            out.append(f"  erreur : {str(it['last_error'])[:200]}")
+    def count(kind: str) -> str:
+        sts: dict[str, int] = {}
+        for it in items:
+            if it.get("kind") == kind:
+                sts[str(it.get("status"))] = sts.get(str(it.get("status")), 0) + 1
+        return ", ".join(f"{k} {v}" for k, v in sorted(sts.items())) or "aucune"
+    out.append("=== Réponses aux commentaires : " + count("comment_reply"))
+    out.append("=== Suggestions radar : " + count("radar"))
+    days = (data.get("costs") or {}).get("days") or {}
+    month = utils.now_local().strftime("%Y-%m")
+    x_month = sum(float(v.get("total") or 0) for d, v in days.items() if str(d).startswith(month))
+    llm_days = (data.get("llm_usage") or {}).get("days") or {}
+    llm_month = sum(float(v.get("usd") or 0) for d, v in llm_days.items() if str(d).startswith(month))
+    out.append(f"=== Coûts estimés ce mois : API X {x_month:.2f} $, Claude {llm_month:.2f} $")
+    lp = Path(log_path) if log_path else utils.LOGS_DIR / "bot.log"
+    try:
+        errors = [ln.rstrip() for ln in lp.read_text(encoding="utf-8", errors="replace").splitlines()
+                  if "| ERROR" in ln or "| CRITICAL" in ln]
+    except OSError:
+        errors = []
+    out.append("=== Dernières erreurs ===")
+    out.extend((e[:300] for e in errors[-8:]) if errors else ["aucune"])
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +477,9 @@ def run_bot(settings, state_path=None) -> int:
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.report:
+        print(report(args.state))
+        return EXIT_OK
     if args.busy_check:
         code, msg = busy_check(args.state)
         print(msg)

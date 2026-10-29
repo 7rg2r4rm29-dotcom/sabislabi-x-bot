@@ -23,6 +23,24 @@ setkey_default() {  # setkey_default CLE VALEUR : ajoutée seulement si la clé 
   fi
 }
 
+UPGRADED=""
+upgrade_default() {  # upgrade_default CLE ANCIENNE NOUVELLE : seulement si la valeur est encore l'ancienne
+  if grep -qxF "$1=$2" "$ENV_FILE" || grep -qxF "$1=\"$2\"" "$ENV_FILE"; then
+    python3 - "$ENV_FILE" "$1" "$3" <<'PY'
+import os, re, sys, tempfile
+path, key, value = sys.argv[1:4]
+lines = open(path, encoding="utf-8").read().splitlines()
+out = [f"{key}={value}" if re.match(rf"^{re.escape(key)}=", l) else l for l in lines]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".env.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write("\n".join(out) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+    UPGRADED="$UPGRADED $1"
+  fi
+}
+
 # La v1 publiait en vrai : on garde ce comportement si rien n'est indiqué.
 setkey_default X_HANDLE sabislabi
 setkey_default TIMEZONE Europe/Paris
@@ -35,9 +53,13 @@ setkey_default APPROVAL_GRACE_MINUTES 120
 setkey_default PUBLISH_JITTER_MINUTES 4
 setkey_default QUIET_HOURS "23:30-07:30"
 setkey_default REACTIVE_ENABLED true
-setkey_default REACTIVE_MAX_PER_DAY 1
-setkey_default REACTIVE_CHECK_EVERY_MINUTES 150
-setkey_default REACTIVE_WINDOW "09:30-22:00"
+setkey_default REACTIVE_MAX_PER_DAY 2
+setkey_default REACTIVE_CHECK_EVERY_MINUTES 60
+setkey_default REACTIVE_WINDOW "11:00-23:00"
+# Anciennes valeurs par défaut jamais modifiées à la main -> nouvelles valeurs.
+upgrade_default REACTIVE_MAX_PER_DAY 1 2
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 150 60
+upgrade_default REACTIVE_WINDOW "09:30-22:00" "11:00-23:00"
 setkey_default COMMENTS_ENABLED true
 setkey_default COMMENTS_CHECK_EVERY_MINUTES 10
 setkey_default COMMENTS_MAX_DRAFTS_PER_DAY 40
@@ -56,7 +78,7 @@ setkey_default LLM_EFFORT_THREAD high
 
 chmod 600 "$ENV_FILE"
 
-echo "REGLAGES_OK${ADDED:+ (ajouté :$ADDED)}"
+echo "REGLAGES_OK${ADDED:+ (ajouté :$ADDED)}${UPGRADED:+ (mis à jour :$UPGRADED)}"
 # Uniquement des réglages NON secrets (liste explicite).
 grep -E '^(DRY_RUN|APPROVAL_MODE|POST_SLOTS|THREAD_SLOTS|DRAFT_LEAD_MINUTES|APPROVAL_GRACE_MINUTES|QUIET_HOURS|REACTIVE_ENABLED|REACTIVE_MAX_PER_DAY|COMMENTS_ENABLED|RADAR_ENABLED|RADAR_MAX_PER_DAY|X_BUDGET_DAILY_USD|X_BUDGET_MONTHLY_USD|LLM_MODEL|X_HANDLE|TIMEZONE)=' "$ENV_FILE" | tr '\n' ' '
 echo

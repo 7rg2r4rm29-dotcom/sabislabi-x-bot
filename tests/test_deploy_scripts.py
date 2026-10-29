@@ -589,3 +589,18 @@ def test_real_install_with_tests_from_a_home_stage(tmp_path):
     assert res.returncode == 0, out(res)[-3000:]
     assert "TESTS " in res.stdout and " passed" in res.stdout and "V2_OK" in res.stdout
     assert stage.exists() and (app / "bot" / "publisher.py").exists()
+
+
+def test_migrate_upgrades_untouched_old_defaults_only(tmp_path):
+    app = tmp_path / "app"
+    (app / "config").mkdir(parents=True)
+    env = app / "config" / ".env"
+    env.write_text("REACTIVE_MAX_PER_DAY=1\nREACTIVE_CHECK_EVERY_MINUTES=45\nREACTIVE_WINDOW=\"09:30-22:00\"\n")
+    res = run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)})
+    assert res.returncode == 0, out(res)
+    lines = env_lines(app)
+    assert "REACTIVE_MAX_PER_DAY=2" in lines                 # ancienne valeur par défaut -> nouvelle
+    assert "REACTIVE_CHECK_EVERY_MINUTES=45" in lines        # réglée à la main : gardée
+    assert "REACTIVE_WINDOW=11:00-23:00" in lines
+    assert "mis à jour" in res.stdout
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600

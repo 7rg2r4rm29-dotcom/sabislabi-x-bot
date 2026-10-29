@@ -273,3 +273,27 @@ class TestMain:
     def test_config_summary_lists_slots(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
         assert "gm 08:00" in txt and "mar. 15:00" in txt and "dim. 18:00" in txt
+
+
+
+def test_report_shows_recent_posts_without_secrets(tmp_path, capsys):
+    from bot import main as m
+    state = {"version": 2, "items": {
+        "a": {"id": "a", "kind": "gm", "status": "published", "created_at": "2026-10-28T06:30:00+01:00",
+              "texts": ["gm. one small thing\ntoday"], "meta": {"from_fallback": True, "reason": "secours"}},
+        "b": {"id": "b", "kind": "news", "status": "failed", "created_at": "2026-10-28T16:30:00+01:00",
+              "texts": ["voice mode is free now"], "last_error": "Plus de crédits API X",
+              "meta": {"reason": "actu du jour", "sources": [{"title": "OpenAI makes voice free", "url": "u"}]}},
+        "c": {"id": "c", "kind": "comment_reply", "status": "expired", "created_at": "2026-10-28T10:00:00+01:00",
+              "texts": ["thanks"], "meta": {}}},
+        "costs": {"days": {"2026-10-28": {"total": 1.25}}}, "llm_usage": {"days": {"2026-10-28": {"usd": 0.5}}}}
+    sp = tmp_path / "state.json"
+    sp.write_text(json.dumps(state))
+    log = tmp_path / "bot.log"
+    log.write_text("2026-10-28 07:58:43 | ERROR   | xbot.publisher | Item 23ea (gm) en échec : crédits\n")
+    out = m.report(sp, log)
+    assert "gm [published] (TEXTE DE SECOURS)" in out and "gm. one small thing / today" in out
+    assert "OpenAI makes voice free" in out and "Plus de crédits API X" in out
+    assert "Réponses aux commentaires : expired 1" in out
+    assert "en échec : crédits" in out
+    assert m.main(["--report", "--state", str(sp)]) == 0
