@@ -41,6 +41,9 @@ WATCHDOG_S = 420
 ANALYTICS_EVERY_MIN = 180
 GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
+REACTIVE_MAX_CHECKS_PER_DAY = 24   # appels à Claude pour l'actu chaude, au plus par jour
+BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
+WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
 WEEKLY_REPORT_LATE_MAX_H = 24
 STARTUP_NOTICE_EVERY_MIN = 360    # pas de rafale de « démarré » si systemd relance en boucle
@@ -503,8 +506,11 @@ class Bot:
 
     # ---- Ingrédients de la rédaction -----------------------------------
     def _news(self, kind: str, use_x: bool = True) -> list:
+        # Fin de semaine, le thread est le récap de la semaine IA : 7 jours d'actu.
+        weekly = kind == "thread" and now_local().weekday() in WEEKLY_RECAP_WEEKDAYS
         try:
-            items = self.news.collect(use_x=use_x) or []
+            items = (self.news.collect(max_age_hours=168, use_x=use_x) if weekly
+                     else self.news.collect(use_x=use_x)) or []
         except Exception as e:  # noqa: BLE001
             log.exception("Actu : collecte impossible : %s", e)
             items = []
@@ -568,6 +574,29 @@ class Bot:
                 return True
         return False
 
+    def _new_breaking_candidates(self, news: list, now) -> list[str]:
+        """Ids des actus fraîches (< 12 h) qui peuvent valoir un post immédiat — annonce
+        officielle, ou actu qui décolle (likes sur X, points sur Hacker News) — et que
+        la rédaction n'a pas encore examinées."""
+        seen = set(self.state.data.get("breaking_seen") or [])
+        out: list[str] = []
+        for it in news:
+            iid = str(getattr(it, "id", "") or "")
+            if not iid or iid in seen:
+                continue
+            published = getattr(it, "published", None)
+            if published is None or (now - published) > timedelta(hours=12):
+                continue
+            hot = bool(getattr(it, "official", False)) or int(getattr(it, "engagement", 0) or 0) >= BREAKING_MIN_ENGAGEMENT
+            if hot:
+                out.append(iid)
+        return out
+
+    def _remember_breaking_candidates(self, ids: list[str]) -> None:
+        seen = [i for i in (self.state.data.get("breaking_seen") or []) if isinstance(i, str)]
+        self.state.data["breaking_seen"] = (seen + [i for i in ids if i not in seen])[-400:]
+        self.state.flush()
+
     def maybe_reactive(self, force: bool = False) -> int:
         """`force` (commande --once reactive) ignore la fenêtre, l'intervalle et
         l'écart avec les créneaux, jamais le plafond du jour."""
@@ -592,6 +621,16 @@ class Bot:
         if not news:
             log.info("Réactif : pas d'actu fraîche")
             return 0
+        # Claude n'est appelé que s'il y a du NOUVEAU qui pourrait mériter un post
+        # (annonce officielle ou actu qui décolle), et au plus N fois par jour.
+        fresh = self._new_breaking_candidates(news, now)
+        if not fresh and not force:
+            return 0
+        if self.state.count("reactive_checks") >= REACTIVE_MAX_CHECKS_PER_DAY and not force:
+            log.info("Réactif : %d vérifications aujourd'hui, on s'arrête là", REACTIVE_MAX_CHECKS_PER_DAY)
+            return 0
+        self.state.incr("reactive_checks")
+        self._remember_breaking_candidates(fresh)
         draft = self.writer.draft_reactive(news, self._notes(), self._perf())
         if draft is None or not getattr(draft, "texts", None):
             log.info("Réactif : rien d'assez fort pour l'instant")

@@ -281,7 +281,7 @@ def test_gating(radar_env, settings, state, fake_x, clock):
     state.data["paused"] = True
     assert radar.check() == 0 and reads() == 0
     state.data["paused"] = False
-    clock(23, 0)                       # hors fenêtre 08:00-22:30
+    clock(3, 0)                        # hors fenêtre 08:00-01:00
     assert radar.check() == 0 and reads() == 0
     clock(10, 0)
     fake_x.configured = False

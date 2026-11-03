@@ -436,17 +436,17 @@ class TestReactive:
 
     def test_outside_window(self, settings, state, budget, parts, clock):
         bot = self._bot(settings, state, budget, parts)
-        clock(10, 30)   # fenêtre 11:00-23:00 (après-midi européen + journée américaine)
+        clock(7, 30)    # fenêtre 08:00-01:00 (journée européenne + journée américaine)
         assert bot.maybe_reactive() == 0
-        clock(23, 30)
+        clock(2, 0)
         assert bot.maybe_reactive() == 0
         assert parts["writer"].calls == []
 
     def test_too_close_to_a_slot(self, settings, state, budget, parts, clock):
         bot = self._bot(settings, state, budget, parts)
-        clock(13, 0)    # 30 min avant le tip de 13:30 (écart mini 90)
+        clock(13, 0)    # 30 min avant le tip de 13:30 (écart mini 45)
         assert bot.maybe_reactive() == 0
-        clock(14, 30)   # 60 min après
+        clock(14, 0)    # 30 min après
         assert bot.maybe_reactive() == 0
         assert parts["writer"].calls == []
 
@@ -457,11 +457,12 @@ class TestReactive:
         assert bot.maybe_reactive() == 0
         assert parts["writer"].names() == ["draft_reactive"]
         parts["writer"].default_reactive = True
-        clock(16, 30)   # < 150 min depuis le dernier essai
+        clock(16, 10)   # < 20 min depuis le dernier essai
         assert bot.maybe_reactive() == 0
         assert parts["writer"].names() == ["draft_reactive"]
 
     def test_daily_cap(self, settings, state, budget, parts, clock):
+        settings.reactive_max_per_day = 1
         bot = self._bot(settings, state, budget, parts)
         clock(10, 0)
         state.incr("reactive")
@@ -854,8 +855,33 @@ def test_auto_mode_never_publishes_canned_text(settings, state, budget, parts, c
     settings.approval_mode = "auto"
     parts["writer"].default_post = False          # Claude ne propose rien de publiable
     bot = make_bot(settings, state, budget, parts)
-    clock(11, 0)                                   # astuce de 13:30 à rédiger
+    clock(12, 50)                                  # astuce de 13:30 : rédigée 45 min avant en mode auto
     bot.plan_slots()
     assert parts["approvals"].created == []
     assert ("fallback_post", "tip") not in parts["writer"].calls
     assert any("créneau sauté" in n for n in parts["approvals"].notes)
+
+
+
+def test_breaking_desk_only_asks_claude_about_new_hot_items(settings, state, budget, parts, clock):
+    parts["writer"].default_reactive = False       # Claude : « rien à poster »
+    bot = make_bot(settings, state, budget, parts)
+    clock(16, 0)
+    assert bot.maybe_reactive() == 0
+    assert parts["writer"].names() == ["draft_reactive"]
+    clock(16, 30)                                  # mêmes actus, déjà examinées : pas d'appel
+    assert bot.maybe_reactive() == 0
+    assert parts["writer"].names() == ["draft_reactive"]
+    parts["news"].items.append(_news_item(3))      # une nouvelle annonce officielle arrive
+    clock(17, 0)
+    bot.maybe_reactive()
+    assert parts["writer"].names() == ["draft_reactive", "draft_reactive"]
+
+
+def test_auto_mode_drafts_close_to_publication(settings, state, budget, parts, clock):
+    settings.approval_mode = "auto"
+    bot = make_bot(settings, state, budget, parts)
+    clock(12, 0)                                   # 90 min avant le tip de 13:30 : trop tôt en auto
+    assert bot.plan_slots() == 0
+    clock(12, 50)
+    assert bot.plan_slots() == 1

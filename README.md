@@ -59,11 +59,16 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 
 | Contenu | Publication | La carte arrive vers |
 |---|---|---|
-| GM (petit post du matin) | 8 h 30 | 21 h 30 la veille |
-| Astuce IA | 14 h | 11 h 30 |
-| Actu IA décryptée | 18 h 30 | 16 h 30 |
-| Thread | mardi 15 h et dimanche 17 h | 4 h avant |
-| Post réactif (actu brûlante) | au plus 1 par jour, seulement si ça vaut le coup | quand ça arrive |
+| Actu IA de la nuit (les annonces américaines tombent pendant la nuit européenne) | 8 h 30 | 2 h avant (45 min en mode automatique) |
+| Mode d'emploi IA (une nouveauté expliquée pas à pas, ou un prompt à copier) | 14 h | 2 h 30 avant (45 min en auto) |
+| Actu IA du jour | 18 h 30 | 2 h avant (45 min en auto) |
+| Thread : tutoriel le mardi, **récap de la semaine IA** le dimanche | mardi 15 h et dimanche 17 h | 4 h avant (1 h 30 en auto) |
+| **Actu chaude** : une annonce officielle (OpenAI, Anthropic, Google…) expliquée dans l'heure | jusqu'à 4 par jour, de 8 h à 1 h | dès qu'elle tombe |
+
+Le style est celui des comptes IA qui grandissent le plus vite (The Rundown, Min Choi, Allie K. Miller) :
+« [Entreprise] vient de sortir [nouveauté]. » puis 2 à 4 faits qui comptent (→), puis pourquoi c'est
+important ou quoi essayer ; des modes d'emploi concrets ; des listes qu'on enregistre ; et la capture de
+la page officielle quand c'est une annonce.
 
 - **Les jours de thread**, le thread prend la place du post le plus proche (l'astuce le mardi, l'actu le
   dimanche) : jamais plus de 3 posts prévus dans la journée.
@@ -77,7 +82,7 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 - Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**,
   même si tu appuies sur ✅ plus tard.
 - Si le bot a été arrêté et qu'un post validé a plus de 3 h de retard, il ne part pas non plus
-  (un GM à 16 h n'a pas de sens). Tu es prévenu.
+  (l'actu du matin à 16 h n'a plus de sens). Tu es prévenu.
 - Si X ne confirme pas une publication (coupure réseau), le bot vérifie sur ton profil avant de réessayer :
   **jamais de doublon**.
 - La nuit (23 h 30 - 7 h 30), les messages arrivent **sans sonnerie**.
@@ -259,14 +264,14 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 
 | Réglage | Par défaut | Rôle |
 |---|---|---|
-| `POST_SLOTS` | `gm@08:30,tip@14:00,news@18:30` | posts du jour (type@heure) |
+| `POST_SLOTS` | `news@08:30,tip@14:00,news@18:30` | posts du jour (type@heure ; `gm` existe encore si tu y tiens) |
 | `THREAD_SLOTS` | `tue@15:00,sun@17:00` | threads (jour@heure) |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |
 | `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes |
 | `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
-| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | post sur une actu brûlante |
+| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `4` | actu chaude expliquée dans l'heure |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |

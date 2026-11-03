@@ -643,9 +643,8 @@ class TestThreads:
             w.rng = random.Random(seed)
             settings.thread_candidates = 6
             picks, forced = w.thread_plan([])
-            assert forced and picks[:3] == ["beginner", "timely", "tutorial"]
-            assert len(picks) == 5                    # practical + un seul genre « doux »
-            assert len(set(picks) & wmod.THREAD_SOFT_KINDS) == 1
+            assert forced and picks == ["beginner", "timely", "tutorial", "practical"]
+            assert not set(picks) & wmod.THREAD_SOFT_KINDS   # compte IA : plus de mindset / histoire
             picks, forced = w.thread_plan(["mindset", "tutorial"])
             assert not set(picks) & wmod.THREAD_SOFT_KINDS
             picks, forced = w.thread_plan(["tutorial", "timely"])
@@ -654,6 +653,14 @@ class TestThreads:
             assert not forced and "beginner" not in picks
             settings.thread_candidates = 1
             assert w.thread_plan(["beginner", "timely"])[0] == ["timely"]
+
+    def test_weekend_thread_is_the_weekly_recap(self, settings, state, clock):
+        w, _ = make_writer(settings, state)
+        clock(13, 0, day=18)                                  # dimanche 18 octobre 2026
+        settings.thread_candidates = 3
+        assert w.thread_plan(["tutorial"])[0] == ["weekly", "timely", "tutorial"]
+        clock(13, 0, day=20)                                  # mardi : pas de récap
+        assert "weekly" not in w.thread_plan(["tutorial"])[0]
 
     def test_recent_thread_kinds_synced_from_published_items(self, settings, state):
         w, _ = make_writer(settings, state)
@@ -1083,8 +1090,11 @@ class TestPrompts:
     def test_editorial_line_in_prompts(self):
         for p in (wmod.SYSTEM_PROMPT, wmod.THREAD_SYSTEM_PROMPT, wmod.REACTIVE_GATE_PROMPT):
             assert "Crypto, NFTs" in p and "Muslim" in p and "PERSONAL FACTS" in p
-            assert "ORIGINALITY" in p and "GROUNDING" in p and "No links and no domain names" in p
+            assert "ADD VALUE" in p and "GROUNDING" in p and "No links and no domain names" in p
             assert "260 characters" in p
+        for p in (wmod.SYSTEM_PROMPT, wmod.REACTIVE_GATE_PROMPT):
+            assert "PLAYBOOK" in p and "just [launched" in p and "Sentence case" in p
+            assert "lowercase ok" not in p and "One number max" not in p
         assert "max 200 characters" in wmod.GM_SYSTEM_PROMPT
         assert "Muslim" in wmod.RADAR_REPLY_PROMPT and "Muslim" in wmod.GM_SYSTEM_PROMPT
         assert "x.com" not in wmod._SCREENSHOT_DOMAINS_TEXT.split(", ")

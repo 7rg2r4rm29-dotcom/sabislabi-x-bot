@@ -31,9 +31,12 @@ POST_KINDS = ("gm", "tip", "news")
 # de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc 3 posts forts
 # bien espacés plutôt que 5 : 08:30 (Europe, Inde), 14:00 (côte Est US au réveil
 # + Europe), 18:30 (pause déjeuner US + soirée Europe).
-DEFAULT_POST_SLOTS = "gm@08:30,tip@14:00,news@18:30"
+# Plus de « gm » (héritage crypto) : 08:30 = l'actu IA de la nuit (les annonces US
+# tombent pendant la nuit européenne), 14:00 = un mode d'emploi, 18:30 = l'actu du jour.
+DEFAULT_POST_SLOTS = "news@08:30,tip@14:00,news@18:30"
 DEFAULT_THREAD_SLOTS = "tue@15:00,sun@17:00"
 DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240}
+AUTO_LEAD_MINUTES = {"thread": 90}   # mode automatique : 45 min avant pour un post, 90 pour un thread
 
 # Modèles qui acceptent la bascule serveur en cas de refus (fallbacks: "default").
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
@@ -174,10 +177,10 @@ class Settings:
 
     # --- Posts réactifs ---
     reactive_enabled: bool = True
-    reactive_max_per_day: int = 2
-    reactive_check_every_min: int = 60
-    reactive_window: tuple[dtime, dtime] = (dtime(11, 0), dtime(23, 0))
-    reactive_min_gap_min: int = 90
+    reactive_max_per_day: int = 4
+    reactive_check_every_min: int = 20
+    reactive_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(1, 0))
+    reactive_min_gap_min: int = 45
 
     # --- Commentaires sous mes posts ---
     comments_enabled: bool = True
@@ -187,11 +190,11 @@ class Settings:
 
     # --- Radar (suggestions de réponses sous les gros comptes, publiées À LA MAIN) ---
     radar_enabled: bool = True
-    radar_check_every_min: int = 30
+    radar_check_every_min: int = 15
     radar_accounts_per_check: int = 20
     radar_max_age_min: int = 45
     radar_max_per_day: int = 8
-    radar_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(22, 30))
+    radar_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(1, 0))
     radar_min_likes_per_min: float = 1.0
 
     # --- Sources d'actu ---
@@ -233,7 +236,11 @@ class Settings:
         return bool(self.telegram_token and self.telegram_chat_id)
 
     def lead_for(self, kind: str) -> int:
-        return int(self.draft_leads.get(kind, 120))
+        lead = int(self.draft_leads.get(kind, 120))
+        if self.approval_mode == "auto":
+            # Personne ne relit : on rédige au plus près de l'heure, avec l'actu la plus fraîche.
+            lead = min(lead, AUTO_LEAD_MINUTES.get(kind, 45))
+        return lead
 
     def validate(self) -> list[str]:
         """Erreurs bloquantes (liste vide = OK). Appelé au démarrage."""
@@ -336,21 +343,22 @@ def load_settings() -> Settings:
         health_report_at=_lenient("HEALTH_REPORT_AT", parse_hhmm, "08:30", w),
         thread_candidates=max(1, _env_int("THREAD_CANDIDATES", 3)),
         reactive_enabled=_env_bool("REACTIVE_ENABLED", True),
-        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 2),
-        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 60),
-        # 11 h - 23 h (Paris) : l'Europe l'après-midi, puis toute la journée américaine.
-        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "11:00-23:00", w),
-        reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 90),
+        # Actu chaude : jusqu'à 4 posts par jour, vérifiée toutes les 20 min de 8 h à 1 h
+        # (Paris), soit la journée européenne puis toute la journée américaine.
+        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 4),
+        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 20),
+        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "08:00-01:00", w),
+        reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 45),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),
         comments_max_drafts_per_day=_env_int("COMMENTS_MAX_DRAFTS_PER_DAY", 40),
         comments_window=_lenient("COMMENTS_WINDOW", parse_window, "08:00-23:30", w),
         radar_enabled=_env_bool("RADAR_ENABLED", True),
-        radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 30),
+        radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 15),
         radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 20),
         radar_max_age_min=_env_int("RADAR_MAX_AGE_MINUTES", 45),
         radar_max_per_day=_env_int("RADAR_MAX_PER_DAY", 8),
-        radar_window=_lenient("RADAR_WINDOW", parse_window, "08:00-22:30", w),
+        radar_window=_lenient("RADAR_WINDOW", parse_window, "08:00-01:00", w),
         radar_min_likes_per_min=_env_float("RADAR_MIN_LIKES_PER_MIN", 1.0),
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),

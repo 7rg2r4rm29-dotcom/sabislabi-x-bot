@@ -599,8 +599,20 @@ def test_migrate_upgrades_untouched_old_defaults_only(tmp_path):
     res = run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)})
     assert res.returncode == 0, out(res)
     lines = env_lines(app)
-    assert "REACTIVE_MAX_PER_DAY=2" in lines                 # ancienne valeur par défaut -> nouvelle
+    assert "REACTIVE_MAX_PER_DAY=4" in lines                 # ancienne valeur par défaut -> nouvelle
     assert "REACTIVE_CHECK_EVERY_MINUTES=45" in lines        # réglée à la main : gardée
-    assert "REACTIVE_WINDOW=11:00-23:00" in lines
+    assert "REACTIVE_WINDOW=08:00-01:00" in lines
     assert "mis à jour" in res.stdout
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+
+def test_migrate_drops_gm_from_untouched_schedule(tmp_path):
+    app = tmp_path / "app"
+    (app / "config").mkdir(parents=True)
+    (app / "config" / ".env").write_text('POST_SLOTS="gm@08:30,tip@14:00,news@18:30"\n')
+    assert run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)}).returncode == 0
+    assert "POST_SLOTS=news@08:30,tip@14:00,news@18:30" in env_lines(app)
+    (app / "config" / ".env").write_text("POST_SLOTS=gm@07:00,tip@12:00\n")      # réglé à la main : gardé
+    assert run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)}).returncode == 0
+    assert "POST_SLOTS=gm@07:00,tip@12:00" in env_lines(app)

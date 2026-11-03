@@ -448,7 +448,7 @@ class TestReviewFixes:
         monkeypatch.setenv("WEEKLY_REPORT_AT", "off")
         s = cfg.load_settings()
         assert [(sl.weekday, sl.at.hour) for sl in s.thread_slots] == [(1, 15), (6, 17)]  # français accepté
-        assert [sl.kind for sl in s.post_slots] == ["gm", "tip", "news"]                   # défaut
+        assert [sl.kind for sl in s.post_slots] == ["news", "tip", "news"]                 # défaut (sans gm)
         assert any("POST_SLOTS" in w for w in s.warnings)
         assert s.quiet_hours is not None and s.health_report_at.hour == 8
         assert s.weekly_report is None
