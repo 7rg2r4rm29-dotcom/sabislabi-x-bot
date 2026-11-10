@@ -41,7 +41,7 @@ WATCHDOG_S = 420
 ANALYTICS_EVERY_MIN = 180
 GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
-REACTIVE_MAX_CHECKS_PER_DAY = 24   # appels à Claude pour l'actu chaude, au plus par jour
+REACTIVE_MAX_CHECKS_PER_DAY = 12   # appels à Claude pour l'actu chaude, au plus par jour
 BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
@@ -57,8 +57,8 @@ SLOT_FAILED = "failed"            # erreur inattendue pendant la rédaction
 SLOT_MARKERS = (SLOT_PENDING, SLOT_SKIPPED, SLOT_FAILED)
 
 POST_KINDS = ("gm", "tip", "news")
-KIND_FR = {"gm": "☀️ GM", "tip": "💡 astuce", "news": "📰 actu", "thread": "🧵 thread",
-           "reactive": "⚡ réactif", "comment_reply": "💬 réponse", "radar": "🎯 radar"}
+KIND_FR = {"gm": "☀️ GM", "tip": "💡 IA au quotidien", "news": "📰 actu simple", "thread": "🧵 thread",
+           "reactive": "⚡ actu du moment", "comment_reply": "💬 réponse", "radar": "🎯 radar"}
 JOURS_COURTS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 ITEM_STATUS_FR = {
@@ -205,9 +205,17 @@ class Bot:
         # à la version qu'elle remplace.
         self.writer.regen_item_id = item.get("id")
         try:
-            return self._write(kind, news, self._notes(), self._perf())
+            draft = self._write(kind, news, self._notes(), self._perf())
         finally:
             self.writer.regen_item_id = None
+        if draft is not None and getattr(draft, "texts", None):
+            # La carte va avec le texte : nouvelle version, nouvelle image.
+            path, image_kind = self._visual(draft, f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
+            try:
+                draft.image_path, draft.image_kind = path, image_kind
+            except AttributeError:
+                pass
+        return draft
 
     def regen_comment(self, item: dict) -> str | None:
         meta = item.get("meta") or {}
@@ -544,7 +552,11 @@ class Bot:
         return self.writer.draft_post(kind, news, notes, perf)
 
     def _visual(self, draft, tag: str) -> tuple[str | None, str | None]:
-        if getattr(draft, "poll", None) or getattr(draft, "visual", None) is None:
+        """Image du post : la carte écrite par Claude (dessinée, ou page de l'actu
+        dans un smartphone). Un sondage n'a pas d'image."""
+        if getattr(draft, "poll", None):
+            return None, None
+        if getattr(draft, "visual", None) is None and not getattr(draft, "card", None):
             return None, None
         fn = self._prepare_visual
         if fn is None:
@@ -588,9 +600,19 @@ class Bot:
             if published is None or (now - published) > timedelta(hours=12):
                 continue
             hot = bool(getattr(it, "official", False)) or int(getattr(it, "engagement", 0) or 0) >= BREAKING_MIN_ENGAGEMENT
-            if hot:
+            if hot and not self._for_insiders_only(it):
                 out.append(iid)
         return out
+
+    @staticmethod
+    def _for_insiders_only(it) -> bool:
+        """Annonce pour développeurs, entreprises ou investisseurs : inutile de
+        demander à Claude si elle mérite un post grand public."""
+        try:
+            from .sources import audience_factor
+            return audience_factor(it) < 1.0
+        except Exception:  # noqa: BLE001
+            return False
 
     def _remember_breaking_candidates(self, ids: list[str]) -> None:
         seen = [i for i in (self.state.data.get("breaking_seen") or []) if isinstance(i, str)]

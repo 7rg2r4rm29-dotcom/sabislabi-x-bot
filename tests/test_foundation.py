@@ -43,7 +43,12 @@ class TestFilters:
     def test_json_leak(self):
         assert filters.looks_like_json_leak('{"text": "hi"}')
         assert filters.looks_like_json_leak('"text": "hi there"')
+        assert filters.looks_like_json_leak('text: "hi there"')
+        assert filters.looks_like_json_leak('{"card_title": "Dinner"}')
         assert not filters.looks_like_json_leak("plain text")
+        # Un conseil normal du compte : la phrase à taper, entre guillemets.
+        assert not filters.looks_like_json_leak('Answer too long? Just reply: "shorter, please". It works.')
+        assert not filters.looks_like_json_leak('Take a photo of the letter and add this text: "explain it simply"')
 
     def test_clean_output(self):
         assert filters.clean_output('"hello #AI @bob world"') == "hello world"
@@ -448,7 +453,8 @@ class TestReviewFixes:
         monkeypatch.setenv("WEEKLY_REPORT_AT", "off")
         s = cfg.load_settings()
         assert [(sl.weekday, sl.at.hour) for sl in s.thread_slots] == [(1, 15), (6, 17)]  # français accepté
-        assert [sl.kind for sl in s.post_slots] == ["news", "tip", "news"]                 # défaut (sans gm)
+        assert [(sl.kind, sl.at.hour, sl.at.minute) for sl in s.post_slots] == \
+            [("tip", 14, 30), ("news", 19, 0)]                                             # défaut : 2 posts par jour
         assert any("POST_SLOTS" in w for w in s.warnings)
         assert s.quiet_hours is not None and s.health_report_at.hour == 8
         assert s.weekly_report is None

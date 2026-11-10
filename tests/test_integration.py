@@ -28,11 +28,13 @@ RADAR = "Tried this yesterday: it works best when you paste the full error, not 
 NEWS = ("the people winning with AI this week aren't chasing every launch.\n"
         "they picked one boring task and automated it. which one would you start with?")
 RADAR_POST = "We just shipped a new way to build small apps directly inside the chat window."
+CARD = {"card_type": "prompt", "card_title": "Check any *AI answer*",
+        "card_lines": ["What would make this answer wrong?"], "card_note": "Works in ChatGPT, Claude or Gemini."}
 
 
 def responder(label, system, user, schema):
     def post(text):
-        return {"text": text, "source_ids": [], "used_note_ids": [], "visual_url": "", "image_prompt": "",
+        return {"text": text, "source_ids": [], "used_note_ids": [], **CARD, "visual_url": "",
                 "poll_options": [], "reason": "raison"}
     if label == "post-gm":
         return post(GM)
@@ -167,6 +169,52 @@ def test_simulated_day(settings, state, budget, clock):
     # 4. /note gardée pour Claude
     assert state.data["notes"][-1]["text"].startswith("I automated my invoices")
     assert state.data.get("paused") is False
+
+
+def test_auto_mode_day_every_post_goes_out_with_its_card(settings, state, budget, clock, monkeypatch):
+    """Le mode du serveur : personne ne valide. Chaque post est rédigé 45 min avant son heure,
+    sa carte est dessinée (ici : faux rendu), puis il part tout seul AVEC son image."""
+    from pathlib import Path
+
+    from bot import cards
+    from bot.config import parse_post_slots
+    drawn: list[dict] = []
+
+    def fake_render(card, out_path, *, theme, badge, handle, shot_path=None, source=""):
+        drawn.append({"type": card["type"], "theme": theme, "badge": badge, "handle": handle})
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"\x89PNG fake")
+        return True
+    monkeypatch.setattr(cards, "render", fake_render)
+    settings.approval_mode = "auto"
+    settings.automated_label_ack = True
+    settings.post_slots = parse_post_slots("tip@14:30,news@19:00")
+    settings.radar_enabled = settings.comments_enabled = settings.reactive_enabled = False
+    tg, x = FakeTelegram(), FakeX()
+    bot = Bot(settings, llm=FakeLLM({"": responder}), x=x, telegram=tg, state=state, budget=budget,
+              rng=random.Random(0))                      # le vrai visuals.prepare
+    t = clock(13, 0)
+    stop = clock(20, 0)
+    while t <= stop:
+        utils.set_clock(t)
+        bot.tick()
+        t += timedelta(minutes=5)
+
+    assert [p["text"] for p in x.posts] == [TIP, NEWS]
+    assert all(p["media_ids"] and len(p["media_ids"]) == 1 for p in x.posts)      # une image par post
+    assert len(x.uploads) == 2 and not any(p["made_with_ai"] for p in x.posts)
+    assert [d["type"] for d in drawn] == ["prompt", "prompt"]
+    assert drawn[0]["theme"] != drawn[1]["theme"]                                 # les palettes tournent
+    assert [d["badge"] for d in drawn] == ["Everyday AI · No. 1", "Everyday AI · No. 2"]
+    assert all(d["handle"] == "sabislabi" for d in drawn)
+    items = sorted(state.items(statuses=("published",)), key=lambda i: i["publish_at"])
+    assert [i["kind"] for i in items] == ["tip", "news"]
+    assert all(i["image_kind"] == "card" and i["meta"]["card"]["type"] == "prompt" and i["meta"]["auto"]
+               for i in items)
+    assert len(tg.photos) == 2                                                    # l'image arrive aussi sur Telegram
+    # Rédigés au plus près de l'heure (45 min avant), publiés à l'heure (aléa de publication à 0).
+    assert [utils.parse_iso(i["created_at"]).strftime("%H:%M") for i in items] == ["13:45", "18:15"]
+    assert [utils.parse_iso(i["publish_at"]).strftime("%H:%M") for i in items] == ["14:30", "19:00"]
 
 
 def test_auto_mode_requires_explicit_label_ack(settings):

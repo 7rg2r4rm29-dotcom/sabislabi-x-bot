@@ -35,15 +35,17 @@ CARD_MAX_RETRIES = 24          # … pendant 2 h au plus
 
 KIND_LABELS = {
     "gm": ("☀️", "GM"),
-    "tip": ("💡", "Astuce IA"),
-    "news": ("📰", "Actu IA décryptée"),
+    "tip": ("💡", "L'IA au quotidien"),
+    "news": ("📰", "Actu IA en mots simples"),
     "thread": ("🧵", "Thread"),
-    "reactive": ("⚡", "Post réactif"),
+    "reactive": ("⚡", "Actu du moment"),
     "comment_reply": ("💬", "Réponse à un commentaire"),
     "radar": ("🎯", "Radar"),
 }
-THREAD_GENRES_FR = {"timely": "actu", "tutorial": "tuto", "practical": "pratique",
-                    "beginner": "débutants", "mindset": "mindset", "story": "histoire vraie"}
+THREAD_GENRES_FR = {"timely": "une actu expliquée", "tutorial": "pas à pas", "beginner": "l'IA au quotidien",
+                    "weekly": "la semaine de l'IA", "practical": "pratique", "mindset": "mindset",
+                    "story": "histoire vraie"}
+IMAGE_KINDS_FR = {"card": "carte", "phone": "page de l'actu dans un smartphone", "ai": "image IA"}
 
 # Statuts dans lesquels chaque bouton a encore un sens.
 _ACTIONABLE = {
@@ -245,6 +247,9 @@ class Approvals:
             "from_fallback": bool(draft.from_fallback),
             "scheduled_at": iso(publish_at),
         }
+        card = getattr(draft, "card", None)
+        if isinstance(card, dict) and image_path:
+            meta["card"] = {"type": card.get("type"), "title": str(card.get("title") or "").replace("*", "")}
         fields: dict[str, Any] = {
             "status": "awaiting",
             "publish_at": iso(publish_at),
@@ -300,8 +305,8 @@ class Approvals:
             path = item.get("image_path")
             if photo and path and Path(path).is_file():
                 emoji, label = self._label(item)
-                what = "image IA" if item.get("image_kind") == "ai" else "capture d'écran"
-                self.tg.send_photo(path, caption=f"{emoji} {esc(label)} — {what} proposée avec ce post")
+                what = IMAGE_KINDS_FR.get(str(item.get("image_kind") or ""), "image")
+                self.tg.send_photo(path, caption=f"{emoji} {esc(label)} — {what} jointe à ce post")
             text, buttons = self._render(item)
             mid = self.tg.send(text, buttons=buttons or None, silent=silent)
             if mid is None:
@@ -436,8 +441,10 @@ class Approvals:
                 lines.append("⚠️ Sondage + image : X n'accepte pas les deux, l'image ne sera pas publiée")
             elif item.get("image_kind") == "ai":
                 lines.append("🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)")
+            elif item.get("image_kind") == "phone":
+                lines.append("📱 Image jointe : la page de l'actu, vue dans un smartphone (au-dessus)")
             else:
-                lines.append("🖼️ Capture d'écran jointe (photo au-dessus)")
+                lines.append("🖼️ Carte jointe (image au-dessus)")
         reason = str(meta.get("reason") or "").strip()
         if reason:
             lines.append(f"💭 Pourquoi : {esc(_trunc(reason, 300 if limit is None else 120))}")
@@ -938,10 +945,34 @@ class Approvals:
                 meta["sources"] = [s.brief() if hasattr(s, "brief") else dict(s) for s in srcs]
             meta["used_notes"] = list(getattr(result, "used_notes", None) or [])
             meta["from_fallback"] = bool(getattr(result, "from_fallback", False))
+            self._swap_image(item, meta, result)
         meta["edited"] = False
         meta["warnings"] = []
         self.state.update_item(item["id"], texts=texts, meta=meta, rev=int(item.get("rev") or 0) + 1)
         return True
+
+    def _swap_image(self, item: dict, meta: dict, result: Any) -> None:
+        """🔄 : l'image (une carte dont le texte va avec le post) suit la nouvelle
+        version. Sans nouvelle image, l'ancienne est retirée : elle parlerait d'autre
+        chose. Un résultat sans champ `image_path` (ancien format) ne touche à rien."""
+        if not hasattr(result, "image_path"):
+            return
+        path = getattr(result, "image_path", None) or None
+        kind = (getattr(result, "image_kind", None) or None) if path else None
+        item["image_path"], item["image_kind"] = path, kind
+        self.state.update_item(item["id"], image_path=path, image_kind=kind)
+        card = getattr(result, "card", None)
+        if path and isinstance(card, dict):
+            meta["card"] = {"type": card.get("type"), "title": str(card.get("title") or "").replace("*", "")}
+        else:
+            meta.pop("card", None)
+        if path and self.tg is not None and Path(path).is_file():
+            try:
+                emoji, label = self._label(item)
+                what = IMAGE_KINDS_FR.get(str(kind or ""), "image")
+                self.tg.send_photo(path, caption=f"{emoji} {esc(label)} — nouvelle {what} (nouvelle version)")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Item %s : nouvelle image non envoyée sur Telegram (%s)", item.get("id"), type(e).__name__)
 
     def _cb_edit(self, item: dict, ans: _Answer) -> None:
         texts = item.get("texts") or [""]

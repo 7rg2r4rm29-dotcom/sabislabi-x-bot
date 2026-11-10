@@ -28,13 +28,13 @@ POST_KINDS = ("gm", "tip", "news")
 # Créneaux par défaut (heure de Paris), calés sur l'audience anglophone mondiale
 # et sur l'algorithme X (xai-org/x-algorithm, oct. 2026) : chaque post a sa
 # chance « cold start » pendant ~2 h, et le 2e/3e post qu'une même personne voit
-# de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc 3 posts forts
-# bien espacés plutôt que 5 : 08:30 (Europe, Inde), 14:00 (côte Est US au réveil
-# + Europe), 18:30 (pause déjeuner US + soirée Europe).
-# Plus de « gm » (héritage crypto) : 08:30 = l'actu IA de la nuit (les annonces US
-# tombent pendant la nuit européenne), 14:00 = un mode d'emploi, 18:30 = l'actu du jour.
-DEFAULT_POST_SLOTS = "news@08:30,tip@14:00,news@18:30"
-DEFAULT_THREAD_SLOTS = "tue@15:00,sun@17:00"
+# de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc deux posts
+# soignés plutôt que cinq : 14 h 30 = matin aux États-Unis + après-midi en Europe
+# (l'IA au quotidien) ; 19 h = midi aux États-Unis + soirée en Europe (l'actu en
+# mots simples). Chaque post part avec sa carte. Le « gm » (héritage crypto)
+# n'est plus au planning ; le type existe encore pour qui y tient.
+DEFAULT_POST_SLOTS = "tip@14:30,news@19:00"
+DEFAULT_THREAD_SLOTS = "tue@14:30,sun@16:00"
 DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240}
 AUTO_LEAD_MINUTES = {"thread": 90}   # mode automatique : 45 min avant pour un post, 90 pour un thread
 
@@ -177,10 +177,10 @@ class Settings:
 
     # --- Posts réactifs ---
     reactive_enabled: bool = True
-    reactive_max_per_day: int = 4
-    reactive_check_every_min: int = 20
-    reactive_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(1, 0))
-    reactive_min_gap_min: int = 45
+    reactive_max_per_day: int = 1
+    reactive_check_every_min: int = 30
+    reactive_window: tuple[dtime, dtime] = (dtime(12, 0), dtime(23, 30))
+    reactive_min_gap_min: int = 60
 
     # --- Commentaires sous mes posts ---
     comments_enabled: bool = True
@@ -343,12 +343,12 @@ def load_settings() -> Settings:
         health_report_at=_lenient("HEALTH_REPORT_AT", parse_hhmm, "08:30", w),
         thread_candidates=max(1, _env_int("THREAD_CANDIDATES", 3)),
         reactive_enabled=_env_bool("REACTIVE_ENABLED", True),
-        # Actu chaude : jusqu'à 4 posts par jour, vérifiée toutes les 20 min de 8 h à 1 h
-        # (Paris), soit la journée européenne puis toute la journée américaine.
-        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 4),
-        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 20),
-        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "08:00-01:00", w),
-        reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 45),
+        # Actu « à chaud » : au plus 1 post par jour, et seulement pour ce qui touche
+        # M. et Mme Tout-le-monde (la plupart des annonces IA ne les concernent pas).
+        reactive_max_per_day=_env_int("REACTIVE_MAX_PER_DAY", 1),
+        reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 30),
+        reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "12:00-23:30", w),
+        reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 60),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),
         comments_max_drafts_per_day=_env_int("COMMENTS_MAX_DRAFTS_PER_DAY", 40),

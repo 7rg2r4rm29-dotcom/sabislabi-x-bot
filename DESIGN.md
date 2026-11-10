@@ -1,6 +1,17 @@
 # sabislabi-x-bot v2 — design technique
 
-Assistant X pour **@sabislabi** (compte international en anglais : utiliser l'IA, actu IA décryptée, business, un peu de dev perso / histoires vraies).
+Assistant X pour **@sabislabi** (compte international en anglais). Ligne éditoriale depuis novembre 2026 : **« AI made simple, for everyday life »** — on écrit pour le grand public, pas pour les passionnés de tech, et chaque post part avec une carte (image) à enregistrer.
+
+## Ligne éditoriale et images (novembre 2026)
+
+- **Public** : une infirmière, un prof, une commerçante, un parent. Chaque post montre UNE chose utile que l'IA peut faire pour eux (une situation de la vie + la phrase exacte à taper), ou explique une actu IA en mots simples. Formats A–E du `PLAYBOOK` (`bot/writer.py`).
+- **Zéro jargon, trois barrières** : les consignes (`AUDIENCE`, `PLAIN_WORDS`) ; un filtre côté code (`filters.find_tech_jargon` : LLM, API, benchmark, open-source… → motif « trop technique (mot) » et nouvel essai) ; la relecture par Claude, qui rend deux verdicts dans le même appel (`ok`/`issues` pour les faits, `plain`/`hard_words` pour la lisibilité). Au second essai, un texte dont les faits sont justes mais encore jugé « un peu technique » part quand même (mieux qu'un créneau vide).
+- **Variété** : le créneau `tip` reçoit un « moment de la vie » tiré au sort parmi `LIFE_AREAS` (cuisine, courriers, mails, enfants, emploi…), jamais un des 8 derniers. Le créneau `news` prend l'actu qui concerne tout le monde, sinon redevient un post du quotidien (aucune source obligatoire ; la relecture recale tout fait d'actu non sourcé).
+- **Tri de l'actu** : `sources.audience_factor` multiplie le score par 1,6 pour ce qui parle à tout le monde (gratuit, téléphone, mode d'emploi, arnaque…) et par 0,45 pour les sujets d'initiés (API, levées de fonds, puces…). Les flux généralistes sont filtrés (`"filter": "ai"`). Le bureau « à chaud » n'appelle Claude que pour une actu fraîche, officielle ou qui décolle, et non réservée aux initiés.
+- **Une carte par post** (`bot/cards.py`) : Claude écrit `card_type` (`prompt | steps | list | fact | phone | none`), `card_title` (un passage `*entre astérisques*` est mis en valeur), `card_lines`, `card_note`. `Writer._parse_card` nettoie et valide (longueurs, pas de lien, pas de sujet interdit, pas de jargon) ; une carte refusée déclenche un nouvel essai, puis le post part en texte seul plutôt que de perdre le créneau. Un sondage n'a pas d'image.
+- **Rendu** : HTML/CSS → PNG par Chromium headless (Playwright), 1080 × 1350 (4:5) à 2×, sans aucun accès réseau (polices OFL embarquées en base64 : Inter, Bricolage Grotesque, Instrument Serif). Un script ajuste les tailles pour que tout tienne sans grand vide et sans jamais couper un mot du titre. Cinq palettes (`THEMES`) tournent d'un post à l'autre ; changer la « DA » = changer `THEMES`.
+- **Carte « phone »** : la page de l'actu CITÉE est chargée comme sur un iPhone (390 px, ×4), nettoyée (menus fixes, bandeaux cookies, pop-ups), cadrée sur son titre (`visuals._PREPARE_JS`, `_ALIGN_JS`, `headline_fits`), regardée par Claude (`Writer.screenshot_is_clean`), puis posée dans une maquette de smartphone dont la barre reprend la couleur de la page. Au moindre doute (page cassée, titre coupé, redirection vers un autre site, relecture négative ou impossible), une carte dessinée (`list` ou `fact`, mêmes textes) la remplace. Jamais de capture de X.
+- **Rythme** : `POST_SLOTS=tip@14:30,news@19:00`, `THREAD_SLOTS=tue@14:30,sun@16:00` (genres `beginner | tutorial | timely | weekly`), actu à chaud 1/jour au plus entre 12 h et 23 h 30.
 
 ## Principes non négociables (sources officielles, oct. 2026)
 
@@ -21,18 +32,19 @@ Assistant X pour **@sabislabi** (compte international en anglais : utiliser l'IA
 | `bot/llm.py` | `LLM.json(label, system, user, schema, effort)` → dict ou None (sorties structurées, cache 1 h, bascule refus) ; helpers `schema()`, `STR`, `BOOL`, `INT`, `STR_LIST`, `INT_LIST` |
 | `bot/x_api.py` | `XClient` (OAuth1) : `post`, `post_thread`, `upload_image`, `mentions`, `my_recent_posts`, `user_posts`, `user_ids`, `user_id` ; `XError(kind)` ; `intent_reply_url`, `intent_post_url`, `tweet_url`, `contains_url` |
 | `bot/telegram.py` | `Telegram` : `send`, `send_photo`, `edit`, `answer_callback`, `updates` ; `button()`, `esc()` |
-| `bot/filters.py` | garde-fous éditoriaux : `publish_problem`, `off_limits_term`, `hard_blocked`, `is_noise`, `is_too_similar`, `clean_output`, `weighted_length`… |
+| `bot/filters.py` | garde-fous éditoriaux : `publish_problem`, `off_limits_term`, `find_tech_jargon`, `hard_blocked`, `is_noise`, `is_too_similar`, `clean_output`, `weighted_length`… |
 | `bot/models.py` | dataclasses partagées `NewsItem`, `Visual`, `Draft` |
-| `bot/sources.py` | `NewsHub.collect()` : flux RSS/Atom + Hacker News + posts des comptes IA officiels (API) → `list[NewsItem]` triée |
+| `bot/sources.py` | `NewsHub.collect()` : flux RSS/Atom (+ Hacker News si configuré) + posts des comptes IA officiels (API) → `list[NewsItem]` triée ; `audience_factor` (grand public / initiés) |
 | `bot/writer.py` | `Writer` : toutes les consignes Claude et la génération (posts, threads, réactif, réponses, radar, vérifications) |
 | `bot/approvals.py` | `Approvals` : cartes Telegram avec boutons, édition, régénération, commandes (/statut, /plan, /pause, /reprendre, /note, /budget, /aide) |
 | `bot/publisher.py` | `Publisher` : publie les items validés à l'heure, reprises, erreurs |
 | `bot/comments.py` | `CommentDesk.check()` : nouvelles réponses sous mes posts → brouillon de réponse à valider |
 | `bot/radar.py` | `Radar.check()` : posts frais des gros comptes → suggestion de réponse à publier soi-même |
 | `bot/analytics.py` | `Analytics` : statistiques de mes posts (owned reads), notes de performance pour Claude, récap du matin, bilan hebdo |
-| `bot/visuals.py` | captures de vraies pages (Playwright, sites autorisés, jamais x.com) + photo IA optionnelle (OpenAI) |
+| `bot/cards.py` | les cartes : `build_html`, `render` (Chromium headless, sans réseau), `THEMES`, `self_test` |
+| `bot/visuals.py` | `prepare(settings, draft, writer, tag)` → carte dessinée, ou page de l'actu dans un smartphone (capture mobile, jamais x.com) ; photo IA optionnelle (OpenAI) |
 | `bot/scheduler.py` | `Bot` : assemble tout, `tick()` (un tour de boucle), `run_forever()` |
-| `bot/main.py` | point d'entrée : `run`, `--check`, `--once JOB`, `--busy-check` |
+| `bot/main.py` | point d'entrée : `run`, `--check` (dessine aussi une carte d'essai), `--preview [TYPES]` (vrais brouillons + images envoyés sur Telegram, rien n'est publié, état copié), `--report` (posts, chiffres, abonnés, coûts, erreurs), `--once JOB`, `--busy-check` |
 
 ## Modèles partagés (`bot/models.py`)
 
@@ -52,8 +64,8 @@ class NewsItem:
 
 @dataclass
 class Visual:
-    kind: str               # "screenshot" | "ai"
-    target: str             # URL (screenshot) ou description de photo (ai)
+    kind: str               # "phone" (page de l'actu dans un smartphone) | "ai"
+    target: str             # URL de la page (phone) ou description de photo (ai)
 
 @dataclass
 class Draft:
@@ -65,6 +77,9 @@ class Draft:
     reason: str = ""        # pourquoi ce sujet (affiché sur Telegram)
     angle: str = ""         # genre de thread, angle de réponse…
     from_fallback: bool = False
+    card: dict | None = None        # {"type", "title", "lines": [...], "note"} : l'image du post
+    image_path: str | None = None   # renseignés par le planificateur (🔄 : la carte suit le texte)
+    image_kind: str | None = None   # "card" | "phone" | "ai"
 ```
 
 ## Item (dans `state.data["items"]`)
@@ -73,7 +88,8 @@ Champs créés par `StateStore.new_item(kind, texts, **fields)` : `id, kind, sta
 
 - `kind` : `gm | tip | news | thread | reactive | comment_reply | radar`
 - `status` : `awaiting` (attend ta validation) → `approved` (programmé) → `publishing` → `published` ; ou `rejected | expired | failed` ; pour le radar : `suggested` → `dismissed | expired`.
-- `meta` : `reason`, `angle`, `sources` (liste de {title,url,source}), `in_reply_to` (comment_reply), `comment_text`, `commenter`, `post_url`, `intent_url` (radar), `partial_ids` (thread interrompu), `retry_at`.
+- `meta` : `reason`, `angle`, `sources` (liste de {title,url,source}), `card` ({type, title} de la carte dessinée), `in_reply_to` (comment_reply), `comment_text`, `commenter`, `post_url`, `intent_url` (radar), `partial_ids` (thread interrompu), `retry_at`.
+- `image_kind` : `card` (carte dessinée) | `phone` (page de l'actu dans un smartphone) | `ai`.
 
 ## Cycle de vie d'un post planifié
 
@@ -95,26 +111,26 @@ Toutes les `RADAR_CHECK_EVERY_MINUTES` dans `RADAR_WINDOW`, si le budget optionn
 
 ## Posts réactifs
 
-Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTIVE_MIN_GAP_MINUTES` autour d'un créneau, sous `REACTIVE_MAX_PER_DAY` : `Writer.draft_reactive(news)` (porte stricte, la plupart du temps « non »). Si oui : item `reactive`, `publish_at = now`, `expires_at = now + 180 min`.
+Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTIVE_MIN_GAP_MINUTES` autour d'un créneau, sous `REACTIVE_MAX_PER_DAY` (1 par défaut), et seulement s'il y a une actu fraîche (< 12 h), officielle ou qui décolle, pas réservée aux initiés, que la rédaction n'a pas encore examinée (12 appels par jour au plus) : `Writer.draft_reactive(news)` (porte stricte « est-ce que mon voisin s'en soucierait ? », la plupart du temps « non »). Si oui : item `reactive`, `publish_at = now`, `expires_at = now + 180 min`.
 
 ## Analytique (`analytics.py`)
 
 - `refresh_metrics()` toutes les 3 h : `my_recent_posts()` → `public_metrics` (impressions, likes, réponses, reposts, signets) rangées dans `state.published[*].metrics` ; agrégats par type et par créneau dans `state.data["performance"]`.
-- `performance_notes()` → 3-6 lignes pour Claude (« les tutos avec un prompt à copier font 2,1× plus de signets que l'actu… »).
+- `performance_notes()` → 3-6 lignes pour Claude (« les posts avec une carte "prompt" font 1,8× plus de vues… »). Le genre de carte de chaque post est noté (`fmt.card`) et comparé (`by_card`).
 - `daily_report()` (à `HEALTH_REPORT_AT`) et `weekly_report()` (à `WEEKLY_REPORT_AT`) → texte Telegram en français.
 
 ## Coûts estimés
 
-API X : ~4 posts/jour + 2 threads/semaine ≈ 3 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~30-60 appels/jour, consignes en cache.
+API X : 2 posts/jour + 2 threads/semaine ≈ 2 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~20-50 appels/jour (chaque post = une rédaction + une relecture, plus un regard sur la capture pour une carte « phone »), consignes en cache.
 
 ## Tests
 
-`pytest` sans réseau : faux `LLM`, faux `XClient`, faux `Telegram`, horloge figée (`utils.set_clock`). `deploy/deploy.sh` lance la suite sur une copie isolée avant toute installation.
+`pytest` sans réseau : faux `LLM`, faux `XClient`, faux `Telegram`, horloge figée (`utils.set_clock`). `deploy/deploy.sh` lance la suite sur une copie isolée avant toute installation. `tests/test_cards.py` dessine de vraies cartes (dont les textes les plus longs que le Writer accepte) seulement sur demande : `XBOT_RENDER_TESTS=1`, ou `XBOT_BROWSER_PATH` (navigateur préinstallé) ; sur le serveur, c'est `--check` qui dessine une carte d'essai, sans jamais bloquer une installation. `XBOT_BROWSER_PROXY` : proxy du navigateur, pour les environnements de test.
 
 ## Installation (`deploy/`)
 
 - `push_from_mac.sh` (sur le Mac, bash 3.2) : assistant guidé. Envoie le code (tar via ssh, jamais `config/.env`) dans un dossier unique `~/xbv2_stage_<date>` ; lance `precheck.sh` et ne demande que les clés qui ne marchent pas (ouvre la bonne page, `set_secrets.sh CLE…` via `ssh -t`, `telegram_setup.sh` pour le jeton et le chat privé) ; propose la rotation des clés ; lance `deploy.sh` détaché (`nohup setsid`, journal `~/xbv2_deploy_<date>.log`) et le suit avec `follow.sh` : une coupure ssh n'interrompt pas l'installation.
-- `precheck.sh` (serveur) : instantané `pip freeze`, mise à jour des bibliothèques, puis `bot.main --check` de la NOUVELLE version avec le `.env` installé (`XBOT_ENV_FILE`) ; dernière ligne `PARTS telegram=… x=… claude=…` (ok | missing | bad | group | auth | credits | forbidden | wrong_account | error).
+- `precheck.sh` (serveur) : instantané `pip freeze`, mise à jour des bibliothèques, puis `bot.main --check` de la NOUVELLE version avec le `.env` installé (`XBOT_ENV_FILE`) ; dernière ligne `PARTS telegram=… x=… claude=… images=…` (ok | missing | bad | group | auth | credits | forbidden | wrong_account | error ; `images=bad` n'est qu'un avertissement : le bot publierait sans image).
 - `deploy.sh` (serveur) : verrou ; refus si publication en cours (`--busy-check`, ou horaires fixes de la v1) ; bibliothèques + `pytest` sur la nouvelle version ; arrêt du service ; sauvegarde datée (`backup_deploy/<date>/` + manifeste `.xbot_backup`, 5 gardées) ; installation de `bot/ deploy/ tests/` ; `settings.json`/`content.json` remplacés seulement s'ils n'ont pas été modifiés (copie livrée dans `config/.shipped/`, sinon `….nouveau`) ; `migrate_env_v2.sh` ; `--check` réel ; redémarrage. Tout échec ou interruption (trap INT/TERM/HUP) après l'arrêt → `restore_backup.sh`, bibliothèques remises (`pip freeze`), relance, message Telegram ; une restauration incomplète arrête le bot et le dit. Dernière ligne `FIN_DEPLOIEMENT <code>`.
 - `restore_backup.sh` : remet une sauvegarde (code + JSON ; l'état seulement s'il change de format ; `.env` seulement pour annuler un déploiement raté) ; continue malgré une erreur et la signale ; remettre la v1 (navigateur) à la main exige de taper `OUI`.
 - `cleanup_v1.sh` : une fois la v2 en service, supprime `auth/` (session X du navigateur), les copies de l'ancien `.env`, les restes v1 et les clés SSH privées égarées dans le dossier.

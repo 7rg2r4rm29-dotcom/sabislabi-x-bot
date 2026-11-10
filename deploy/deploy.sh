@@ -163,8 +163,9 @@ PY
       echo "MISE À JOUR DES BIBLIOTHÈQUES IMPOSSIBLE : nouvelle version NON installée, le bot continue sur la version actuelle."
       return 1
     fi
-    # Navigateur des captures d'écran (déjà présent avec l'ancienne version ; optionnel).
-    "$PY" -m playwright install chromium >/dev/null 2>&1 || true
+    # Navigateur qui dessine les images des posts (déjà présent en général). Sans lui,
+    # le bot publie sans image : la vérification de l'étape 4 le signale.
+    timeout 600 "$PY" -m playwright install chromium >/dev/null 2>&1 || true
     echo "BIBLIOTHEQUES_OK"
   fi
   if [ -z "${XBOT_SKIP_TESTS:-}" ]; then
@@ -242,7 +243,7 @@ PY
   echo "INSTALL_OK"
 
   # --- 4. Vérification réelle : Telegram, API X, Claude ----------------------
-  echo "=== 4/5 Vérification (Telegram, API X, Claude) ==="
+  echo "=== 4/5 Vérification (Telegram, API X, Claude, images) ==="
   if [ -z "${XBOT_SKIP_CHECK:-}" ]; then
     if ! (cd "$APP_DIR" && timeout 300 "$PY" -m bot.main --check); then
       rollback "La vérification a échoué : lis les lignes ❌ ci-dessus (souvent une clé ou des crédits)."

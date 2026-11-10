@@ -92,9 +92,6 @@ class StubWriter:
         self.calls.append(("draft_radar_reply", author, post_text, age_min, likes))
         return "good point", "add"
 
-    def visual_matches(self, post_text, url, visible_text):
-        return True, "ok"
-
     def names(self) -> list[str]:
         return [c[0] for c in self.calls]
 
@@ -175,6 +172,10 @@ class StubAnalytics:
     def weekly_report(self):
         self.weekly += 1
         return "📊 Bilan"
+
+
+CARD = {"type": "prompt", "title": "Dinner from a *fridge photo*",
+        "lines": ["Here is a photo of my fridge. What can I cook tonight?"], "note": ""}
 
 
 class VisualRecorder:
@@ -349,22 +350,39 @@ class TestPlanSlots:
         assert any("rédaction impossible" in n for n in parts["approvals"].notes)
         assert bot.plan_slots() == 0
 
-    def test_visual_prepared_and_attached(self, settings, state, budget, parts, clock):
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm with shot"],
-                                                visual=Visual("screenshot", "https://openai.com/x"))]
-        parts["visual"].result = ("/tmp/shot.png", "screenshot")
+    def test_card_is_drawn_and_attached(self, settings, state, budget, parts, clock):
+        """Chaque post part avec sa carte : le brouillon la porte, le planificateur la fait dessiner."""
+        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm with a card"], card=dict(CARD))]
+        parts["visual"].result = ("/tmp/card.png", "card")
         bot = make_bot(settings, state, budget, parts)
         clock(21, 0)
         bot.plan_slots()
         item = parts["approvals"].created[0]
-        assert item["image_path"] == "/tmp/shot.png"
-        assert item["image_kind"] == "screenshot"
+        assert item["image_path"] == "/tmp/card.png"
+        assert item["image_kind"] == "card"
         assert parts["visual"].calls == [("gm", "gm_2026-10-16")]
+
+    def test_phone_card_is_prepared_too(self, settings, state, budget, parts, clock):
+        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm with the page"], card=dict(CARD, type="phone"),
+                                                visual=Visual("phone", "https://openai.com/x"))]
+        parts["visual"].result = ("/tmp/phone.png", "phone")
+        bot = make_bot(settings, state, budget, parts)
+        clock(21, 0)
+        bot.plan_slots()
+        assert parts["approvals"].created[0]["image_kind"] == "phone"
+
+    def test_no_card_no_image(self, settings, state, budget, parts, clock):
+        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm, text only"])]
+        parts["visual"].result = ("/tmp/card.png", "card")
+        bot = make_bot(settings, state, budget, parts)
+        clock(21, 0)
+        bot.plan_slots()
+        assert parts["visual"].calls == [] and parts["approvals"].created[0]["image_path"] is None
 
     def test_no_visual_for_poll(self, settings, state, budget, parts, clock):
         parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm poll"], poll={"options": ["a", "b"]},
-                                                visual=Visual("ai", "a calm desk"))]
-        parts["visual"].result = ("/tmp/img.png", "ai")
+                                                card=dict(CARD))]
+        parts["visual"].result = ("/tmp/img.png", "card")
         bot = make_bot(settings, state, budget, parts)
         clock(21, 0)
         bot.plan_slots()
@@ -374,7 +392,7 @@ class TestPlanSlots:
     def test_visual_crash_never_blocks_the_post(self, settings, state, budget, parts, clock):
         def crash(*a):
             raise RuntimeError("chromium")
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm"], visual=Visual("screenshot", "u"))]
+        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm"], card=dict(CARD))]
         bot = make_bot(settings, state, budget, parts, visual=crash)
         clock(21, 0)
         bot.plan_slots()
@@ -651,6 +669,23 @@ class TestHooks:
         assert all(c["use_x"] is False for c in parts["news"].calls)
         assert bot.regenerate({"kind": "radar"}) is None
 
+    def test_regenerate_draws_the_new_card(self, settings, state, budget, parts, clock):
+        """🔄 : le texte change, donc la carte aussi (Approvals remplace l'image de l'item)."""
+        parts["writer"].queues["post"] = [Draft(kind="tip", texts=["new version"], card=dict(CARD)),
+                                          Draft(kind="tip", texts=["a poll now"], card=dict(CARD),
+                                                poll={"options": ["a", "b"]}),
+                                          None]
+        parts["visual"].result = ("/tmp/new_card.png", "card")
+        bot = make_bot(settings, state, budget, parts)
+        clock(10, 0)
+        d = bot.regenerate({"id": "abc", "kind": "tip", "regen_count": 2})
+        assert (d.image_path, d.image_kind) == ("/tmp/new_card.png", "card")
+        assert parts["visual"].calls == [("tip", "tip_2026-10-15_v2")]
+        poll = bot.regenerate({"id": "abc", "kind": "tip"})
+        assert (poll.image_path, poll.image_kind) == (None, None)        # un sondage n'a pas d'image
+        assert bot.regenerate({"id": "abc", "kind": "tip"}) is None
+        assert len(parts["visual"].calls) == 1
+
     def test_regen_comment_and_radar_pass_meta(self, settings, state, budget, parts):
         bot = make_bot(settings, state, budget, parts)
         assert bot.regen_comment({"meta": {"my_post_text": "mine", "commenter": "bob",
@@ -876,6 +911,27 @@ def test_breaking_desk_only_asks_claude_about_new_hot_items(settings, state, bud
     clock(17, 0)
     bot.maybe_reactive()
     assert parts["writer"].names() == ["draft_reactive", "draft_reactive"]
+
+
+def test_breaking_desk_skips_news_for_insiders(settings, state, budget, parts, clock):
+    """Annonce officielle, mais pour développeurs ou investisseurs : on n'appelle même pas Claude."""
+    settings.reactive_window = (dtime(8, 0), dtime(23, 30))
+    insider = NewsItem(id="dev1", title="Introducing the new embeddings API for developers", summary="",
+                       url="https://openai.com/dev", source="OpenAI",
+                       published=utils.now_local() - timedelta(hours=1), official=True)
+    parts["news"].items = [insider]
+    bot = make_bot(settings, state, budget, parts)
+    clock(16, 0)
+    assert bot.maybe_reactive() == 0
+    assert parts["writer"].names() == []
+    everyday = NewsItem(id="pub1", title="ChatGPT voice mode is now free for everyone", summary="",
+                        url="https://openai.com/voice", source="OpenAI",
+                        published=utils.now_local() - timedelta(hours=1), official=True)
+    parts["news"].items.append(everyday)
+    clock(17, 0)
+    bot.maybe_reactive()
+    assert parts["writer"].names() == ["draft_reactive"]
+    assert state.data["breaking_seen"] == ["pub1"]
 
 
 def test_auto_mode_drafts_close_to_publication(settings, state, budget, parts, clock):

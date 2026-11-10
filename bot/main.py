@@ -1,7 +1,13 @@
 """Point d'entrée du bot.
 
   python -m bot.main                 lance le bot (service systemd)
-  python -m bot.main --check         vérifie la config, Telegram, l'API X et Claude
+  python -m bot.main --check         vérifie la config, Telegram, l'API X, Claude
+                                     et le dessin des images
+  python -m bot.main --preview [TYPES]
+                                     rédige de vrais posts avec leur image et les
+                                     envoie sur Telegram SANS rien publier
+                                     (TYPES : tip,news,thread,reactive ; défaut tip,news)
+  python -m bot.main --report        derniers posts, chiffres, abonnés, coûts, erreurs
   python -m bot.main --once JOB      lance une seule étape (plan, publish, comments,
                                      radar, reactive, metrics, daily, weekly, poll)
   python -m bot.main --busy-check [--state CHEMIN]
@@ -38,6 +44,8 @@ BUSY_STALE_MIN = 30      # au-delà, un item en retard est considéré bloqué (
 
 KIND_FR = {"gm": "GM", "tip": "astuce", "news": "actu", "thread": "thread", "reactive": "post réactif",
            "comment_reply": "réponse à un commentaire"}
+PREVIEW_KINDS = ("tip", "news", "thread", "reactive")
+PREVIEW_DEFAULT = "tip,news"
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +75,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--busy-check", action="store_true",
                    help="code 3 si une publication est en cours ou prévue dans les 15 min")
     p.add_argument("--report", action="store_true",
-                   help="derniers posts, réponses, coûts et erreurs (lecture seule, aucun secret)")
+                   help="derniers posts, chiffres, abonnés, coûts et erreurs (lecture seule, aucun secret)")
+    p.add_argument("--preview", nargs="?", const=PREVIEW_DEFAULT, metavar="TYPES",
+                   help="rédige de vrais posts avec leur image et les envoie sur Telegram SANS publier "
+                        f"(types : {', '.join(PREVIEW_KINDS)} ; défaut : {PREVIEW_DEFAULT})")
     p.add_argument("--state", metavar="CHEMIN", help="fichier d'état (défaut : state/state.json)")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING…")
     return p.parse_args(argv)
@@ -125,6 +136,9 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
         return f"État illisible ({type(e).__name__})."
     items = [i for i in (data.get("items") or {}).values() if isinstance(i, dict)]
     items.sort(key=lambda i: str(i.get("created_at") or ""))
+    published = [p for p in (data.get("published") or []) if isinstance(p, dict)]
+    metrics = {str(p.get("item_id")): p["metrics"] for p in published
+               if p.get("item_id") and isinstance(p.get("metrics"), dict)}
     out = [f"=== {n} derniers posts (du plus ancien au plus récent) ==="]
     for it in [i for i in items if i.get("kind") in POST_FAMILY][-n:]:
         meta = it.get("meta") if isinstance(it.get("meta"), dict) else {}
@@ -142,8 +156,13 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
         out.append(f"  texte : {body[:600]}")
         if meta.get("reason"):
             out.append(f"  raison : {str(meta['reason'])[:200]}")
+        card = meta.get("card") if isinstance(meta.get("card"), dict) else None
+        if card:
+            out.append(f"  carte : [{card.get('type')}] {str(card.get('title') or '')[:80]}")
         srcs = [str(x.get("title") or "")[:90] for x in (meta.get("sources") or []) if isinstance(x, dict)]
         out.append("  sources : " + (" | ".join(srcs[:3]) if srcs else "aucune"))
+        if it.get("status") == "published":
+            out.append("  chiffres : " + _metrics_line(metrics.get(str(it.get("id")))))
         if it.get("last_error"):
             out.append(f"  erreur : {str(it['last_error'])[:200]}")
     def count(kind: str) -> str:
@@ -152,6 +171,7 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
             if it.get("kind") == kind:
                 sts[str(it.get("status"))] = sts.get(str(it.get("status")), 0) + 1
         return ", ".join(f"{k} {v}" for k, v in sorted(sts.items())) or "aucune"
+    out.extend(_audience_lines(data, published))
     out.append("=== Réponses aux commentaires : " + count("comment_reply"))
     out.append("=== Suggestions radar : " + count("radar"))
     days = (data.get("costs") or {}).get("days") or {}
@@ -169,6 +189,52 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
     out.append("=== Dernières erreurs ===")
     out.extend((e[:300] for e in errors[-8:]) if errors else ["aucune"])
     return "\n".join(out)
+
+
+def _num(m: dict, key: str) -> int:
+    try:
+        return int(m.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metrics_line(m: dict | None) -> str:
+    if not isinstance(m, dict):
+        return "pas encore relevés"
+    return (f"{_num(m, 'impressions')} vues · {_num(m, 'likes')} j'aime · {_num(m, 'replies')} réponse(s) · "
+            f"{_num(m, 'reposts') + _num(m, 'quotes')} repartage(s) · {_num(m, 'bookmarks')} signet(s)")
+
+
+def _audience_lines(data: dict, published: list[dict]) -> list[str]:
+    """Ce que les posts ont vraiment donné : moyenne sur 30 jours et courbe des abonnés."""
+    out: list[str] = []
+    limit = utils.now_local() - timedelta(days=30)
+    measured = []
+    for p in published:
+        when = utils.parse_iso(p.get("created_at"))
+        if isinstance(p.get("metrics"), dict) and when is not None and when >= limit:
+            measured.append(p["metrics"])
+    if measured:
+        views = sum(_num(m, "impressions") for m in measured)
+        eng = sum(_num(m, k) for m in measured for k in ("likes", "replies", "reposts", "quotes", "bookmarks"))
+        out.append(f"=== 30 derniers jours : {len(measured)} posts mesurés, {views // len(measured)} vues en "
+                   f"moyenne, {eng} interactions au total (j'aime + réponses + repartages + signets)")
+    else:
+        out.append("=== 30 derniers jours : aucun post mesuré pour l'instant")
+    hist = [h for h in (data.get("followers") or [])
+            if isinstance(h, dict) and h.get("date") and h.get("count") is not None]
+    hist.sort(key=lambda h: str(h["date"]))
+    if hist:
+        last = hist[-1]
+        line = f"=== Abonnés : {int(last['count'])} le {last['date']}"
+        if len(hist) > 1:
+            first = hist[max(0, len(hist) - 31)]
+            line += f" ({int(last['count']) - int(first['count']):+d} depuis le {first['date']})"
+            line += " · relevés : " + ", ".join(f"{str(h['date'])[5:]}={int(h['count'])}" for h in hist[-7:])
+        out.append(line)
+    else:
+        out.append("=== Abonnés : aucun relevé pour l'instant")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +283,8 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
-        f"Visuels : captures {'oui' if s.screenshots_enabled else 'non'}"
-        f"{'' if has_pw or not s.screenshots_enabled else ' (Playwright absent : aucune capture)'} · "
+        f"Images : une carte par post{'' if has_pw else ' (Playwright absent : aucune image)'} · "
+        f"page de l'actu dans un smartphone {'oui' if s.screenshots_enabled else 'non'} · "
         f"photos IA {'oui' if s.image_ai_enabled else 'non'}"
         f"{'' if has_openai or not s.image_ai_enabled else ' (paquet openai absent)'}",
         f"Récap du matin {s.health_report_at:%H:%M} · bilan hebdo {weekly}",
@@ -237,11 +303,14 @@ def _x_reason(e) -> str:
     }.get(kind, f"erreur {kind or type(e).__name__}")
 
 
-def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str], None] = print) -> int:
-    """Vérifie Telegram, l'API X (≈ 0,01 $) et Claude. 0 si tout va bien, 1 sinon.
-    N'écrit JAMAIS dans l'état du bot en service (état jetable)."""
+def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | None = None,
+              out: Callable[[str], None] = print) -> int:
+    """Vérifie Telegram, l'API X (≈ 0,01 $), Claude et le dessin des images. 0 si
+    tout va bien, 1 sinon (des images impossibles ne bloquent pas : les posts
+    partiraient simplement sans image). N'écrit JAMAIS dans l'état du bot en
+    service (état jetable)."""
     ok = True
-    parts = {"telegram": "missing", "x": "missing", "claude": "missing"}
+    parts = {"telegram": "missing", "x": "missing", "claude": "missing", "images": "missing"}
     out("=== Configuration ===")
     for line in config_summary(settings):
         out("  " + line)
@@ -349,6 +418,21 @@ def run_check(settings, *, telegram=None, x=None, llm=None, out: Callable[[str],
                 out(f"❌ Claude : pas de réponse valide (clé ANTHROPIC_API_KEY, crédits, ou modèle "
                     f"{settings.llm_model} indisponible ? voir logs/bot.log)")
                 ok = False
+        # --- Images : une carte d'essai est vraiment dessinée (jamais bloquant)
+        try:
+            if images is None:
+                from . import cards
+                images = cards.self_test
+            drawn, why = images()
+        except Exception as e:  # noqa: BLE001
+            drawn, why = False, type(e).__name__
+        if drawn:
+            parts["images"] = "ok"
+            out("✅ Images : les cartes se dessinent correctement")
+        else:
+            parts["images"] = "bad"
+            out(f"⚠️ Images : impossible de dessiner les cartes ({why}). Les posts partiraient SANS image. "
+                "Sur le serveur : .venv/bin/python -m playwright install chromium")
     finally:
         tmp.cleanup()
     out("=== Résultat : " + ("tout est OK ✅" if ok else "au moins un problème ❌") + " ===")
@@ -465,6 +549,122 @@ def run_once(settings, job: str, state_path=None, out: Callable[[str], None] = p
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# --preview : de vrais posts, avec leur image, SANS rien publier
+# ---------------------------------------------------------------------------
+def preview_kinds(raw: str) -> list[str]:
+    kinds: list[str] = []
+    for k in str(raw or "").replace(";", ",").replace(" ", ",").split(","):
+        k = k.strip().lower()
+        if k in PREVIEW_KINDS and k not in kinds:
+            kinds.append(k)
+    return kinds
+
+
+def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, llm=None, news=None,
+                writer=None, telegram=None, prepare_visual: Callable | None = None,
+                out: Callable[[str], None] = print) -> int:
+    """Rédige un post de chaque type demandé, dessine son image et envoie le tout sur
+    Telegram, pour voir ce que le bot publierait MAINTENANT. Rien n'est publié, et
+    l'état du bot en service n'est pas touché : tout se passe sur une copie jetable
+    (lecture de l'actu gratuite ; seuls les appels à Claude sont payants)."""
+    import shutil
+    kinds = preview_kinds(raw_kinds)
+    if not kinds:
+        out(f"❌ Types inconnus : {raw_kinds!r}. Choix : {', '.join(PREVIEW_KINDS)}.")
+        return EXIT_CONFIG
+    real = Path(state_path) if state_path else utils.STATE_DIR / "state.json"
+    tmp = tempfile.TemporaryDirectory(prefix="xbot-preview-")
+    try:
+        copy = Path(tmp.name) / "state.json"
+        if real.is_file():
+            shutil.copyfile(real, copy)
+        from .state import StateStore
+        state = StateStore(copy)
+        if llm is None:
+            from .llm import LLM
+            llm = LLM(settings, state)
+        if writer is None:
+            from .writer import Writer
+            writer = Writer(settings, llm, state)
+        if news is None:
+            from .sources import NewsHub
+            news = NewsHub(settings, state, None)
+        if telegram is None and settings.telegram_ok():
+            from .telegram import Telegram
+            telegram = Telegram(settings.telegram_token, settings.telegram_chat_id)
+        if prepare_visual is None:
+            from . import visuals
+            prepare_visual = visuals.prepare
+        try:
+            items = list(news.collect(use_x=False) or [])
+        except Exception as e:  # noqa: BLE001
+            log.warning("Aperçu : actu indisponible (%s)", type(e).__name__)
+            items = []
+        out(f"=== Aperçu : {len(items)} actus lues, {len(kinds)} post(s) à rédiger — RIEN n'est publié ===")
+        notes = [str(n.get("text")) for n in state.active_notes() if n.get("text")]
+        done = 0
+        for kind in kinds:
+            picked = items
+            picker = getattr(news, "top_for", None)
+            if callable(picker) and items:
+                try:
+                    picked = picker(kind, items, 20 if kind == "thread" else 15)
+                except Exception:  # noqa: BLE001
+                    picked = items
+            if kind == "thread":
+                draft = writer.draft_thread(picked, notes, "")
+            elif kind == "reactive":
+                draft = writer.draft_reactive(picked, notes, "")
+            else:
+                draft = writer.draft_post(kind, picked, notes, "")
+            label = KIND_FR.get(kind, kind)
+            if draft is None or not getattr(draft, "texts", None):
+                why = ("rien, dans l'actu fraîche, ne mérite un post grand public (c'est le cas le plus "
+                       "fréquent)") if kind == "reactive" else "Claude n'a rien proposé de publiable"
+                out(f"--- {label} : {why}.")
+                continue
+            path, image_kind = prepare_visual(settings, draft, writer, f"apercu_{kind}")
+            done += 1
+            out(f"--- {label} ---")
+            for i, text in enumerate(draft.texts, start=1):
+                out((f"{i}/ " if len(draft.texts) > 1 else "") + text)
+            card = getattr(draft, "card", None)
+            if isinstance(card, dict):
+                out(f"[carte {card.get('type')}] {str(card.get('title') or '').replace('*', '')}")
+                for line in card.get("lines") or []:
+                    out(f"   • {line}")
+                if card.get("note"):
+                    out(f"   ({card['note']})")
+            if getattr(draft, "poll", None):
+                out("[sondage] " + " · ".join(str(o) for o in draft.poll.get("options") or []))
+            out(f"image : {path or 'aucune'}" + (f" ({image_kind})" if path else ""))
+            if getattr(draft, "reason", ""):
+                out(f"pourquoi : {draft.reason}")
+            if telegram is not None:
+                _send_preview(telegram, label, draft, path)
+        out(f"=== Aperçu terminé : {done}/{len(kinds)} post(s)"
+            + (" envoyé(s) sur Telegram" if telegram is not None and done else "") + ". Rien n'a été publié. ===")
+        return EXIT_OK if done else EXIT_FAIL
+    finally:
+        tmp.cleanup()
+
+
+def _send_preview(telegram, label: str, draft, path: str | None) -> None:
+    try:
+        from .telegram import esc
+        head = f"👀 <b>APERÇU — {esc(label)}</b> (rien n'est publié)"
+        if path and Path(path).is_file():
+            telegram.send_photo(path, caption=head)
+        body = "\n\n".join(esc(t) for t in draft.texts)
+        poll = getattr(draft, "poll", None) or {}
+        if poll.get("options"):
+            body += "\n\n📊 " + " · ".join(esc(str(o)) for o in poll["options"])
+        telegram.send(f"{head}\n\n{body}", silent=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Aperçu : envoi Telegram impossible (%s)", type(e).__name__)
+
+
 def run_bot(settings, state_path=None) -> int:
     if not _take_lock(state_path):
         log.error("Une autre instance du bot tourne déjà sur cet état : arrêt (aucun doublon de publication).")
@@ -491,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings()
     except ValueError as e:  # ConfigError en hérite
         print(f"❌ Configuration invalide : {e}")
-        if not (args.check or args.once):
+        if not (args.check or args.once or args.preview):
             alert_config_problem([str(e)])
         return EXIT_CONFIG
     errors = settings.validate()
@@ -502,11 +702,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:  # on vérifie quand même tout le reste : l'assistant sait quoi demander
             run_check(settings)
             return EXIT_CONFIG
-        if not args.once:
+        if not (args.once or args.preview):
             alert_config_problem(errors)
         return EXIT_CONFIG
     if args.check:
         return run_check(settings)
+    if args.preview:
+        return run_preview(settings, args.preview, args.state)
     if args.once:
         return run_once(settings, args.once, args.state)
     return run_bot(settings, args.state)

@@ -54,14 +54,28 @@ def make_writer(settings, state, responses=None, seed: int = 1) -> tuple[Writer,
     return w, llm
 
 
-def post_resp(text: str, source_ids=None, used_note_ids=None, visual_url: str = "", image_prompt: str = "",
-              poll_options=None, reason: str = "raison") -> dict:
-    return {"text": text, "source_ids": list(source_ids or []), "used_note_ids": list(used_note_ids or []),
-            "visual_url": visual_url, "image_prompt": image_prompt,
-            "poll_options": list(poll_options or []), "reason": reason}
+# La carte jointe à chaque post (bot/cards.py la dessine) : ici, une phrase à copier.
+CARD = {"card_type": "prompt", "card_title": "Check any *AI answer*",
+        "card_lines": ["What would make this answer wrong?"],
+        "card_note": "Works in ChatGPT, Claude or Gemini."}
+CARD_PARSED = {"type": "prompt", "title": "Check any *AI answer*",
+               "lines": ["What would make this answer wrong?"], "note": "Works in ChatGPT, Claude or Gemini."}
 
 
-FC_OK = {"ok": True, "issues": ""}
+def post_resp(text: str, source_ids=None, used_note_ids=None, visual_url: str = "",
+              poll_options=None, reason: str = "raison", **card) -> dict:
+    obj = {"text": text, "source_ids": list(source_ids or []), "used_note_ids": list(used_note_ids or []),
+           **CARD, "visual_url": visual_url, "poll_options": list(poll_options or []), "reason": reason}
+    obj.update(card)
+    return obj
+
+
+def only(w: Writer, *genres: str) -> None:
+    """Impose les genres de thread candidats (sinon : rotation du jour)."""
+    w.thread_plan = lambda recent_kinds: list(genres)
+
+
+FC_OK = {"ok": True, "issues": "", "plain": True, "hard_words": ""}
 
 NEWS_TEXT = ("free voice mode changes who practices hard conversations.\n"
              "try this tonight: rehearse your salary talk out loud and ask it to push back like a tough manager.")
@@ -78,9 +92,7 @@ def thread_tweets(genre: str, n: int = 5) -> list[str]:
         "beginner": "most people use ChatGPT like a search box. snap your fridge and ask what to cook tonight.",
         "timely": "free voice mode means anyone can rehearse a hard conversation tonight. here is the method.",
         "tutorial": "turn any long report into the decisions it asks you to make, with one prompt.",
-        "practical": "the boring tasks you repeat every week are the best place to start with AI.",
-        "mindset": "the day you stop waiting for the perfect plan is the day you start learning.",
-        "story": "the founder had one week of cash left when the first real customer called.",
+        "weekly": "this week, three AI changes that matter if you never read tech news. the first one is free.",
     }
     body = [
         f"step {w}: open the chat, paste your material and say what decision you need from it."
@@ -91,7 +103,9 @@ def thread_tweets(genre: str, n: int = 5) -> list[str]:
 
 def thread_resp(genre: str, n: int = 5, source_ids=None, **extra) -> dict:
     obj = {"tweets": thread_tweets(genre, n), "source_ids": list(source_ids or []), "used_note_ids": [],
-           "visual_url": "", "image_prompt": "", "reason": f"raison {genre}"}
+           "card_type": "list", "card_title": "5 things to *try tonight*",
+           "card_lines": ["Dinner from a fridge photo", "A letter explained simply"], "card_note": "",
+           "visual_url": "", "reason": f"raison {genre}"}
     obj.update(extra)
     return obj
 
@@ -129,11 +143,14 @@ class TestNewsGrounding:
         user = llm.calls[0]["user"]
         assert "[1] OpenAI · OFFICIAL" in user and "[2] Hacker News" in user
         assert "420 points on Hacker News" in user and "900 likes on X" in user
-        assert "a post on X: never use it as a screenshot" in user
+        assert "a post on X: it can't be shown" in user
+        assert "would my neighbour care?" in user        # l'actu doit parler à tout le monde
+        assert d.card == CARD_PARSED and d.visual is None
         fc = llm.calls[1]
         assert NEWS_TEXT in fc["user"] and items[0].title in fc["user"]
         assert items[1].title not in fc["user"]          # seules les actus citées
-        assert set(fc["schema"]["properties"]) == {"ok", "issues"}
+        assert "IMAGE CARD posted with it" in fc["user"] and "What would make this answer wrong?" in fc["user"]
+        assert set(fc["schema"]["properties"]) == {"ok", "issues", "plain", "hard_words"}
 
     def test_factcheck_failure_retries_with_issues(self, settings, state, items):
         w, llm = make_writer(settings, state, {
@@ -161,15 +178,56 @@ class TestNewsGrounding:
         assert w.draft_post("news", items, [], "") is None
         assert llm.labels() == ["post-news", "factcheck"]
 
-    def test_news_without_citation_is_retried(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, source_ids=[]), post_resp(NEWS_TEXT_2, source_ids=[1])],
-            "factcheck": FC_OK,
-        })
+    def test_news_slot_without_news_for_everyday_people_is_an_everyday_post(self, settings, state, items):
+        """Aucune actu ne parle au grand public : le créneau « actu » devient un post
+        du quotidien (aucune source citée), toujours relu."""
+        w, llm = make_writer(settings, state, {"post-news": post_resp(TIP_TEXT, source_ids=[]),
+                                               "factcheck": FC_OK})
         d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT_2] and d.sources == [items[0]]
-        assert llm.labels() == ["post-news", "post-news", "factcheck"]
-        assert "source_ids" in llm.calls[1]["user"]
+        assert d is not None and d.texts == [TIP_TEXT] and d.sources == []
+        assert llm.labels() == ["post-news", "factcheck"]
+        assert "no item cited" in llm.calls[1]["user"]
+
+    def test_too_technical_is_rewritten(self, settings, state, items):
+        w, llm = make_writer(settings, state, {
+            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
+            "factcheck": [{"ok": True, "issues": "", "plain": False, "hard_words": "voice mode latency"}, FC_OK]})
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        retry_user = llm.calls[2]["user"]
+        assert "an everyday reader would stumble on: voice mode latency" in retry_user
+
+    def test_facts_and_plain_words_reported_together(self, settings, state, items):
+        w, llm = make_writer(settings, state, {
+            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
+            "factcheck": [{"ok": False, "issues": "no price in the item", "plain": False, "hard_words": "rollout"},
+                          FC_OK]})
+        assert w.draft_post("news", items, [], "") is not None
+        retry_user = llm.calls[2]["user"]
+        assert "no price in the item" in retry_user and "stumble on: rollout" in retry_user
+
+    def test_still_a_bit_technical_on_second_try_is_accepted(self, settings, state, items):
+        """Faits justes, relecteur encore tatillon au 2e essai : le post part quand même."""
+        w, llm = make_writer(settings, state, {
+            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
+            "factcheck": {"ok": True, "issues": "", "plain": False, "hard_words": "rehearsal"}})
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert llm.labels() == ["post-news", "factcheck", "post-news", "factcheck"]
+
+    @pytest.mark.parametrize("bad, word", [
+        ("the new LLM is free for everyone. here is what to try first with it tonight.", "LLM"),
+        ("this open-source release changes what you can do at home with your photos.", "open-source"),
+        ("stop writing emails by hand: this workflow does it for you in one minute.", "workflow"),
+        ("AI can hallucinate. ask it where it found each fact before you trust it.", "hallucinate"),
+    ])
+    def test_tech_jargon_rejected_by_code(self, settings, state, items, bad, word):
+        w, llm = make_writer(settings, state, {"post-tip": [post_resp(bad), post_resp(TIP_TEXT)],
+                                               "factcheck": FC_OK})
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.texts == [TIP_TEXT]
+        assert llm.labels() == ["post-tip", "post-tip", "factcheck"]
+        assert f'it used tech jargon ("{word}")' in llm.calls[1]["user"]
 
     def test_news_without_items_is_still_factchecked(self, settings, state):
         w, llm = make_writer(settings, state, {"post-news": post_resp(TIP_TEXT), "factcheck": FC_OK})
@@ -308,14 +366,13 @@ class TestFiltersAndRetry:
         def boom(*a):
             raise RuntimeError("network down")
         w2, _ = make_writer(settings, state, {"post-": boom, "thread-": boom, "reactive": boom,
-                                               "comment-": boom, "radar-": boom, "visual-": boom})
+                                               "comment-": boom, "radar-": boom, "screenshot-": boom})
         assert w2.draft_post("news", [], [], "") is None
         assert w2.draft_thread([], [], "") is None
         assert w2.draft_reactive([news(1, "Fresh launch", "something new")], [], "") is None
         assert w2.draft_comment_reply("my post", "bob", "how do I do this with Claude?") is None
         assert w2.draft_radar_reply("sama", "a long enough post about building with AI tools", 5, 50) is None
-        assert w2.visual_matches("post", "https://openai.com/x", "some visible text on the page here") == \
-            (False, "vérification indisponible")
+        assert w2.screenshot_is_clean("capture.jpg") == (False, "vérification de l'image indisponible")
 
     def test_unknown_kind(self, settings, state):
         w, llm = make_writer(settings, state, {"post-": post_resp(TIP_TEXT)})
@@ -343,7 +400,12 @@ class TestFiltersAndRetry:
         assert "poll_options" in by_label["post-tip"]["properties"]
         gm_props = by_label["post-gm"]["properties"]
         assert "poll_options" in gm_props and "used_note_ids" in gm_props
-        assert "visual_url" not in gm_props and "source_ids" not in gm_props
+        assert "visual_url" not in gm_props and "source_ids" not in gm_props and "card_type" not in gm_props
+        for label in ("post-news", "post-tip"):
+            props = by_label[label]["properties"]
+            assert {"card_type", "card_title", "card_lines", "card_note", "visual_url"} <= set(props)
+            assert props["card_type"]["enum"] == ["prompt", "steps", "list", "fact", "phone", "none"]
+            assert "image_prompt" not in props
 
 
 # ---------------------------------------------------------------------------
@@ -383,11 +445,10 @@ class TestPolls:
 
     def test_poll_returned_without_visual(self, settings, state):
         w, llm = make_writer(settings, state, {"post-tip": post_resp(
-            self.POLL_TEXT, poll_options=["Claude", "ChatGPT", "Gemini", "by hand"],
-            visual_url="https://openai.com/chatgpt")})
+            self.POLL_TEXT, poll_options=["Claude", "ChatGPT", "Gemini", "by hand"], card_type="none")})
         d = w.draft_post("tip", [], [], "")
         assert d.poll == {"options": ["Claude", "ChatGPT", "Gemini", "by hand"], "duration_minutes": 1440}
-        assert d.visual is None
+        assert d.visual is None and d.card is None          # un sondage n'a pas d'image
         assert state.data.get("poll_dates", []) == []   # compté à la publication, pas au brouillon
         assert "POLL (optional)" in llm.calls[0]["user"]
 
@@ -401,11 +462,11 @@ class TestPolls:
         now = now_local()
         state.data["poll_dates"] = [iso(now - timedelta(days=1)), iso(now - timedelta(days=6))]
         w, llm = make_writer(settings, state, {"post-tip": post_resp(
-            self.POLL_TEXT, poll_options=["Claude", "ChatGPT"], visual_url="https://openai.com/chatgpt")})
+            self.POLL_TEXT, poll_options=["Claude", "ChatGPT"])})
         assert w.polls_left() == 0
         d = w.draft_post("tip", [], [], "")
         assert d is not None and d.poll is None
-        assert d.visual == Visual("screenshot", "https://openai.com/chatgpt")
+        assert d.card == CARD_PARSED                        # plus de sondage : le post garde sa carte
         assert "POLL: not available" in llm.calls[0]["user"]
         assert len(state.data["poll_dates"]) == 2
 
@@ -447,6 +508,7 @@ class TestPolls:
         ["a", "b", "c", "d", "e"],
         ["Claude", "claude"],                                # doublon -> une seule option
         ["Claude", "chatgpt.com"],
+        ["Claude", "Any LLM"],                               # jargon
     ])
     def test_invalid_poll_options_ignored(self, settings, state, opts):
         w, _ = make_writer(settings, state, {"post-tip": post_resp(self.POLL_TEXT, poll_options=opts)})
@@ -517,7 +579,8 @@ class TestNotesAndPerf:
             "gm. what's one task you'd hand to AI today?"), "thread-": thread_responder(),
             "factcheck": FC_OK, "judge": {"winner": 1, "reason": "ok"},
             "reactive": {"post": False, "reason": "rien", "text": "", "source_ids": [], "used_note_ids": [],
-                         "visual_url": "", "image_prompt": ""}})
+                         "card_type": "none", "card_title": "", "card_lines": [], "card_note": "",
+                         "visual_url": ""}})
         w.draft_post("tip", items, [], perf)
         w.draft_post("gm", [], [], perf)
         w.draft_thread(items, [], perf)
@@ -530,73 +593,192 @@ class TestNotesAndPerf:
 
 
 # ---------------------------------------------------------------------------
-# Visuels
+# Cartes (le visuel de chaque post)
 # ---------------------------------------------------------------------------
-class TestVisuals:
+class TestCards:
     def _draft(self, settings, state, items, **resp):
-        w, _ = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT, **resp), "factcheck": FC_OK})
-        return w.draft_post("tip", items, [], "")
+        w, _ = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, **resp), "factcheck": FC_OK})
+        return w.draft_post("news", items, [], "")
 
-    def test_reference_to_cited_item(self, settings, state, items):
-        d = self._draft(settings, state, items, source_ids=[1], visual_url="[1]")
-        assert d.visual == Visual("screenshot", "https://openai.com/index/voice-for-everyone")
+    def _problem(self, settings, state, items, **resp):
+        """Le motif renvoyé à Claude quand la carte du 1er essai est refusée."""
+        w, llm = make_writer(settings, state, {
+            "post-news": [post_resp(NEWS_TEXT, **resp), post_resp(NEWS_TEXT)], "factcheck": FC_OK})
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.card == CARD_PARSED
+        assert llm.labels() == ["post-news", "post-news", "factcheck"]
+        retry = llm.calls[1]["user"]
+        assert "the image card was rejected" in retry and "Follow the CARD rules" in retry
+        return retry
 
-    def test_cited_item_on_unlisted_domain_allowed(self, settings, state, items):
-        d = self._draft(settings, state, items, source_ids=[2], visual_url="[2]")
-        assert d.visual == Visual("screenshot", "https://someblog.dev/agents-break")
+    PHONE = {"card_type": "phone", "card_title": "ChatGPT voice is now *free*",
+             "card_lines": ["No paid plan needed", "Talk instead of typing"], "card_note": ""}
 
-    def test_uncited_unlisted_domain_refused(self, settings, state, items):
-        d = self._draft(settings, state, items, visual_url="https://someblog.dev/agents-break")
-        assert d.visual is None
+    def test_phone_card_shows_the_cited_page(self, settings, state, items):
+        d = self._draft(settings, state, items, source_ids=[1], visual_url="[1]", **self.PHONE)
+        assert d.visual == Visual("phone", "https://openai.com/index/voice-for-everyone")
+        assert d.card["type"] == "phone" and d.card["lines"] == ["No paid plan needed", "Talk instead of typing"]
 
-    @pytest.mark.parametrize("url", ["[3]", "https://x.com/claudeai/status/123",
-                                     "https://twitter.com/a/status/1", "[9]", "ftp://openai.com/x",
-                                     "https://mobile.x.com/a"])
-    def test_x_and_bad_urls_refused(self, settings, state, items, url):
-        d = self._draft(settings, state, items, source_ids=[3], visual_url=url)
-        assert d.visual is None
+    def test_phone_card_on_any_cited_site(self, settings, state, items):
+        d = self._draft(settings, state, items, source_ids=[2], visual_url="[2]", **self.PHONE)
+        assert d.visual == Visual("phone", "https://someblog.dev/agents-break")
 
-    def test_allowed_domain_page(self, settings, state, items):
-        d = self._draft(settings, state, items, visual_url="https://techcrunch.com/2026/10/15/voice/")
-        assert d.visual == Visual("screenshot", "https://techcrunch.com/2026/10/15/voice/")
+    @pytest.mark.parametrize("url", ["", "[2]", "[9]", "https://techcrunch.com/other", "nonsense"])
+    def test_phone_card_never_leaves_the_cited_items(self, settings, state, items, url):
+        """Page non citée, numéro inconnu, adresse au hasard : on montre la page de l'actu citée."""
+        d = self._draft(settings, state, items, source_ids=[1], visual_url=url, **self.PHONE)
+        assert d.visual == Visual("phone", items[0].url)
 
-    def test_ai_photo_only_when_enabled(self, settings, state, items):
-        prompt = "photo of a person rehearsing a speech with a phone on a kitchen table, morning light"
-        assert self._draft(settings, state, items, image_prompt=prompt).visual is None
-        settings.image_ai_enabled = True
-        assert self._draft(settings, state, items, image_prompt=prompt).visual == Visual("ai", prompt)
+    def test_phone_card_picks_the_designated_cited_item(self, settings, state, items):
+        d = self._draft(settings, state, items, source_ids=[1, 2], visual_url="[2]", **self.PHONE)
+        assert d.visual == Visual("phone", items[1].url)
+        d = self._draft(settings, state, items, source_ids=[1, 2], visual_url=items[1].url + "/", **self.PHONE)
+        assert d.visual == Visual("phone", items[1].url)
 
-    def test_screenshot_beats_photo(self, settings, state, items):
-        settings.image_ai_enabled = True
-        d = self._draft(settings, state, items, source_ids=[1], visual_url="[1]", image_prompt="a photo")
-        assert d.visual.kind == "screenshot"
+    @pytest.mark.parametrize("source_ids, url", [([3], "[3]"), ([3], "https://x.com/claudeai/status/123"),
+                                                  ([], "[1]"), ([], "https://openai.com/x")])
+    def test_phone_without_showable_page_becomes_a_drawn_card(self, settings, state, items, source_ids, url):
+        """Post X ou aucune actu citée : jamais de capture, une carte dessinée avec les mêmes textes."""
+        d = self._draft(settings, state, items, source_ids=source_ids, visual_url=url, **self.PHONE)
+        assert d is not None and d.visual is None
+        assert d.card["type"] == "list" and d.card["title"] == "ChatGPT voice is now *free*"
 
-    def test_bad_photo_prompt_refused(self, settings, state, items):
-        settings.image_ai_enabled = True
-        assert self._draft(settings, state, items, image_prompt="https://openai.com/a.png").visual is None
-        assert self._draft(settings, state, items, image_prompt="a casino table at night").visual is None
+    def test_phone_with_one_line_becomes_a_fact_card(self, settings, state, items):
+        d = self._draft(settings, state, items, card_type="phone", card_title="Voice is free now",
+                        card_lines=["No paid plan needed"], card_note="")
+        assert d.visual is None and d.card["type"] == "fact" and d.card["lines"] == ["No paid plan needed"]
 
     def test_screenshots_disabled(self, settings, state, items):
         settings.screenshots_enabled = False
-        settings.image_ai_enabled = True
-        d = self._draft(settings, state, items, source_ids=[1], visual_url="[1]", image_prompt="a photo")
-        assert d.visual == Visual("ai", "a photo")
+        w, llm = make_writer(settings, state, {
+            "post-news": post_resp(NEWS_TEXT, source_ids=[1], visual_url="[1]", **self.PHONE), "factcheck": FC_OK})
+        d = w.draft_post("news", items, [], "")
+        assert d.visual is None and d.card["type"] == "list"
+        assert 'the "phone" card is not available right now' in llm.calls[0]["user"]
+        settings.screenshots_enabled = True
+        w.draft_post("news", items, [], "")
+        assert "not available right now" not in [c for c in llm.calls if c["label"] == "post-news"][1]["user"]
 
-    def test_visual_line_in_prompt(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT)})
-        w.draft_post("tip", items, [], "")
-        assert "AI photos are disabled" in llm.calls[0]["user"]
-        settings.screenshots_enabled = False
-        w.draft_post("tip", items, [], "")
-        assert "none available" in [c for c in llm.calls if c["label"] == "post-tip"][1]["user"]
+    def test_card_text_is_cleaned(self, settings, state, items):
+        d = self._draft(settings, state, items, card_type="steps", card_title='"Fix a bad *answer*" 🚀',
+                        card_lines=["1. Open ChatGPT → tap the mic 🎤", "- Say what you need", "• Ask for a shorter one",
+                                    "  ", "Step 4: double-check the result"],
+                        card_note="  Free versions   too.  ")
+        assert d.card == {"type": "steps", "title": "Fix a bad *answer*",
+                          "lines": ["Open ChatGPT › tap the mic", "Say what you need", "Ask for a shorter one",
+                                    "double-check the result"],
+                          "note": "Free versions too."}
 
-    def test_allowed_url_helpers(self):
-        assert wmod.is_allowed_screenshot_url("https://www.theverge.com/a")
-        assert wmod.is_allowed_screenshot_url("https://news.ycombinator.com/item?id=1")
-        assert not wmod.is_allowed_screenshot_url("https://x.com/a/status/1", ["https://x.com/a/status/1"])
-        assert not wmod.is_allowed_screenshot_url("https://evil-openai.com/a")
-        assert wmod.is_allowed_screenshot_url("https://evil.dev/a/", ["https://evil.dev/a"])
+    def test_prompt_card_is_one_message(self, settings, state, items):
+        d = self._draft(settings, state, items, card_type="prompt", card_title="Dinner from a *fridge photo*",
+                        card_lines=['"Here is a photo of my fridge.', 'Give me 3 dinners I can make tonight."'],
+                        card_note="x" * 200)
+        assert d.card["lines"] == ["Here is a photo of my fridge. Give me 3 dinners I can make tonight."]
+        assert d.card["note"] == ""                         # note trop longue : on s'en passe
+        keep = self._draft(settings, state, items, card_type="prompt", card_title="A plan in one message",
+                           card_lines=["3 dinners for 4 people, under 30 minutes each."], card_note="")
+        assert keep.card["lines"] == ["3 dinners for 4 people, under 30 minutes each."]   # le chiffre du début reste
+
+    def test_fact_card_extra_lines_are_dropped(self, settings, state, items):
+        d = self._draft(settings, state, items, card_type="fact", card_title="Voice is free now",
+                        card_lines=["one", "two", "three", "four", "five"], card_note="")
+        assert d.card["lines"] == ["one", "two", "three"]
+        bare = self._draft(settings, state, items, card_type="fact", card_title="Voice is free now",
+                           card_lines=[], card_note="")
+        assert bare.card == {"type": "fact", "title": "Voice is free now", "lines": [], "note": ""}
+
+    def test_card_is_required_without_a_poll(self, settings, state, items):
+        retry = self._problem(settings, state, items, card_type="none", card_title="", card_lines=[])
+        assert "a card is required" in retry
+
+    @pytest.mark.parametrize("card, why", [
+        ({"card_type": "poster"}, "unknown card_type"),
+        ({"card_title": "  "}, "card_title is empty"),
+        ({"card_title": "A title that goes on and on until it no longer fits on any card at all"},
+         "card_title is too long"),
+        ({"card_type": "steps", "card_lines": ["Only one step"]}, 'a "steps" card needs 2 to 4 card_lines (got 1)'),
+        ({"card_type": "steps", "card_lines": ["a", "b", "c", "d", "e"]}, "needs 2 to 4 card_lines (got 5)"),
+        ({"card_type": "list", "card_lines": []}, 'a "list" card needs 2 to 5 card_lines (got 0)'),
+        ({"card_type": "prompt", "card_lines": []}, 'a "prompt" card needs exactly 1 card_lines (got 0)'),
+        ({"card_type": "list", "card_lines": ["short", "x" * 81]}, "a card line is too long (81 characters, max 60)"),
+        ({"card_type": "prompt", "card_lines": ["y" * 241]}, "a card line is too long (241 characters, max 190)"),
+        ({"card_lines": ["Paste it into chatgpt.com and ask"]}, "no links or domain names on the card"),
+        ({"card_title": "Your first casino night plan"}, "off-limits word or topic on the card (casino)"),
+        ({"card_note": "Works with any LLM."}, 'tech jargon on the card ("LLM")'),
+        ({"card_type": "list", "card_lines": ["Pick a use case", "Then try it"]}, 'tech jargon on the card ("use case")'),
+    ])
+    def test_bad_card_is_sent_back_once(self, settings, state, items, card, why):
+        assert why in self._problem(settings, state, items, **card)
+
+    def test_card_refused_twice_the_post_goes_out_as_text(self, settings, state, items):
+        """Le texte est bon : on ne perd pas le créneau pour une carte ratée."""
+        w, llm = make_writer(settings, state, {
+            "post-news": post_resp(NEWS_TEXT, source_ids=[1], card_type="steps", card_lines=["One step"]),
+            "factcheck": FC_OK})
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT] and d.card is None and d.visual is None
+        assert llm.labels() == ["post-news", "post-news", "factcheck"]
+        assert "IMAGE CARD" not in llm.calls[2]["user"]
+
+    def test_card_never_checked_when_text_is_rejected(self, settings, state, items):
+        w, llm = make_writer(settings, state, {
+            "post-news": [post_resp("read it on claude.ai tonight", card_type="none"), post_resp(NEWS_TEXT)],
+            "factcheck": FC_OK})
+        assert w.draft_post("news", items, [], "") is not None
+        assert "domain name" in llm.calls[1]["user"] and "image card" not in llm.calls[1]["user"]
+
+    def test_url_helpers(self):
+        assert wmod.is_capturable_url("https://www.theverge.com/a")
+        assert wmod.is_capturable_url("https://someblog.dev/post")
+        for bad in ("https://x.com/a/status/1", "https://mobile.twitter.com/a", "ftp://openai.com/x", "", "openai.com"):
+            assert not wmod.is_capturable_url(bad), bad
         assert wmod.is_x_url("https://twitter.com/a") and not wmod.is_x_url("https://openai.com")
+
+    def test_card_text_helper(self):
+        assert wmod.card_text("→ Dinner ideas") == "Dinner ideas"
+        assert wmod.card_text("Photo -> recipe") == "Photo › recipe"
+        assert wmod.card_text("5:30 wake-up plan") == "5:30 wake-up plan"
+        assert wmod.card_text("2) Paste the text") == "Paste the text"
+        assert wmod.card_text("Café déjà vu — it’s “fine”…") == "Café déjà vu — it’s “fine”…"
+        assert wmod.card_text("#AI tip for @you") == "tip for"
+        assert wmod.card_text(None) == "" and wmod.card_text(42) == "42"
+        assert wmod.card_as_text(CARD_PARSED).splitlines() == [
+            "[prompt] Check any AI answer", "- What would make this answer wrong?",
+            "(Works in ChatGPT, Claude or Gemini.)"]
+        assert wmod.card_as_text(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Les « moments de la vie » des astuces
+# ---------------------------------------------------------------------------
+class TestLifeAreas:
+    def test_theme_rotates_without_repeating(self, settings, state):
+        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT), "factcheck": FC_OK})
+        seen = []
+        for _ in range(300):
+            key, text = w._next_life_area()
+            assert key not in seen[-wmod.LIFE_AREAS_MEMORY:], (key, seen)
+            assert text and key in dict(wmod.LIFE_AREAS)
+            seen.append(key)
+        assert set(seen) == set(dict(wmod.LIFE_AREAS))      # tous les thèmes finissent par passer
+        assert len(state.data["life_areas_recent"]) == wmod.LIFE_AREAS_MEMORY
+
+    def test_theme_is_in_the_tip_prompt_only(self, settings, state, items):
+        w, llm = make_writer(settings, state, {"post-": post_resp(TIP_TEXT), "factcheck": FC_OK})
+        w.draft_post("tip", items, [], "")
+        w.draft_post("news", items, [], "")
+        tip_user, news_user = [c["user"] for c in llm.calls if c["label"].startswith("post-")]
+        area = dict(wmod.LIFE_AREAS)[state.data["life_areas_recent"][-1]]
+        assert "EVERYDAY USE" in tip_user and f"Theme of this post: {area}" in tip_user
+        assert "NEWS IN PLAIN WORDS" in news_user and "Theme of this post" not in news_user
+        assert len(state.data["life_areas_recent"]) == 1
+
+    def test_areas_are_clean(self):
+        from bot.filters import find_tech_jargon, off_limits_term
+        keys = [k for k, _ in wmod.LIFE_AREAS]
+        assert len(keys) == len(set(keys)) > wmod.LIFE_AREAS_MEMORY
+        for _key, text in wmod.LIFE_AREAS:
+            assert not off_limits_term(text) and not find_tech_jargon(text), text
 
 
 # ---------------------------------------------------------------------------
@@ -606,80 +788,79 @@ class TestThreads:
     def test_candidates_judge_and_rotation(self, settings, state, items):
         settings.thread_candidates = 3
         w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
-                                               "judge": {"winner": 2, "reason": "le plus utile cette semaine"}})
+                                               "judge": {"winner": 3, "reason": "le plus utile cette semaine"}})
         d = w.draft_thread(items, [], "")
         assert d is not None and d.kind == "thread" and d.angle == "timely"
         assert d.texts == thread_tweets("timely")
         assert d.sources == [items[0]]
+        assert d.card["type"] == "list" and d.card["title"] == "5 things to *try tonight*"
         assert "choisi parmi 3" in d.reason and "le plus utile cette semaine" in d.reason
-        assert llm.labels() == ["thread-beginner", "factcheck", "thread-timely", "factcheck",
-                                "thread-tutorial", "factcheck", "judge"]
+        assert llm.labels() == ["thread-beginner", "factcheck", "thread-tutorial", "factcheck",
+                                "thread-timely", "factcheck", "judge"]
         for c in llm.calls:
             expected = settings.llm_effort_thread if c["label"].startswith("thread-") else None
             assert c["effort"] == expected, c["label"]
         judge_user = llm.calls[-1]["user"]
-        assert "planned for a BEGINNER thread (thread 1)" in judge_user
-        assert "THREAD 2 [kind: timely]" in judge_user
+        assert "THREAD 3 [kind: timely]" in judge_user and "Previous threads" not in judge_user
         assert set(llm.calls[-1]["schema"]["properties"]) == {"winner", "reason"}
         assert "ONLY TWEET 1 REACHES NEW PEOPLE" in llm.calls[0]["system"]
         assert wmod.THREAD_ANGLES["beginner"] in llm.calls[0]["user"]
+        assert "IMAGE CARD posted with it" in llm.calls[1]["user"]      # la couverture est relue aussi
 
-    def test_rotation_after_soft_and_beginner(self, settings, state, items):
+    def test_last_published_kind_goes_last(self, settings, state, items):
         settings.thread_candidates = 3
-        state.data["thread_recent_kinds"] = ["tutorial", "beginner", "story"]
+        state.data["thread_recent_kinds"] = ["tutorial", "beginner"]
         w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
                                                "judge": {"winner": 1, "reason": "ok"}})
         d = w.draft_thread(items, [], "")
-        assert d is not None
+        assert d is not None and d.angle == "tutorial"
         assert [c["label"] for c in llm.calls if c["label"].startswith("thread-")] == \
-            ["thread-timely", "thread-tutorial", "thread-practical"]
+            ["thread-tutorial", "thread-timely", "thread-beginner"]
         judge_user = llm.calls[-1]["user"]
-        assert "do NOT pick a mindset or story" in judge_user
-        assert "Previous threads published (oldest → newest): tutorial, beginner, story" in judge_user
+        assert "Previous threads published (oldest → newest): tutorial, beginner" in judge_user
+        assert "prefer a kind different from the last one" in judge_user
 
-    def test_thread_plan_properties(self, settings, state):
+    def test_thread_plan(self, settings, state):
         w, _ = make_writer(settings, state)
-        for seed in range(40):
-            w.rng = random.Random(seed)
-            settings.thread_candidates = 6
-            picks, forced = w.thread_plan([])
-            assert forced and picks == ["beginner", "timely", "tutorial", "practical"]
-            assert not set(picks) & wmod.THREAD_SOFT_KINDS   # compte IA : plus de mindset / histoire
-            picks, forced = w.thread_plan(["mindset", "tutorial"])
-            assert not set(picks) & wmod.THREAD_SOFT_KINDS
-            picks, forced = w.thread_plan(["tutorial", "timely"])
-            assert forced and picks[0] == "beginner"
-            picks, forced = w.thread_plan(["beginner", "timely"])
-            assert not forced and "beginner" not in picks
-            settings.thread_candidates = 1
-            assert w.thread_plan(["beginner", "timely"])[0] == ["timely"]
+        settings.thread_candidates = 6
+        assert w.thread_plan([]) == ["beginner", "tutorial", "timely"]
+        assert w.thread_plan(["timely"]) == ["beginner", "tutorial", "timely"]
+        assert w.thread_plan(["beginner", "tutorial"]) == ["beginner", "timely", "tutorial"]
+        assert w.thread_plan(["weekly", "beginner"]) == ["tutorial", "timely", "beginner"]
+        settings.thread_candidates = 1
+        assert w.thread_plan(["beginner"]) == ["tutorial"]
+        assert w.thread_plan(["tutorial"]) == ["beginner"]
+        settings.thread_candidates = 0                       # réglage absurde : un candidat quand même
+        assert w.thread_plan([]) == ["beginner"]
+        assert set(wmod.THREAD_ANGLES) == set(wmod.THREAD_ANGLE_KINDS) == set(wmod.GENRE_FR)
 
     def test_weekend_thread_is_the_weekly_recap(self, settings, state, clock):
         w, _ = make_writer(settings, state)
         clock(13, 0, day=18)                                  # dimanche 18 octobre 2026
         settings.thread_candidates = 3
-        assert w.thread_plan(["tutorial"])[0] == ["weekly", "timely", "tutorial"]
+        assert w.thread_plan(["tutorial"]) == ["weekly", "beginner", "tutorial"]
         clock(13, 0, day=20)                                  # mardi : pas de récap
-        assert "weekly" not in w.thread_plan(["tutorial"])[0]
+        assert "weekly" not in w.thread_plan(["tutorial"])
 
     def test_recent_thread_kinds_synced_from_published_items(self, settings, state):
         w, _ = make_writer(settings, state)
         state.data["thread_recent_kinds"] = ["tutorial"]
-        state.new_item("thread", ["a"], status="published", meta={"angle": "story"})
-        state.new_item("thread", ["b"], status="rejected", meta={"angle": "mindset"})
+        state.new_item("thread", ["a"], status="published", meta={"angle": "weekly"})
+        state.new_item("thread", ["b"], status="rejected", meta={"angle": "timely"})
         state.new_item("tip", ["c"], status="published", meta={"angle": "beginner"})
-        assert w.recent_thread_kinds() == ["tutorial", "story"]
-        assert w.recent_thread_kinds() == ["tutorial", "story"]      # idempotent
+        state.new_item("thread", ["e"], status="published", meta={"angle": "story"})   # ancien genre : ignoré
+        assert w.recent_thread_kinds() == ["tutorial", "weekly"]
+        assert w.recent_thread_kinds() == ["tutorial", "weekly"]      # idempotent
         state.new_item("thread", ["d"], status="published", meta={"angle": "beginner"})
-        assert w.recent_thread_kinds() == ["tutorial", "story", "beginner"]
-        assert state.data["thread_recent_kinds"] == ["tutorial", "story", "beginner"]
+        assert w.recent_thread_kinds() == ["tutorial", "weekly", "beginner"]
+        assert state.data["thread_recent_kinds"] == ["tutorial", "weekly", "beginner"]
 
     def test_single_candidate_no_judge(self, settings, state, items):
         settings.thread_candidates = 1
         state.data["thread_recent_kinds"] = ["beginner"]
         w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK})
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "timely"
+        assert d is not None and d.angle == "tutorial"
         assert "judge" not in llm.labels()
 
     @pytest.mark.parametrize("verdict", [None, {"winner": 9, "reason": "?"}, {"winner": "abc", "reason": ""}])
@@ -689,31 +870,38 @@ class TestThreads:
         w, _ = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
                                              "judge": verdict})
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "timely"
+        assert d is not None and d.angle == "tutorial"
 
     def test_numbering_stripped_and_truncated(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
         tweets = [f"{i}/ " + t for i, t in enumerate(thread_tweets("timely", 9), start=1)]
         w, _ = make_writer(settings, state, {"thread-": thread_responder(
             {"timely": thread_resp("timely", source_ids=[1], tweets=tweets)}), "factcheck": FC_OK})
+        only(w, "timely")
         d = w.draft_thread(items, [], "")
         expected = thread_tweets("timely", 9)
         assert d.texts == expected[:6] + [expected[-1]]
         assert not any(t.startswith(("1/", "2/")) for t in d.texts)
 
     def test_bad_tweet_triggers_retry(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
         bad = thread_tweets("timely")
         bad[2] = "step three: sign up at claude.ai and open a new project for this."
         w, llm = make_writer(settings, state, {"thread-": thread_responder({"timely": [
             thread_resp("timely", source_ids=[1], tweets=bad), thread_resp("timely", source_ids=[1])]}),
             "factcheck": FC_OK})
+        only(w, "timely")
         d = w.draft_thread(items, [], "")
         assert d is not None and d.texts == thread_tweets("timely")
         assert llm.labels() == ["thread-timely", "thread-timely", "factcheck"]
         assert "tweet 3 was rejected: it contained a link or a domain name" in llm.calls[1]["user"]
+
+    def test_jargon_in_a_tweet_triggers_retry(self, settings, state, items):
+        bad = thread_tweets("tutorial")
+        bad[1] = "step one: pick the best LLM for the job, then paste your material."
+        w, llm = make_writer(settings, state, {"thread-": thread_responder({"tutorial": [
+            thread_resp("tutorial", tweets=bad), thread_resp("tutorial")]}), "factcheck": FC_OK})
+        only(w, "tutorial")
+        assert w.draft_thread(items, [], "") is not None
+        assert 'tweet 2 was rejected: it used tech jargon ("LLM")' in llm.calls[1]["user"]
 
     def test_too_short_everywhere_returns_none(self, settings, state, items):
         settings.thread_candidates = 3
@@ -723,22 +911,30 @@ class TestThreads:
         assert "judge" not in llm.labels()
         assert "only 3 usable tweets" in llm.calls[1]["user"]
 
-    def test_timely_must_cite_and_is_factchecked(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
+    def test_news_claims_without_citation_fail_the_factcheck(self, settings, state, items):
+        """Plus de règle « il faut citer » côté code : un thread d'actu sans source
+        est simplement recalé par la relecture (aucun fait d'actu n'est sourcé)."""
         w, llm = make_writer(settings, state, {
-            "thread-": thread_responder({"timely": [thread_resp("timely"), thread_resp("timely", source_ids=[1]),
-                                                    ]}),
-            "factcheck": [{"ok": False, "issues": "nothing in the items about apps"}]})
+            "thread-": thread_responder({"timely": [thread_resp("timely"), thread_resp("timely", source_ids=[1])]}),
+            "factcheck": [{"ok": False, "issues": "no item cited"},
+                          {"ok": False, "issues": "nothing in the items about apps"}]})
+        only(w, "timely")
         assert w.draft_thread(items, [], "") is None
-        assert llm.labels() == ["thread-timely", "thread-timely", "factcheck"]
-        assert "source_ids" in llm.calls[1]["user"]
+        assert llm.labels() == ["thread-timely", "factcheck", "thread-timely", "factcheck"]
+        assert "no item cited" in llm.calls[1]["user"]
+        assert "a fact-checker found unsupported claims: no item cited" in llm.calls[2]["user"]
+
+    @pytest.mark.parametrize("genre", ["timely", "weekly"])
+    def test_news_thread_dropped_when_factcheck_is_down(self, settings, state, items, genre):
+        w, llm = make_writer(settings, state, {"thread-": thread_responder({genre: thread_resp(genre)})})
+        only(w, genre)
+        assert w.draft_thread(items, [], "") is None
+        assert llm.labels() == [f"thread-{genre}", "factcheck"]
 
     def test_timely_without_items_still_factchecked(self, settings, state):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
         w, llm = make_writer(settings, state, {"thread-": thread_responder({"timely": thread_resp("timely")}),
                                                "factcheck": FC_OK})
+        only(w, "timely")
         d = w.draft_thread([], [], "")
         assert d is not None and d.sources == []
         assert llm.labels() == ["thread-timely", "factcheck"]
@@ -753,41 +949,39 @@ class TestThreads:
         assert "factcheck" in llm.labels() and "judge" not in llm.labels()
         assert "relis bien" in d.reason      # vérification indisponible ici : signalée sur la carte
 
-    def test_beginner_visual_photo_only(self, settings, state, items):
-        settings.thread_candidates = 1
-        both = thread_resp("beginner", visual_url="[1]",
-                           image_prompt="a hand photographing an open fridge with a phone, kitchen light")
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({"beginner": both})})
-        d = w.draft_thread(items, [], "")
-        assert d.angle == "beginner" and d.visual is None          # IA désactivée : jamais de capture
-        assert "none available" in llm.calls[0]["user"]
-        settings.image_ai_enabled = True
-        w2, llm2 = make_writer(settings, state, {"thread-": thread_responder({"beginner": dict(both)})})
-        d2 = w2.draft_thread(items, [], "")
-        assert d2.visual == Visual("ai", both["image_prompt"])
-        assert "VISUAL:" not in llm2.calls[0]["user"]
-
-    def test_timely_screenshot(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
+    def test_cover_card_of_a_news_thread_can_be_the_page(self, settings, state, items):
         w, _ = make_writer(settings, state, {"thread-": thread_responder(
-            {"timely": thread_resp("timely", source_ids=[1], visual_url="[1]")}), "factcheck": FC_OK})
+            {"timely": thread_resp("timely", source_ids=[1], visual_url="[1]", card_type="phone")}),
+            "factcheck": FC_OK})
+        only(w, "timely")
         d = w.draft_thread(items, [], "")
-        assert d.visual == Visual("screenshot", items[0].url)
+        assert d.visual == Visual("phone", items[0].url) and d.card["type"] == "phone"
+
+    def test_bad_cover_card_retry_then_text_only(self, settings, state, items):
+        bad = thread_resp("beginner", card_type="steps", card_lines=["Only one"])
+        w, llm = make_writer(settings, state, {"thread-": thread_responder(
+            {"beginner": [dict(bad), thread_resp("beginner")]}), "factcheck": FC_OK})
+        only(w, "beginner")
+        d = w.draft_thread(items, [], "")
+        assert d.card["type"] == "list"
+        assert "the image card was rejected" in llm.calls[1]["user"]
+        w2, llm2 = make_writer(settings, state, {"thread-": thread_responder({"beginner": dict(bad)}),
+                                                 "factcheck": FC_OK})
+        only(w2, "beginner")
+        d2 = w2.draft_thread(items, [], "")
+        assert d2 is not None and d2.card is None and d2.texts == thread_tweets("beginner")
 
     def test_hook_too_similar_to_recent_thread(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
         state.remember_text("thread", thread_tweets("timely")[0])
         w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK})
+        only(w, "timely")
         assert w.draft_thread(items, [], "") is None
         assert "too similar to a recent post" in llm.calls[1]["user"]
 
     def test_thread_notes(self, settings, state, items):
-        settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
         w, llm = make_writer(settings, state, {"thread-": thread_responder(
             {"timely": thread_resp("timely", source_ids=[1], used_note_ids=[2])}), "factcheck": FC_OK})
+        only(w, "timely")
         d = w.draft_thread(items, NOTES, "")
         assert d.used_notes == [NOTES[1]]
         assert HEADER in llm.calls[0]["user"]
@@ -797,12 +991,10 @@ class TestThreads:
         topics = settings.evergreen_topics
         assert w.topics_for_kind(topics, "tutorial")[0] == "TUTORIAL — topic A"
         assert w.topics_for_kind(topics, "beginner")[0] == "BEGINNER — topic B"
-        assert w.topics_for_kind(topics, "story")[0] == "STORY — topic C"
-        assert w.topics_for_kind(topics, "practical")[0] == "plain topic D"
         for seed in range(10):
             w.rng = random.Random(seed)
             out = w.topics_for_kind(topics, "timely")
-            assert set(out[:2]) == {"TUTORIAL — topic A", "plain topic D"}
+            assert set(out[:2]) == {"STORY — topic C", "plain topic D"}   # sans étiquette connue d'abord
             assert sorted(out) == sorted(topics)
         assert w.topics_for_kind(topics, "tutorial", limit=2)[0] == "TUTORIAL — topic A"
         assert len(w.topics_for_kind(topics, "tutorial", limit=2)) == 2
@@ -814,8 +1006,9 @@ class TestThreads:
                                                "judge": {"winner": 1, "reason": "ok"}})
         w.draft_thread(items, [], "")
         tut = next(c for c in llm.calls if c["label"] == "thread-tutorial")["user"]
-        topics_part = tut.split("Evergreen topics", 1)[1]
+        topics_part = tut.split("Everyday topics you can pick from", 1)[1]
         assert topics_part.index("TUTORIAL — topic A") < topics_part.index("STORY — topic C")
+        assert "Today is Thursday October 15." in tut
 
 
 # ---------------------------------------------------------------------------
@@ -827,8 +1020,10 @@ REACT_TEXT = ("free voice mode for everyone is the quiet big one this week.\n"
 
 def react_resp(post=True, text=REACT_TEXT, source_ids=(1,), **kw) -> dict:
     obj = {"post": post, "reason": "grosse annonce", "text": text if post else "",
-           "source_ids": list(source_ids) if post else [], "used_note_ids": [], "visual_url": "",
-           "image_prompt": ""}
+           "source_ids": list(source_ids) if post else [], "used_note_ids": [],
+           "card_type": "phone" if post else "none", "card_title": "ChatGPT voice is now *free*" if post else "",
+           "card_lines": ["No paid plan needed", "Talk instead of typing"] if post else [], "card_note": "",
+           "visual_url": "[1]" if post else ""}
     obj.update(kw)
     return obj
 
@@ -848,11 +1043,14 @@ class TestReactive:
     def test_gate_yes_grounded(self, settings, state, items):
         stale = news(5, "Something from two days ago", "old news", hours=50)
         blocked = news(6, "AI startup hit with lawsuit over training data", "court case", hours=1)
-        w, llm = make_writer(settings, state, {"reactive": react_resp(visual_url="[1]"), "factcheck": FC_OK})
+        w, llm = make_writer(settings, state, {"reactive": react_resp(), "factcheck": FC_OK})
         d = w.draft_reactive(items + [stale, blocked], NOTES, "")
         assert d is not None and d.kind == "reactive" and d.texts == [REACT_TEXT]
         assert d.sources == [items[0]] and d.reason == "grosse annonce"
-        assert d.visual == Visual("screenshot", items[0].url)
+        assert d.visual == Visual("phone", items[0].url)
+        assert d.card == {"type": "phone", "title": "ChatGPT voice is now *free*",
+                          "lines": ["No paid plan needed", "Talk instead of typing"], "note": ""}
+        assert "everyday people would care about RIGHT NOW" in llm.calls[0]["user"]
         assert llm.labels() == ["reactive", "factcheck"]
         user = llm.calls[0]["user"]
         assert "two days ago" not in user and "lawsuit" not in user
@@ -1049,55 +1247,81 @@ class TestRadar:
 
 
 # ---------------------------------------------------------------------------
-# Vérification des captures
+# Capture « smartphone » : Claude la regarde
 # ---------------------------------------------------------------------------
-class TestVisualMatches:
-    def test_x_url_refused_without_llm(self, settings, state):
-        w, llm = make_writer(settings, state, {"visual-check": {"matches": True, "reason": "ok"}})
-        ok, why = w.visual_matches("post", "https://x.com/a/status/1", "plenty of visible text on this page")
-        assert not ok and "x.com" in why
-        assert w.visual_matches("post", "", "plenty of visible text")[0] is False
-        assert llm.calls == []
-
-    def test_empty_page(self, settings, state):
-        w, llm = make_writer(settings, state, {"visual-check": {"matches": True, "reason": "ok"}})
-        assert w.visual_matches("post", "https://openai.com/a", "  \n ") == (False, "page vide ou illisible")
-        assert llm.calls == []
-
-    def test_llm_verdict(self, settings, state):
-        w, llm = make_writer(settings, state, {"visual-check": [{"matches": True, "reason": "annonce visible"},
-                                                                {"matches": False, "reason": ""}]})
-        page = "Introducing voice for everyone. Today we are making voice available to all users."
-        assert w.visual_matches(NEWS_TEXT, "https://openai.com/index/voice", page) == (True, "annonce visible")
-        assert w.visual_matches(NEWS_TEXT, "https://openai.com/index/voice", page)[0] is False
-        assert llm.calls[0]["label"] == "visual-check"
-        assert page in llm.calls[0]["user"] and NEWS_TEXT in llm.calls[0]["user"]
+class TestScreenshotCheck:
+    def test_verdicts(self, settings, state):
+        w, llm = make_writer(settings, state, {"screenshot-check": [
+            {"ok": True, "issue": ""}, {"ok": False, "issue": "cookie banner over the headline"},
+            {"ok": "yes", "issue": ""}]})
+        assert w.screenshot_is_clean("a.jpg") == (True, "capture propre")
+        assert w.screenshot_is_clean("a.jpg") == (False, "cookie banner over the headline")
+        assert w.screenshot_is_clean("a.jpg") == (False, "capture pas assez propre")   # pas un vrai « oui »
+        assert w.screenshot_is_clean("a.jpg") == (False, "vérification de l'image indisponible")
+        call = llm.calls[0]
+        assert call["images"] == ["a.jpg"] and call["effort"] == "low"
+        assert "as seen on a phone" in call["system"] and "bottom edge may cut" in call["system"]
 
 
 # ---------------------------------------------------------------------------
 # Contenu des consignes (ligne éditoriale + algorithme X)
 # ---------------------------------------------------------------------------
 class TestPrompts:
+    WRITERS = ("SYSTEM_PROMPT", "THREAD_SYSTEM_PROMPT", "REACTIVE_GATE_PROMPT")
+
     def test_growth_facts_in_prompts(self):
-        for p in (wmod.SYSTEM_PROMPT, wmod.THREAD_SYSTEM_PROMPT, wmod.REACTIVE_GATE_PROMPT):
-            assert '"Not interested"' in p and "copy-link" in p and "FIRST LINE" in p
-            assert "idiom-light" in p
+        for name in self.WRITERS:
+            p = getattr(wmod, name)
+            assert '"Not interested"' in p and "copy-link" in p and "FIRST LINE" in p, name
+            assert "idiom-light" in p, name
         assert "ONLY TWEET 1 REACHES NEW PEOPLE" in wmod.THREAD_SYSTEM_PROMPT
         assert "Tweet 1 on its own" in wmod.JUDGE_SYSTEM_PROMPT
         assert "empty greeting" in wmod.GM_SYSTEM_PROMPT
         assert "copypasta" in wmod.RADAR_REPLY_PROMPT
 
     def test_editorial_line_in_prompts(self):
-        for p in (wmod.SYSTEM_PROMPT, wmod.THREAD_SYSTEM_PROMPT, wmod.REACTIVE_GATE_PROMPT):
-            assert "Crypto, NFTs" in p and "Muslim" in p and "PERSONAL FACTS" in p
-            assert "ADD VALUE" in p and "GROUNDING" in p and "No links and no domain names" in p
-            assert "260 characters" in p
-        for p in (wmod.SYSTEM_PROMPT, wmod.REACTIVE_GATE_PROMPT):
-            assert "PLAYBOOK" in p and "just [launched" in p and "Sentence case" in p
-            assert "lowercase ok" not in p and "One number max" not in p
+        for name in self.WRITERS:
+            p = getattr(wmod, name)
+            assert "Crypto, NFTs" in p and "Muslim" in p and "PERSONAL FACTS" in p, name
+            assert "GROUNDING" in p and "No links and no domain names" in p and "260 characters" in p, name
         assert "max 200 characters" in wmod.GM_SYSTEM_PROMPT
         assert "Muslim" in wmod.RADAR_REPLY_PROMPT and "Muslim" in wmod.GM_SYSTEM_PROMPT
-        assert "x.com" not in wmod._SCREENSHOT_DOMAINS_TEXT.split(", ")
+
+    def test_everyday_people_line_in_prompts(self):
+        """Novembre 2026 : on écrit pour M. et Mme Tout-le-monde."""
+        for name in self.WRITERS:
+            p = getattr(wmod, name)
+            assert "AI made simple, for everyday life" in p, name
+            assert "WHO YOU WRITE FOR" in p and "a nurse, a teacher, a shop owner" in p, name
+            assert "PLAIN WORDS ONLY" in p and "No tech jargon, ever" in p, name
+            assert "CARD — every post goes out with an image card" in p, name
+            assert "never makes you feel stupid" in p, name
+            assert "image_prompt" not in p and "screenshot" not in p.lower(), name
+        for name in ("SYSTEM_PROMPT", "REACTIVE_GATE_PROMPT"):
+            p = getattr(wmod, name)
+            assert "PLAYBOOK" in p and "NEWS IN PLAIN WORDS" in p and "Sentence case" in p, name
+        assert "just [launched" not in wmod.SYSTEM_PROMPT            # l'ancien format « lancement »
+        assert "stop a non-tech person scrolling" in wmod.JUDGE_SYSTEM_PROMPT
+        assert "PLAIN-LANGUAGE CHECK" in wmod.FACTCHECK_PROMPT and "IMAGE CARD" in wmod.FACTCHECK_PROMPT
+        assert "Most of the time the answer is NO" in wmod.REACTIVE_GATE_PROMPT
+
+    def test_prompts_respect_their_own_rules(self):
+        """Les exemples donnés à Claude ne contiennent ni lien ni sujet interdit."""
+        from bot.filters import off_limits_term
+        from bot.x_api import contains_url
+        for name in ("PLAYBOOK", "AUDIENCE", "TONE", "CARD_RULES", "ORIGINALITY"):
+            block = getattr(wmod, name)
+            assert not off_limits_term(block), (name, off_limits_term(block))
+            assert not contains_url(block), name
+        for genre, angle in wmod.THREAD_ANGLES.items():
+            assert not off_limits_term(angle) and not contains_url(angle), genre
+
+    def test_fallback_texts_are_publishable(self):
+        from bot.filters import publish_problem
+        for kind, texts in wmod.DEFAULT_FALLBACKS.items():
+            for t in texts:
+                assert publish_problem(t, max_len=wmod.GM_MAX if kind == "gm" else wmod.POST_MAX,
+                                       check_numbers=False, plain=True) is None, t
 
 
 

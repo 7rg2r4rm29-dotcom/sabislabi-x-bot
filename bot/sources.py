@@ -109,6 +109,46 @@ _HN_RELEVANT_RE = re.compile(r"\b(?:" + "|".join([
     r"robots?", r"robotics", r"humanoids?", r"self-driving", r"Waymo", r"SaaS",
 ]) + r")(?!\w)", re.I)
 
+# Flux généralistes ("filter": "ai" dans settings.json) : on ne garde que ce qui parle d'IA.
+_AI_TOPIC_RE = re.compile(r"\b(?:A\.?I\.?|artificial intelligence|ChatGPT|GPT[\w.-]*|OpenAI|Claude|Anthropic|"
+                          r"Gemini|Copilot|Perplexity|NotebookLM|chatbots?|Siri|Alexa|Grok|deepfakes?|"
+                          r"voice (?:assistant|clone|cloning)s?|generative|machine learning|Midjourney|Sora)(?!\w)",
+                          re.I)
+
+# Le compte parle au grand public : coup de pouce aux actus « pour tout le monde »
+# (un produit qu'on a dans la poche, quelque chose de gratuit, un mode d'emploi, une
+# arnaque à éviter), frein à celles pour initiés (développeurs, entreprises, bourse).
+_EVERYDAY_RE = re.compile(r"\b(?:" + "|".join([
+    r"free", r"for everyone", r"all users", r"everyone can", r"now available", r"rolls? out", r"rolling out",
+    r"new feature", r"your phone", r"iphone", r"android", r"whatsapp", r"instagram", r"gmail",
+    r"google (?:search|maps|photos|docs|messages)", r"voice", r"photos?", r"camera", r"students?",
+    r"teachers?", r"parents?", r"kids", r"teens?", r"school", r"homework", r"shopping", r"travel",
+    r"recipes?", r"scams?", r"deepfakes?", r"privacy", r"how to", r"ways to", r"tips", r"tricks",
+    r"i (?:tried|tested|used|asked|turned)", r"here'?s how", r"everyday", r"caregivers?", r"famil(?:y|ies)",
+]) + r")\b", re.I)
+_INSIDER_RE = re.compile(r"\b(?:" + "|".join([
+    r"APIs?", r"SDKs?", r"developers?", r"devs", r"enterprises?", r"benchmarks?", r"funding", r"raises?",
+    r"raised", r"valuation", r"series [a-f]", r"IPO", r"flotation", r"stock market", r"shares", r"investors?",
+    r"acqui(?:res?|red|sition)", r"merger", r"CEO", r"executives?", r"chips?", r"GPUs?",
+    r"data cent(?:er|re)s?", r"open[- ]source", r"open[- ]weights?", r"regulat\w+", r"senate", r"congress",
+    r"parliament", r"earnings", r"revenue", r"layoffs?", r"antitrust", r"research paper", r"arxiv",
+    r"robotics", r"agents?", r"agentic", r"cloud", r"B2B", r"startups?",
+]) + r")\b", re.I)
+EVERYDAY_BOOST = 1.6
+INSIDER_PENALTY = 0.45
+
+
+def audience_factor(item: NewsItem) -> float:
+    """> 1 : parle à tout le monde ; < 1 : actu d'initiés ; 1 : ni l'un ni l'autre."""
+    text = f"{getattr(item, 'title', '') or ''} {(getattr(item, 'summary', '') or '')[:300]}"
+    factor = 1.0
+    if _EVERYDAY_RE.search(text):
+        factor *= EVERYDAY_BOOST
+    if _INSIDER_RE.search(text):
+        factor *= INSIDER_PENALTY
+    return factor
+
+
 _BOILERPLATE_RES = (
     # WordPress : « The post X appeared first on Y. »
     re.compile(r"\s*The post .{1,300}? appeared first on .{1,150}?$", re.I | re.S),
@@ -153,6 +193,12 @@ class _TextExtractor(HTMLParser):
 
 
 _ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-f]+|[a-z]{2,8});", re.I)
+_TAG_RE = re.compile(r"</?[a-z][a-z0-9]*(?:\s[^<>]*)?/?>", re.I)
+# Certains flux mettent la bio de l'auteur à la place du contenu de l'article.
+_AUTHOR_BIO_RE = re.compile(
+    r"^[A-Z][\w.'’-]+(?: [A-Z][\w.'’-]+){1,3} (?:is|was|has been|covers|writes|joined) [^.]{0,120}"
+    r"\b(?:writer|editor|reporter|journalist|correspondent|contributor|columnist|producer|covering|"
+    r"covers|writes about)\b", re.S)
 
 
 def strip_html(raw: str | None) -> str:
@@ -171,6 +217,9 @@ def strip_html(raw: str | None) -> str:
         # Certains flux échappent deux fois (« &amp;#8217; »)
         if _ENTITY_RE.search(text):
             text = html.unescape(text)
+        # … jusqu'aux balises (« &lt;p&gt; » échappé deux fois) : second passage.
+        if _TAG_RE.search(text):
+            text = html.unescape(_TAG_RE.sub(" ", text))
     text = text.replace(" ", " ").replace("​", "").replace("﻿", "")
     return re.sub(r"\s+", " ", text).strip()
 
@@ -288,15 +337,19 @@ def _entry_link(entry: Any, base_url: str) -> str:
 
 def _entry_summary(entry: Any) -> str:
     summary = clean_summary(entry.get("summary") or entry.get("description") or "")
-    contents = entry.get("content") or []
+    if _AUTHOR_BIO_RE.match(summary):
+        summary = ""
+    # Le texte de l'article, quand le flux le donne (« dc:content », « content:encoded »).
+    raw_contents = [entry.get("dc_content")]
+    raw_contents += [c.get("value") for c in (entry.get("content") or []) if isinstance(c, dict)]
     content = ""
-    for c in contents:
-        value = c.get("value") if isinstance(c, dict) else None
-        if value:
-            content = clean_summary(value)
-            if content:
-                break
-    # Un résumé trop court (« Read more… ») : le contenu complet dit mieux de quoi ça parle.
+    for raw in raw_contents:
+        text = clean_summary(raw) if isinstance(raw, str) else ""
+        if text and not _AUTHOR_BIO_RE.match(text):     # jamais la bio de l'auteur
+            content = text
+            break
+    # Un résumé court (chapô d'une ligne, « Read more… », voire la légende d'une image) :
+    # le début de l'article dit mieux de quoi ça parle, et donne au relecteur de quoi vérifier.
     if content and len(summary) < 120 and len(content) > len(summary):
         summary = content
     return shorten(summary, SUMMARY_MAX)
@@ -434,6 +487,7 @@ def parse_rss(text: str, feed: dict) -> list[NewsItem]:
     name = _feed_name(feed)
     base = str(feed.get("url") or "")
     official = bool(feed.get("official"))
+    only_ai = str(feed.get("filter") or "").strip().lower() == "ai"
     items: list[NewsItem] = []
     undated = 0
     for entry in entries[:MAX_ENTRIES_PER_FEED]:
@@ -441,6 +495,8 @@ def parse_rss(text: str, feed: dict) -> list[NewsItem]:
         url = _entry_link(entry, base)
         if not title or not url or not url.lower().startswith(("http://", "https://")):
             continue
+        if only_ai and not _AI_TOPIC_RE.search(f"{title} {_entry_summary(entry)}"):
+            continue        # flux généraliste : cet article ne parle pas d'IA
         published = _entry_datetime(entry)
         if published is None:
             undated += 1
@@ -708,7 +764,7 @@ class NewsHub:
                 stats["blocked"] += 1
                 log.debug("Actu écartée (%s) : %s — %s", reason, it.source, it.title[:80])
                 continue
-            it.score = score_item(it, weight, now)
+            it.score = round(score_item(it, weight, now) * audience_factor(it), 6)
             kept.append(it)
         out = dedupe(kept)
         stats["dupes"] = len(kept) - len(out)

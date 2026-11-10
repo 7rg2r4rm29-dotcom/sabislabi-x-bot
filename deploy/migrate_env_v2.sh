@@ -46,24 +46,30 @@ setkey_default X_HANDLE sabislabi
 setkey_default TIMEZONE Europe/Paris
 setkey_default DRY_RUN false
 setkey_default APPROVAL_MODE telegram
-setkey_default POST_SLOTS "news@08:30,tip@14:00,news@18:30"
-setkey_default THREAD_SLOTS "tue@15:00,sun@17:00"
+setkey_default POST_SLOTS "tip@14:30,news@19:00"
+setkey_default THREAD_SLOTS "tue@14:30,sun@16:00"
 setkey_default DRAFT_LEAD_MINUTES "gm:660,tip:150,news:120,thread:240"
 setkey_default APPROVAL_GRACE_MINUTES 120
 setkey_default PUBLISH_JITTER_MINUTES 4
 setkey_default QUIET_HOURS "23:30-07:30"
 setkey_default REACTIVE_ENABLED true
-setkey_default REACTIVE_MAX_PER_DAY 4
-setkey_default REACTIVE_CHECK_EVERY_MINUTES 20
-setkey_default REACTIVE_WINDOW "08:00-01:00"
-# Anciennes valeurs par défaut jamais modifiées à la main -> nouvelles valeurs.
-upgrade_default POST_SLOTS "gm@08:30,tip@14:00,news@18:30" "news@08:30,tip@14:00,news@18:30"
-upgrade_default REACTIVE_MAX_PER_DAY 1 4
-upgrade_default REACTIVE_MAX_PER_DAY 2 4
-upgrade_default REACTIVE_CHECK_EVERY_MINUTES 150 20
-upgrade_default REACTIVE_CHECK_EVERY_MINUTES 60 20
-upgrade_default REACTIVE_WINDOW "09:30-22:00" "08:00-01:00"
-upgrade_default REACTIVE_WINDOW "11:00-23:00" "08:00-01:00"
+setkey_default REACTIVE_MAX_PER_DAY 1
+setkey_default REACTIVE_CHECK_EVERY_MINUTES 30
+setkey_default REACTIVE_WINDOW "12:00-23:30"
+# Anciennes valeurs par défaut jamais modifiées à la main -> nouvelles valeurs
+# (novembre 2026 : moins de posts, mieux choisis, aux heures du public anglophone).
+upgrade_default POST_SLOTS "gm@08:30,tip@14:00,news@18:30" "tip@14:30,news@19:00"
+upgrade_default POST_SLOTS "news@08:30,tip@14:00,news@18:30" "tip@14:30,news@19:00"
+upgrade_default THREAD_SLOTS "tue@15:00,sun@17:00" "tue@14:30,sun@16:00"
+upgrade_default THREAD_SLOTS "tue@15:00,sun@18:00" "tue@14:30,sun@16:00"
+upgrade_default REACTIVE_MAX_PER_DAY 4 1
+upgrade_default REACTIVE_MAX_PER_DAY 2 1
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 150 30
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 60 30
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 20 30
+upgrade_default REACTIVE_WINDOW "09:30-22:00" "12:00-23:30"
+upgrade_default REACTIVE_WINDOW "11:00-23:00" "12:00-23:30"
+upgrade_default REACTIVE_WINDOW "08:00-01:00" "12:00-23:30"
 upgrade_default RADAR_CHECK_EVERY_MINUTES 30 15
 setkey_default COMMENTS_ENABLED true
 setkey_default COMMENTS_CHECK_EVERY_MINUTES 10

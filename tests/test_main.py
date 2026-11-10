@@ -132,6 +132,13 @@ def secret_settings(settings):
     return settings
 
 
+@pytest.fixture(autouse=True)
+def _no_real_browser(monkeypatch):
+    """--check dessine une vraie carte d'essai : ici, on ne lance pas de navigateur."""
+    from bot import cards
+    monkeypatch.setattr(cards, "self_test", lambda: (True, ""))
+
+
 def _check(settings, **kw):
     lines: list[str] = []
     kw.setdefault("telegram", FakeTelegram())
@@ -176,6 +183,24 @@ class TestCheck:
     def test_claude_failure(self, secret_settings):
         code, out, _ = _check(secret_settings, llm=FakeLLM({}))
         assert code == 1 and "Claude" in out
+
+    def test_images_are_really_drawn(self, secret_settings):
+        code, out, _ = _check(secret_settings)
+        assert code == 0 and "✅ Images : les cartes se dessinent correctement" in out
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok"
+
+    def test_images_impossible_is_a_warning_not_a_failure(self, secret_settings):
+        """Sans navigateur, le bot publie quand même (sans image) : on prévient, on ne bloque pas."""
+        code, out, _ = _check(secret_settings, images=lambda: (False, "Executable doesn't exist"))
+        assert code == 0
+        assert "⚠️ Images : impossible de dessiner les cartes (Executable doesn't exist)" in out
+        assert "playwright install chromium" in out and "tout est OK" in out
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
+
+        def boom():
+            raise RuntimeError("no display")
+        code, out, _ = _check(secret_settings, images=boom)
+        assert code == 0 and "(RuntimeError)" in out
 
     def test_missing_x_keys_in_dry_run_is_only_a_warning(self, secret_settings):
         secret_settings.x_api_key = ""
@@ -228,10 +253,14 @@ class TestMain:
         monkeypatch.setattr(bmain, "run_check", lambda s: seen.append("check") or 0)
         monkeypatch.setattr(bmain, "run_once", lambda s, job, state: seen.append(("once", job, state)) or 0)
         monkeypatch.setattr(bmain, "run_bot", lambda s, state: seen.append(("run", state)) or 0)
+        monkeypatch.setattr(bmain, "run_preview", lambda s, kinds, state: seen.append(("preview", kinds)) or 0)
         assert bmain.main(["--check"]) == 0
         assert bmain.main(["--once", "radar", "--state", "/tmp/s.json"]) == 0
         assert bmain.main(["--log-level", "DEBUG"]) == 0
-        assert seen == ["check", ("once", "radar", "/tmp/s.json"), ("run", None)]
+        assert bmain.main(["--preview"]) == 0
+        assert bmain.main(["--preview", "thread"]) == 0
+        assert seen == ["check", ("once", "radar", "/tmp/s.json"), ("run", None),
+                        ("preview", "tip,news"), ("preview", "thread")]
 
     def test_unknown_job_rejected(self):
         with pytest.raises(SystemExit) as e:
@@ -296,4 +325,151 @@ def test_report_shows_recent_posts_without_secrets(tmp_path, capsys):
     assert "OpenAI makes voice free" in out and "Plus de crédits API X" in out
     assert "Réponses aux commentaires : expired 1" in out
     assert "en échec : crédits" in out
+    assert "aucun post mesuré" in out and "Abonnés : aucun relevé" in out
+    assert "chiffres : pas encore relevés" in out          # publié, mais pas encore mesuré
     assert m.main(["--report", "--state", str(sp)]) == 0
+
+
+def test_report_shows_numbers_cards_and_followers(tmp_path, clock):
+    """Ce que les posts ont vraiment donné : c'est ce qui permet de corriger le tir."""
+    from bot import main as m
+    clock(10, 0, day=30)
+    state = {"version": 2, "items": {
+        "a": {"id": "a", "kind": "tip", "status": "published", "created_at": "2026-10-28T14:00:00+01:00",
+              "texts": ["That letter makes no sense? Take a photo of it."], "image_kind": "card",
+              "meta": {"reason": "courrier", "card": {"type": "prompt", "title": "Understand any letter"}}},
+        "b": {"id": "b", "kind": "news", "status": "published", "created_at": "2026-10-29T19:00:00+01:00",
+              "texts": ["ChatGPT can now talk to you. For free."], "image_kind": "phone",
+              "meta": {"card": {"type": "phone", "title": "Voice is free"}}},
+        "c": {"id": "c", "kind": "tip", "status": "approved", "created_at": "2026-10-30T09:00:00+01:00",
+              "texts": ["Scheduled, not out yet."], "meta": {}}},
+        "published": [
+            {"tweet_id": "1", "kind": "tip", "item_id": "a", "created_at": "2026-10-28T14:02:00+01:00",
+             "metrics": {"impressions": 812, "likes": 9, "replies": 2, "reposts": 1, "quotes": 1, "bookmarks": 14}},
+            {"tweet_id": "2", "kind": "news", "item_id": "b", "created_at": "2026-10-29T19:01:00+01:00",
+             "metrics": None},
+            {"tweet_id": "0", "kind": "tip", "item_id": "old", "created_at": "2026-08-01T14:00:00+02:00",
+             "metrics": {"impressions": 99999, "likes": 500}}],
+        "followers": [{"date": "2026-10-20", "count": 4520}, {"date": "2026-10-29", "count": 4498},
+                      {"date": "2026-10-30", "count": 4501}]}
+    sp = tmp_path / "state.json"
+    sp.write_text(json.dumps(state))
+    out = m.report(sp, tmp_path / "missing.log")
+    assert "tip [published] (image card)" in out and "carte : [prompt] Understand any letter" in out
+    assert "chiffres : 812 vues · 9 j'aime · 2 réponse(s) · 2 repartage(s) · 14 signet(s)" in out
+    assert out.count("chiffres :") == 2 and "chiffres : pas encore relevés" in out   # rien pour le post programmé
+    assert "30 derniers jours : 1 posts mesurés, 812 vues en moyenne, 27 interactions au total" in out
+    assert "Abonnés : 4501 le 2026-10-30 (-19 depuis le 2026-10-20)" in out
+    assert "10-29=4498" in out
+
+
+# ---------------------------------------------------------------------------
+# --preview : de vrais posts avec leur image, sans rien publier
+# ---------------------------------------------------------------------------
+class PreviewWriter:
+    def __init__(self, drafts: dict) -> None:
+        self.drafts = drafts
+        self.calls: list[tuple] = []
+
+    def draft_post(self, kind, news, notes, perf):
+        self.calls.append((kind, len(news), tuple(notes)))
+        return self.drafts.get(kind)
+
+    def draft_thread(self, news, notes, perf):
+        self.calls.append(("thread", len(news), tuple(notes)))
+        return self.drafts.get("thread")
+
+    def draft_reactive(self, news, notes, perf):
+        self.calls.append(("reactive", len(news), tuple(notes)))
+        return self.drafts.get("reactive")
+
+
+class PreviewNews:
+    def __init__(self, items=None, fail=False) -> None:
+        self.items = items or []
+        self.fail = fail
+        self.calls: list[dict] = []
+
+    def collect(self, max_age_hours: float = 36, use_x: bool = True):
+        self.calls.append({"use_x": use_x})
+        if self.fail:
+            raise RuntimeError("network down")
+        return list(self.items)
+
+
+class TestPreview:
+    CARD = {"type": "prompt", "title": "Dinner from a *fridge photo*",
+            "lines": ["Here is a photo of my fridge. What can I cook tonight?"], "note": "Free versions too."}
+
+    def _run(self, settings, tmp_path, drafts, kinds="tip,news", **kw):
+        lines: list[str] = []
+        img = tmp_path / "card.png"
+        img.write_bytes(b"\x89PNG fake")
+        visuals_seen: list[tuple] = []
+
+        def fake_visual(s, draft, writer, tag):
+            visuals_seen.append((draft.kind, tag))
+            return (str(img), "card") if getattr(draft, "card", None) else (None, None)
+        tg = kw.pop("telegram", FakeTelegram())
+        writer = PreviewWriter(drafts)
+        news = kw.pop("news", PreviewNews(["n1", "n2"]))
+        code = bmain.run_preview(settings, kinds, kw.pop("state_path", tmp_path / "state" / "state.json"),
+                                 llm=object(), news=news, writer=writer, telegram=tg,
+                                 prepare_visual=fake_visual, out=lines.append)
+        return code, "\n".join(lines), tg, writer, news, visuals_seen
+
+    def test_drafts_are_shown_and_sent_but_nothing_is_published(self, settings, tmp_path):
+        from bot.models import Draft
+        from bot.state import StateStore
+        real = tmp_path / "state" / "state.json"
+        store = StateStore(real)
+        store.add_note("I tested voice mode while cooking")
+        store.remember_text("tip", "an older tip")
+        before = real.read_text()
+        drafts = {"tip": Draft(kind="tip", texts=["You open the fridge and have no idea what to cook."],
+                               card=dict(self.CARD), reason="le frigo"),
+                  "news": Draft(kind="news", texts=["Which one do you use?"],
+                                poll={"options": ["ChatGPT", "Claude"], "duration_minutes": 1440})}
+        code, out, tg, writer, news, visuals_seen = self._run(settings, tmp_path, drafts)
+        assert code == 0
+        assert "RIEN n'est publié" in out and "Aperçu terminé : 2/2 post(s) envoyé(s) sur Telegram" in out
+        assert "You open the fridge" in out and "[carte prompt] Dinner from a fridge photo" in out
+        assert "• Here is a photo of my fridge" in out and "(Free versions too.)" in out
+        assert "[sondage] ChatGPT · Claude" in out and "pourquoi : le frigo" in out
+        assert out.count("image : aucune") == 1 and "card.png (card)" in out
+        assert news.calls == [{"use_x": False}]                       # jamais de lecture payante de X
+        assert writer.calls[0] == ("tip", 2, ("I tested voice mode while cooking",))
+        assert visuals_seen == [("tip", "apercu_tip"), ("news", "apercu_news")]
+        assert len(tg.photos) == 1 and "APERÇU" in tg.photos[0]["caption"]
+        assert len(tg.sent) == 2 and all("rien n'est publié" in m["text"] for m in tg.sent)
+        assert "📊 ChatGPT · Claude" in tg.sent[1]["text"]
+        assert real.read_text() == before                              # l'état du bot en service n'a pas bougé
+
+    def test_thread_and_breaking_news(self, settings, tmp_path):
+        from bot.models import Draft
+        drafts = {"thread": Draft(kind="thread", texts=["Hook tweet", "Second tweet"], card=dict(self.CARD))}
+        code, out, tg, writer, _news, _ = self._run(settings, tmp_path, drafts, kinds="thread, reactive")
+        assert code == 0 and "1/ Hook tweet" in out and "2/ Second tweet" in out
+        assert "ne mérite un post grand public" in out and "Aperçu terminé : 1/2" in out
+        assert [c[0] for c in writer.calls] == ["thread", "reactive"]
+
+    def test_nothing_drafted_is_a_failure(self, settings, tmp_path):
+        code, out, tg, _w, _n, _ = self._run(settings, tmp_path, {})
+        assert code == 1 and "Claude n'a rien proposé de publiable" in out and tg.sent == [] and tg.photos == []
+
+    def test_works_without_news_state_or_telegram(self, settings, tmp_path):
+        from bot.models import Draft
+        drafts = {"tip": Draft(kind="tip", texts=["A tip."], card=dict(self.CARD))}
+        code, out, _tg, writer, _n, _ = self._run(settings, tmp_path, drafts, kinds="tip",
+                                                 news=PreviewNews(fail=True), telegram=None,
+                                                 state_path=tmp_path / "nowhere" / "state.json")
+        assert code == 0 and "0 actus lues" in out and writer.calls == [("tip", 0, ())]
+        assert not (tmp_path / "nowhere").exists()
+
+    def test_kinds_parsing(self, settings, tmp_path):
+        assert bmain.preview_kinds("tip,news") == ["tip", "news"]
+        assert bmain.preview_kinds(" Thread ; tip tip,gm,unknown") == ["thread", "tip"]
+        assert bmain.preview_kinds("") == [] and bmain.preview_kinds(None) == []
+        lines: list[str] = []
+        assert bmain.run_preview(settings, "gm", tmp_path / "s.json", out=lines.append) == 2
+        assert "Types inconnus" in lines[0]

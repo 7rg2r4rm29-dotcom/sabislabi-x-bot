@@ -3,6 +3,8 @@
 Repris de la v1 (ligne éditoriale d'octobre 2026) : zéro crypto/NFT, zéro
 politique/drames, rien de contraire à la foi du propriétaire, pas de jargon,
 pas de chiffres empilés, pas de copie d'une source, pas de fuite JSON.
+Novembre 2026 : le compte parle au grand public — `find_tech_jargon` refuse le
+vocabulaire de spécialiste (LLM, API, benchmark, open-source…) dans les posts.
 Nouveau en v2 : pas de lien (0,20 $ le post via l'API au lieu de 0,015 $ ; l'algorithme,
 lui, ne pénalise plus les liens), et
 longueur pondérée comme X la compte.
@@ -73,6 +75,32 @@ _JARGON_RE = re.compile("|".join(_JARGON_PATTERNS), re.I)
 
 def find_jargon(text: str) -> str | None:
     m = _JARGON_RE.search(text or "")
+    return m.group(0) if m else None
+
+
+# Vocabulaire de spécialiste, incompréhensible pour M. et Mme Tout-le-monde.
+# Sigles : casse exacte (« RAG » oui, « rag » non). Mots : casse indifférente.
+# Volontairement absents, car ils ont un sens courant : model, agent, chip,
+# prompt, developer (la relecture par Claude s'en charge selon le contexte).
+_TECH_ACRONYMS_RE = re.compile(
+    r"\b(?:LLMs?|APIs?|SDKs?|RAG|GPUs?|CLI|MCP|SOTA|AGI|ASI|NLP|IDE|OSS|SaaS|B2B|KPIs?|ROI)\b")
+_TECH_WORDS_RE = re.compile("|".join([
+    r"\bbenchmarks?\b", r"\bbenchmarked\b", r"\bopen[- ]source\b", r"\bopen[- ]weights?\b",
+    r"\bfine[- ]?tun\w*", r"\bmulti[- ]?modal\w*", r"\bcontext windows?\b", r"\binference\b",
+    r"\btokens?\b", r"\bparameters?\b", r"\bdatasets?\b", r"\bagentic\b", r"\bAI agents?\b",
+    r"\bprompt engineering\b", r"\bembeddings?\b", r"\blatency\b", r"\bworkflows?\b",
+    r"\buse[- ]cases?\b", r"\bleverag\w*", r"\bhallucinat\w*", r"\bneural net\w*",
+    r"\bmachine learning\b", r"\bdeep learning\b", r"\blarge language models?\b",
+    r"\blanguage models?\b", r"\bfoundation models?\b", r"\bfrontier models?\b",
+    r"\breasoning models?\b", r"\bquantiz\w*", r"\bself[- ]host\w*", r"\bcodebases?\b",
+    r"\brepositor(?:y|ies)\b", r"\bpull requests?\b", r"\bend[- ]to[- ]end\b", r"\bscalab\w*",
+    r"\bsynerg\w*", r"\bstate[- ]of[- ]the[- ]art\b", r"\bgenerative AI\b", r"\bgen ?AI\b",
+]), re.I)
+
+
+def find_tech_jargon(text: str) -> str | None:
+    """Premier mot de jargon tech trouvé dans un texte destiné au grand public."""
+    m = _TECH_ACRONYMS_RE.search(text or "") or _TECH_WORDS_RE.search(text or "")
     return m.group(0) if m else None
 
 
@@ -191,9 +219,12 @@ def looks_like_json_leak(text: str) -> bool:
     t = text.strip()
     if t.startswith("{") or t.endswith("}"):
         return True
-    if re.search(r'"\s*(text|reply|post|reason|angle|image_prompt|visual_url|tweets|visual)\s*"\s*:', t):
+    if re.search(r'"\s*(text|reply|post|reason|angle|image_prompt|visual_url|tweets|visual|card_type|'
+                 r'card_title|card_lines|card_note)\s*"\s*:', t):
         return True
-    if re.search(r"\b(text|image_prompt|visual_url|reply|tweets)\s*:\s*\"", t):
+    # Clé sans guillemets : seulement tout au début (« text: "…" »). Au milieu d'une
+    # phrase, « then reply: "shorter, please" » est un conseil tout à fait normal.
+    if re.match(r"(text|image_prompt|visual_url|reply|tweets|card_type|card_title|card_lines)\s*:\s*\"", t):
         return True
     return "\\n" in t or '\\"' in t
 
@@ -235,8 +266,9 @@ def weighted_length(text: str) -> int:
 # Verdict global
 # ---------------------------------------------------------------------------
 def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int = MAX_WEIGHTED,
-                    allow_numbers: int = 1, check_numbers: bool = True) -> str | None:
-    """Raison pour laquelle `text` ne doit PAS être proposé, ou None si OK."""
+                    allow_numbers: int = 1, check_numbers: bool = True, plain: bool = False) -> str | None:
+    """Raison pour laquelle `text` ne doit PAS être proposé, ou None si OK.
+    `plain` : texte pour le grand public (posts, threads), sans jargon tech."""
     from .x_api import contains_url
 
     if not text or not text.strip():
@@ -251,6 +283,10 @@ def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int
     jargon = find_jargon(text)
     if jargon:
         return f"jargon ({jargon})"
+    if plain:
+        tech = find_tech_jargon(text)
+        if tech:
+            return f"trop technique ({tech})"
     if check_numbers and too_many_numbers(text, allow_numbers):
         return "trop de chiffres"
     if weighted_length(text) > max_len:

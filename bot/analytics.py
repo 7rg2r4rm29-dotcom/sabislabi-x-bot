@@ -167,6 +167,7 @@ class Analytics:
         p["fmt"] = {
             "media": media,
             "image_kind": it.get("image_kind") or "",
+            "card": str((meta.get("card") or {}).get("type") or "") if isinstance(meta.get("card"), dict) else "",
             "genre": str(meta.get("angle") or "") if p.get("kind") == "thread" else "",
             "notes": bool(meta.get("used_notes")),
             "fallback": bool(meta.get("from_fallback")),
@@ -231,6 +232,7 @@ class Analytics:
         by_media: dict[str, list] = {}
         by_notes: dict[str, list] = {}
         by_genre: dict[str, list] = {}
+        by_card: dict[str, list] = {}
         for p in posts:
             by_kind.setdefault(p["kind"], []).append(p)
             dt = _local(p)
@@ -242,6 +244,8 @@ class Analytics:
                 by_notes.setdefault("with_notes" if fmt.get("notes") else "without_notes", []).append(p)
             if fmt.get("genre"):
                 by_genre.setdefault(fmt["genre"], []).append(p)
+            if fmt.get("card"):
+                by_card.setdefault(fmt["card"], []).append(p)
         recent_ids = {id(p) for p in self._posts(BEST_DAYS)}
         recent = [p for p in posts if id(p) in recent_ids]
         best = max(recent, key=lambda p: _m(p, "impressions"), default=None)
@@ -256,6 +260,7 @@ class Analytics:
             "by_format": {k: stats(v) for k, v in sorted(by_media.items())},
             "by_notes": {k: stats(v) for k, v in sorted(by_notes.items())},
             "by_thread_genre": {k: stats(v) for k, v in sorted(by_genre.items())},
+            "by_card": {k: stats(v) for k, v in sorted(by_card.items())},
             "best": self._brief(best),
             "worst": self._brief(worst) if worst is not best else None,
         }
@@ -338,6 +343,11 @@ class Analytics:
         g_over, _ = self._compare(perf["by_thread_genre"], perf["by_kind"].get("thread") or {})
         for r, name, st in g_over[:1]:
             extra.append(f"{name} threads do {r:.1f}x the average thread")
+        c_over, c_under = self._compare(perf.get("by_card") or {}, ov)
+        for r, name, st in c_over[:1]:
+            extra.append(f"posts with a \"{name}\" card do {r:.1f}x avg impressions (n={st['count']})")
+        for r, name, st in c_under[:1]:
+            extra.append(f"\"{name}\" cards only {r:.1f}x (n={st['count']})")
         if extra:
             line = "; ".join(extra) + "."
             lines.append(line[0].upper() + line[1:])

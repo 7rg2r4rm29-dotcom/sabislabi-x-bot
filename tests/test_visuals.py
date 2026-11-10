@@ -1,5 +1,6 @@
-"""Visuels (bot/visuals.py) : jamais de capture de X, réglages respectés,
-vérification par Claude, délai dur, aucune exception vers l'appelant."""
+"""Visuels (bot/visuals.py) : une carte dessinée par défaut, la page de l'actu
+dans un smartphone quand elle est impeccable, jamais de capture de X, réglages
+respectés, délai dur, aucune exception vers l'appelant."""
 from __future__ import annotations
 
 import sys
@@ -9,108 +10,260 @@ from pathlib import Path
 
 import pytest
 
-from bot import utils, visuals
-from bot.models import Draft, Visual
+from bot import cards, utils, visuals
+from bot.models import Draft, NewsItem, Visual
+
+PAGE = "https://www.theverge.com/ai/123"
+CARD = {"type": "prompt", "title": "Dinner from a *fridge photo*",
+        "lines": ["Here is a photo of my fridge. What can I cook tonight?"], "note": "Free versions too."}
+PHONE_CARD = {"type": "phone", "title": "ChatGPT voice is now *free*",
+              "lines": ["No paid plan needed", "Talk instead of typing"], "note": ""}
 
 
 class StubWriter:
-    def __init__(self, ok: bool = True, raises: bool = False) -> None:
-        self.ok = ok
-        self.raises = raises
-        self.calls: list[tuple] = []
+    """Le Writer vu par visuals : l'état (compteurs) et le contrôle visuel de la capture."""
 
-    def visual_matches(self, post_text, url, visible_text):
-        self.calls.append((post_text, url, visible_text))
+    def __init__(self, state=None, clean: bool = True, raises: bool = False) -> None:
+        self.state = state
+        self.clean = clean
+        self.raises = raises
+        self.clean_calls: list[str] = []
+
+    def screenshot_is_clean(self, path):
+        self.clean_calls.append(str(path))
         if self.raises:
             raise RuntimeError("claude down")
-        return self.ok, "because"
+        return self.clean, "propre" if self.clean else "bandeau cookies au milieu"
+
+
+class Renders:
+    def __init__(self) -> None:
+        self.raw: list[dict] = []      # une entrée par carte demandée
+        self.fail: list[bool] = []     # .fail.append(True) : le prochain rendu échoue
 
 
 @pytest.fixture
-def shots(monkeypatch, tmp_path):
-    """Remplace le navigateur : enregistre les URL, écrit un faux PNG."""
+def rendered(monkeypatch):
+    """Remplace le dessin : note chaque carte demandée, écrit un faux PNG."""
+    out = Renders()
+
+    def fake_render(card, out_path, *, theme, badge, handle, shot_path=None, source=""):
+        out.raw.append({"card": dict(card), "out": Path(out_path), "theme": theme, "badge": badge,
+                        "handle": handle, "shot": shot_path, "source": source})
+        if out.fail and out.fail.pop(0):
+            return False
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"\x89PNG fake")
+        return True
+    monkeypatch.setattr(cards, "render", fake_render)
+    return out
+
+
+@pytest.fixture
+def shots(monkeypatch):
+    """Remplace le navigateur : note les URL capturées, écrit un faux JPEG."""
     calls: list[str] = []
 
     def fake_capture(url, tag="post", timeout_s=visuals.CAPTURE_TIMEOUT_S):
         calls.append(url)
         folder = utils.MEDIA_DIR / "shots"
         folder.mkdir(parents=True, exist_ok=True)
-        p = folder / f"{tag}.png"
-        p.write_bytes(b"\x89PNG fake")
-        return p, "OpenAI — Introducing a new model. Long visible text of the page."
+        p = folder / f"{tag}_mobile.jpg"
+        p.write_bytes(b"\xff\xd8 fake")
+        return p, "The Verge — ChatGPT voice is now free. Long visible text of the page."
     monkeypatch.setattr(visuals, "capture_with_timeout", fake_capture)
     return calls
 
 
-def _draft(target: str, kind: str = "screenshot", **kw) -> Draft:
-    return Draft(kind="news", texts=["the post text", "second"], visual=Visual(kind, target), **kw)
+def item(url: str = PAGE) -> NewsItem:
+    return NewsItem(id="n1", title="ChatGPT voice is now free", summary="", url=url, source="The Verge",
+                    published=None)
 
 
-class TestScreenshots:
+def tip(**kw) -> Draft:
+    return Draft(kind="tip", texts=["the post text"], card=dict(CARD), **kw)
+
+
+def phone(url: str = PAGE, cited: bool = True, **kw) -> Draft:
+    return Draft(kind="news", texts=["the post text"], card=dict(PHONE_CARD), visual=Visual("phone", url),
+                 sources=[item(url)] if cited else [], **kw)
+
+
+# ---------------------------------------------------------------------------
+# Cartes dessinées
+# ---------------------------------------------------------------------------
+class TestDrawnCards:
+    def test_card_is_rendered(self, settings, state, rendered, shots):
+        path, kind = visuals.prepare(settings, tip(), StubWriter(state), "tip_2026-10-15")
+        assert kind == "card" and path and Path(path).is_file()
+        assert Path(path).parent == utils.MEDIA_DIR / "cards" and Path(path).name.startswith("tip_2026-10-15_")
+        call = rendered.raw[0]
+        assert call["card"] == CARD and call["handle"] == "sabislabi" and call["shot"] is None
+        assert call["badge"] == "Everyday AI · No. 1" and call["theme"] in cards.THEMES
+        assert shots == []                                   # aucune page chargée pour une carte dessinée
+
+    def test_palettes_rotate_and_tips_are_numbered(self, settings, state, rendered):
+        w = StubWriter(state)
+        for _ in range(len(cards.THEME_ORDER) + 1):
+            assert visuals.prepare(settings, tip(), w, "tip")[1] == "card"
+        themes = [c["theme"] for c in rendered.raw]
+        assert set(themes[:len(cards.THEME_ORDER)]) == set(cards.THEME_ORDER)     # toutes y passent
+        assert all(a != b for a, b in zip(themes, themes[1:]))                    # jamais deux fois de suite
+        assert themes[0] == themes[len(cards.THEME_ORDER)]                        # puis ça recommence
+        assert [c["badge"] for c in rendered.raw][:3] == [
+            "Everyday AI · No. 1", "Everyday AI · No. 2", "Everyday AI · No. 3"]
+        assert state.data["cards"] == {"seq": 6, "tips": 6}
+
+    @pytest.mark.parametrize("draft_kw, badge", [
+        ({"kind": "news", "sources": [item()]}, "AI news, made simple"),
+        ({"kind": "news"}, "Everyday AI · No. 1"),          # créneau actu, mais post du quotidien
+        ({"kind": "tip", "sources": [item()]}, "AI news, made simple"),
+        ({"kind": "reactive", "sources": [item()]}, "AI news, made simple"),
+        ({"kind": "thread", "angle": "beginner"}, "Everyday AI"),
+        ({"kind": "thread", "angle": "tutorial"}, "Step by step"),
+        ({"kind": "thread", "angle": "timely"}, "AI news, made simple"),
+        ({"kind": "thread", "angle": "weekly"}, "This week in AI"),
+    ])
+    def test_badge_follows_the_content(self, settings, state, rendered, draft_kw, badge):
+        d = Draft(texts=["text"], card=dict(CARD), **draft_kw)
+        assert visuals.prepare(settings, d, StubWriter(state), "t")[1] == "card"
+        assert rendered.raw[0]["badge"] == badge
+
+    def test_poll_or_nothing_to_show(self, settings, state, rendered, shots):
+        w = StubWriter(state)
+        assert visuals.prepare(settings, tip(poll={"options": ["a", "b"]}), w, "t") == (None, None)
+        assert visuals.prepare(settings, Draft(kind="gm", texts=["gm"]), w, "t") == (None, None)
+        assert visuals.prepare(settings, Draft(kind="tip", texts=["x"], card={"type": "poster"}), w, "t") == \
+            (None, None)
+        assert rendered.raw == [] and shots == []
+
+    def test_render_failure_means_text_only(self, settings, state, rendered):
+        rendered.fail.append(True)
+        assert visuals.prepare(settings, tip(), StubWriter(state), "t") == (None, None)
+
+    def test_works_without_a_state(self, settings, rendered):
+        """Compteurs absents (aperçu, doublure) : une carte quand même."""
+        assert visuals.prepare(settings, tip(), StubWriter(None), "t")[1] == "card"
+        assert visuals.prepare(settings, tip(), None, "t")[1] == "card"
+        assert rendered.raw[0]["badge"] == "Everyday AI"     # pas de numéro sans compteur
+
+    def test_tag_is_sanitized(self, settings, state, rendered):
+        path, _ = visuals.prepare(settings, tip(), StubWriter(state), "../../etc/pw d")
+        assert Path(path).parent == utils.MEDIA_DIR / "cards"
+        assert "/" not in Path(path).name and ".." not in Path(path).name
+
+    def test_never_raises(self, settings, state, rendered):
+        assert visuals.prepare(settings, object(), StubWriter(state), "t") == (None, None)
+        d = tip()
+        d.card = "not a dict"
+        assert visuals.prepare(settings, d, StubWriter(state), "t") == (None, None)
+
+    def test_old_cards_are_cleaned_up(self, settings, state, rendered, monkeypatch):
+        monkeypatch.setattr(visuals, "CARDS_KEEP", 2)
+        folder = utils.MEDIA_DIR / "cards"
+        folder.mkdir(parents=True)
+        import os
+        for i in range(4):
+            f = folder / f"old{i}.png"
+            f.write_bytes(b"x")
+            os.utime(f, (1000 + i, 1000 + i))
+        path, _ = visuals.prepare(settings, tip(), StubWriter(state), "new")
+        assert sorted(p.name for p in folder.iterdir()) == sorted(["old3.png", Path(path).name])
+
+
+# ---------------------------------------------------------------------------
+# La page de l'actu, vue dans un smartphone
+# ---------------------------------------------------------------------------
+class TestPhoneCards:
+    def test_clean_capture_goes_into_the_phone(self, settings, state, rendered, shots):
+        w = StubWriter(state, clean=True)
+        path, kind = visuals.prepare(settings, phone(), w, "news_2026-10-15")
+        assert kind == "phone" and Path(path).is_file()
+        assert shots == [PAGE]
+        call = rendered.raw[0]
+        assert call["card"]["type"] == "phone" and call["source"] == "theverge.com"
+        assert call["badge"] == "AI news, made simple"
+        assert w.clean_calls == [str(call["shot"])]          # Claude a regardé CETTE capture
+        assert not any((utils.MEDIA_DIR / "shots").iterdir())   # capture brute supprimée après usage
+
+    @pytest.mark.parametrize("writer_kw", [{"clean": False}, {"raises": True}])
+    def test_messy_capture_is_replaced_by_a_drawn_card(self, settings, state, rendered, shots, writer_kw):
+        w = StubWriter(state, **writer_kw)
+        path, kind = visuals.prepare(settings, phone(), w, "news")
+        assert kind == "card" and Path(path).is_file()
+        assert len(w.clean_calls) == 1 and len(rendered.raw) == 1
+        card = rendered.raw[0]["card"]
+        assert card["type"] == "list" and card["title"] == PHONE_CARD["title"]
+        assert card["lines"] == PHONE_CARD["lines"] and rendered.raw[0]["shot"] is None
+        assert not any((utils.MEDIA_DIR / "shots").iterdir())
+
+    def test_no_checker_no_capture_used(self, settings, state, rendered, shots):
+        """Sans relecteur (aucun Writer), une capture n'est jamais utilisée à l'aveugle."""
+        path, kind = visuals.prepare(settings, phone(), None, "news")
+        assert kind == "card" and rendered.raw[0]["card"]["type"] == "list"
+
+    def test_capture_failure_falls_back(self, settings, state, rendered, monkeypatch):
+        monkeypatch.setattr(visuals, "capture_with_timeout", lambda *a, **k: None)
+        w = StubWriter(state)
+        assert visuals.prepare(settings, phone(), w, "t")[1] == "card"
+        assert w.clean_calls == [] and rendered.raw[0]["card"]["type"] == "list"
+
+    def test_phone_render_failure_falls_back(self, settings, state, rendered, shots):
+        rendered.fail.append(True)                           # le rendu « smartphone » échoue
+        path, kind = visuals.prepare(settings, phone(), StubWriter(state), "t")
+        assert kind == "card" and [c["card"]["type"] for c in rendered.raw] == ["phone", "list"]
+        assert not any((utils.MEDIA_DIR / "shots").iterdir())
+
+    def test_fallback_with_few_lines_is_a_fact_card(self, settings, state, rendered, monkeypatch):
+        monkeypatch.setattr(visuals, "capture_with_timeout", lambda *a, **k: None)
+        d = phone()
+        d.card["lines"] = ["No paid plan needed"]
+        assert visuals.prepare(settings, d, StubWriter(state), "t")[1] == "card"
+        assert rendered.raw[0]["card"]["type"] == "fact"
+
+    def test_same_palette_for_the_fallback(self, settings, state, rendered, shots):
+        visuals.prepare(settings, phone(), StubWriter(state, clean=False), "t")
+        assert state.data["cards"]["seq"] == 1               # une seule image comptée
+
     @pytest.mark.parametrize("url", [
-        "https://x.com/OpenAI/status/1",
-        "https://twitter.com/OpenAI/status/1",
-        "https://mobile.twitter.com/a/status/1",
-        "https://t.co/abc",
-        "https://pbs.twimg.com/media/x.jpg",
+        "https://x.com/OpenAI/status/1", "https://twitter.com/OpenAI/status/1",
+        "https://mobile.twitter.com/a/status/1", "https://t.co/abc", "https://pbs.twimg.com/media/x.jpg",
         "https://openai.com@x.com/status/1",
     ])
-    def test_never_captures_x(self, settings, shots, url):
-        assert visuals.prepare(settings, _draft(url), StubWriter(), "news") == (None, None)
-        assert shots == []
+    def test_never_captures_x(self, settings, state, rendered, shots, url):
+        """Même cité, un post X n'est jamais capturé : carte dessinée à la place."""
+        assert visuals.prepare(settings, phone(url), StubWriter(state), "news")[1] == "card"
+        assert shots == [] and rendered.raw[0]["card"]["type"] == "list"
 
     @pytest.mark.parametrize("url", [
         "https://example.com/article", "https://evil-theverge.com/x", "https://theverge.com.evil.io/x",
         "javascript:alert(1)", "ftp://openai.com/file", "", "not a url",
     ])
-    def test_refuses_sites_outside_the_list(self, settings, shots, url):
-        assert visuals.prepare(settings, _draft(url), StubWriter(), "news") == (None, None)
+    def test_uncited_page_outside_the_list_is_not_captured(self, settings, state, rendered, shots, url):
+        assert visuals.prepare(settings, phone(url, cited=False), StubWriter(state), "news")[1] == "card"
         assert shots == []
 
-    def test_disabled_screenshots(self, settings, shots):
+    def test_cited_page_on_any_site_is_captured(self, settings, state, rendered, shots):
+        url = "https://someblog.dev/agents-break"
+        assert visuals.prepare(settings, phone(url), StubWriter(state), "news")[1] == "phone"
+        assert shots == [url] and rendered.raw[0]["source"] == "someblog.dev"
+
+    def test_disabled_screenshots(self, settings, state, rendered, shots):
         settings.screenshots_enabled = False
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), StubWriter(), "news") == (None, None)
+        assert visuals.prepare(settings, phone(), StubWriter(state), "news")[1] == "card"
         assert shots == []
 
-    def test_allowed_page_checked_by_claude(self, settings, shots):
-        w = StubWriter(ok=True)
-        path, kind = visuals.prepare(settings, _draft("https://www.theverge.com/ai/123"), w, "news_2026-10-15")
-        assert kind == "screenshot"
-        assert path and path.endswith("news_2026-10-15.png")
-        assert shots == ["https://www.theverge.com/ai/123"]
-        assert w.calls[0][0] == "the post text"            # 1er tweet seulement
-        assert w.calls[0][1] == "https://www.theverge.com/ai/123"
-        assert "Introducing" in w.calls[0][2]
-
-    def test_mismatch_deletes_image(self, settings, shots):
-        path_before = utils.MEDIA_DIR / "shots" / "news.png"
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), StubWriter(ok=False),
-                               "news") == (None, None)
-        assert not path_before.exists()
-
-    def test_check_failure_deletes_image(self, settings, shots):
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), StubWriter(raises=True),
-                               "news") == (None, None)
-        assert not (utils.MEDIA_DIR / "shots" / "news.png").exists()
-
-    def test_capture_failure(self, settings, monkeypatch):
-        monkeypatch.setattr(visuals, "capture_with_timeout", lambda *a, **k: None)
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), StubWriter(), "t") == (None, None)
-
-    def test_no_visual_or_poll(self, settings, shots):
-        assert visuals.prepare(settings, Draft(kind="gm", texts=["gm"]), StubWriter(), "gm") == (None, None)
-        d = _draft("https://openai.com/index/x", poll={"options": ["a", "b"]})
-        assert visuals.prepare(settings, d, StubWriter(), "gm") == (None, None)
+    def test_phone_card_without_target(self, settings, state, rendered, shots):
+        d = Draft(kind="news", texts=["x"], card=dict(PHONE_CARD))
+        assert visuals.prepare(settings, d, StubWriter(state), "t")[1] == "card"
         assert shots == []
 
-    def test_tag_is_sanitized(self, settings, shots):
-        path, _ = visuals.prepare(settings, _draft("https://openai.com/index/x"), StubWriter(), "../../etc/pw d")
-        assert path and "/" not in path.rsplit("/", 1)[1].replace(".png", "")
-        assert (utils.MEDIA_DIR / "shots") in __import__("pathlib").Path(path).parents
 
-    def test_never_raises(self, settings, shots):
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), None, "t") == (None, None)
-        assert visuals.prepare(settings, object(), StubWriter(), "t") == (None, None)
+# ---------------------------------------------------------------------------
+# Photo IA (désactivée par défaut, gardée pour qui la rallume)
+# ---------------------------------------------------------------------------
+def ai_draft(prompt: str) -> Draft:
+    return Draft(kind="news", texts=["the post text"], visual=Visual("ai", prompt))
 
 
 class TestAIImages:
@@ -119,7 +272,7 @@ class TestAIImages:
         monkeypatch.setattr(visuals, "generate_ai_image", lambda *a: called.append(a))
         settings.image_ai_enabled = False
         settings.openai_api_key = "sk-x"
-        assert visuals.prepare(settings, _draft("a calm desk", "ai"), StubWriter(), "t") == (None, None)
+        assert visuals.prepare(settings, ai_draft("a calm desk"), StubWriter(), "t") == (None, None)
         assert called == []
 
     def test_needs_key(self, settings, monkeypatch):
@@ -127,7 +280,7 @@ class TestAIImages:
         monkeypatch.setattr(visuals, "generate_ai_image", lambda *a: called.append(a))
         settings.image_ai_enabled = True
         settings.openai_api_key = ""
-        assert visuals.prepare(settings, _draft("a calm desk", "ai"), StubWriter(), "t") == (None, None)
+        assert visuals.prepare(settings, ai_draft("a calm desk"), StubWriter(), "t") == (None, None)
         assert called == []
 
     def test_generates(self, settings, monkeypatch, tmp_path):
@@ -137,7 +290,7 @@ class TestAIImages:
         monkeypatch.setattr(visuals, "generate_ai_image", lambda s, prompt, tag: seen.append((prompt, tag)) or out)
         settings.image_ai_enabled = True
         settings.openai_api_key = "sk-x"
-        assert visuals.prepare(settings, _draft("a calm desk at dawn", "ai"), StubWriter(), "tip") == (str(out), "ai")
+        assert visuals.prepare(settings, ai_draft("a calm desk at dawn"), StubWriter(), "tip") == (str(out), "ai")
         assert seen == [("a calm desk at dawn", "tip")]
 
     def test_refuses_links_and_off_limits(self, settings, monkeypatch):
@@ -145,8 +298,8 @@ class TestAIImages:
         monkeypatch.setattr(visuals, "generate_ai_image", lambda *a: called.append(a))
         settings.image_ai_enabled = True
         settings.openai_api_key = "sk-x"
-        assert visuals.prepare(settings, _draft("logo of openai.com", "ai"), StubWriter(), "t") == (None, None)
-        assert visuals.prepare(settings, _draft("a glass of beer on a bar", "ai"), StubWriter(), "t") == (None, None)
+        assert visuals.prepare(settings, ai_draft("logo of openai.com"), StubWriter(), "t") == (None, None)
+        assert visuals.prepare(settings, ai_draft("a glass of beer on a bar"), StubWriter(), "t") == (None, None)
         assert called == []
 
     def test_generate_without_openai_package(self, settings, monkeypatch):
@@ -184,10 +337,13 @@ class TestAIImages:
         assert images.kwargs["quality"] == settings.image_quality
 
 
+# ---------------------------------------------------------------------------
+# Mécanique de capture (sans navigateur)
+# ---------------------------------------------------------------------------
 class TestCaptureMachinery:
     def test_timeout_returns_quickly_and_discards_late_result(self, monkeypatch):
         finished = threading.Event()
-        late = utils.MEDIA_DIR / "late.png"
+        late = utils.MEDIA_DIR / "late.jpg"
 
         def slow(url, tag, cancel):
             time.sleep(0.5)
@@ -204,7 +360,7 @@ class TestCaptureMachinery:
         assert not late.exists()     # le résultat arrivé trop tard est supprimé
 
     def test_result_returned_in_time(self, monkeypatch, tmp_path):
-        p = tmp_path / "ok.png"
+        p = tmp_path / "ok.jpg"
         monkeypatch.setattr(visuals, "_capture_in_browser", lambda url, tag, cancel: (p, "visible"))
         assert visuals.capture_with_timeout("https://openai.com/x", "t", timeout_s=2) == (p, "visible")
 
@@ -218,6 +374,17 @@ class TestCaptureMachinery:
         monkeypatch.setitem(sys.modules, "playwright", None)
         monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
         assert visuals._capture_in_browser("https://openai.com/x", "t", threading.Event()) is None
+
+    def test_page_is_loaded_like_a_phone(self, monkeypatch):
+        monkeypatch.delenv("XBOT_BROWSER_PATH", raising=False)
+        monkeypatch.delenv("XBOT_BROWSER_PROXY", raising=False)
+        launch, context = visuals._browser_launch_options()
+        assert context["viewport"] == {"width": 390, "height": visuals.MOBILE_VIEWPORT_HEIGHT}
+        assert context["is_mobile"] and context["has_touch"] and "iPhone" in context["user_agent"]
+        assert context["device_scale_factor"] >= 3            # net une fois posé dans la maquette
+        assert launch["headless"] is True and "executable_path" not in launch and "proxy" not in launch
+        assert "ignore_https_errors" not in context
+        assert visuals.MOBILE_VIEWPORT_HEIGHT >= cards.PHONE_PAGE_VISIBLE_HEIGHT
 
     def test_x_requests_blocked_inside_pages(self):
         rx = visuals._X_REQUEST_RE
@@ -239,39 +406,43 @@ class TestCaptureMachinery:
     def test_visible_text(self):
         assert visuals.visible_text("Title", "a\n\n b   c", 100) == "Title\na b c"
 
-    def test_frame_image(self, tmp_path):
-        from PIL import Image
-        raw = tmp_path / "raw.png"
-        Image.new("RGB", (2000, 2000), (255, 255, 255)).save(raw)
-        out = tmp_path / "out.png"
-        assert visuals.frame_image(raw, out, "openai.com") is True
-        img = Image.open(out)
-        assert img.size == (1600, 900)          # 16:9 : X l'affiche entière dans le fil
+    def test_headline_must_be_whole_and_on_screen(self):
+        ok = {"top": 40, "bottom": 190, "left": 16, "right": 374, "vw": 390, "pageWidth": 390}
+        assert visuals.headline_fits(ok) is None
+        assert visuals.headline_fits(dict(ok, top=-30)) == "titre coupé en haut"
+        assert visuals.headline_fits(dict(ok, bottom=visuals.HEADLINE_MUST_END_BEFORE + 1)) == \
+            "titre trop long pour l'écran"
+        assert visuals.headline_fits(dict(ok, right=420)) == "titre plus large que l'écran"
+        assert visuals.headline_fits(dict(ok, left=-12)) == "titre plus large que l'écran"
+        for garbage in (None, {}, {"top": "x"}, dict(ok, bottom=10), dict(ok, vw=0)):
+            assert visuals.headline_fits(garbage) == "titre non mesurable"
+        assert visuals.HEADLINE_MUST_END_BEFORE < cards.PHONE_PAGE_VISIBLE_HEIGHT
 
-    def test_compute_clip_full_width_16_9(self):
-        clip = visuals.compute_clip({"top": 64, "bottom": 180, "vw": 1100, "vh": 900, "lines": []})
-        assert clip == {"x": 0, "y": 32, "width": 1100, "height": 619}
+    def test_site_of(self):
+        assert visuals.site_of("https://www.theverge.com/ai/1") == "theverge.com"
+        assert visuals.site_of("https://feeds.arstechnica.com/x") == "arstechnica.com"
+        assert visuals.site_of("https://www.bbc.co.uk/news/1") == "bbc.co.uk"
+        assert visuals.site_of("https://blog.google/products/gemini/") == "blog.google"
+        assert visuals.site_of("not a url") == ""
 
-    def test_compute_clip_never_slices_a_line_at_the_bottom(self):
-        # une ligne de texte (600-624) traverse le bas prévu (32+619=651) ? non ; celle-ci (640-664) oui
-        m = {"top": 64, "bottom": 180, "vw": 1100, "vh": 900, "lines": [[600, 624], [640, 664], [300, 320]]}
-        clip = visuals.compute_clip(m)
-        assert clip["y"] + clip["height"] == 632          # remonté au-dessus de la ligne coupée
-        assert all(not (t < 632 - 2 and b > 632 + 2) for t, b in m["lines"])
+    def test_final_page_must_be_the_one_we_asked_for(self):
+        ok = visuals.final_url_ok
+        assert ok("https://www.theverge.com/ai/1?utm=x", "https://www.theverge.com/ai/1")
+        assert ok("https://someblog.dev/post/", "https://www.someblog.dev/post")          # même site
+        assert ok("https://techcrunch.com/2026/a", "https://feeds.feedburner.com/tc/a")   # flux → site de confiance
+        assert not ok("https://login.example.org/wall", "https://someblog.dev/post")      # autre site
+        assert not ok("https://x.com/i/flow/login", "https://www.theverge.com/ai/1")
+        assert not ok("https://t.co/abc", "https://t.co/abc")                             # jamais X
+        assert not ok("", "https://www.theverge.com/ai/1")
+        assert not ok("about:blank", "https://www.theverge.com/ai/1")
 
-    def test_compute_clip_never_slices_a_line_at_the_top(self):
-        # « < News » (20-44) est tranché par le haut prévu (64-32=32) : on descend sous lui
-        clip = visuals.compute_clip({"top": 64, "bottom": 180, "vw": 1100, "vh": 900,
-                                     "lines": [[20, 44], [64, 180]]})
-        assert clip["y"] == 50
-
-    def test_compute_clip_short_page(self):
-        clip = visuals.compute_clip({"top": 700, "bottom": 760, "vw": 1100, "vh": 900, "lines": []})
-        assert clip["y"] == 668 and clip["y"] + clip["height"] == 900
-
-    def test_compute_clip_rejects_garbage(self):
-        assert visuals.compute_clip({}) is None
-        assert visuals.compute_clip({"top": 10, "bottom": 5, "vw": 1100, "vh": 900}) is None
+    def test_allowed_sites(self):
+        assert visuals.is_allowed_url("https://www.theverge.com/a")
+        assert visuals.is_allowed_url("https://www.zdnet.com/article/x")
+        assert not visuals.is_allowed_url("https://evil-openai.com/a")
+        assert not visuals.is_allowed_url("https://x.com/a")
+        assert not set(visuals.ALLOWED_DOMAINS) & set(visuals.X_DOMAINS)
+        assert len(set(visuals.ALLOWED_DOMAINS)) == len(visuals.ALLOWED_DOMAINS)
 
     def test_cleanup_keeps_latest(self, tmp_path):
         import os
@@ -283,35 +454,16 @@ class TestCaptureMachinery:
         assert sorted(p.name for p in tmp_path.iterdir()) == ["3.png", "4.png"]
 
 
-class CleanCheckWriter(StubWriter):
-    def __init__(self, clean: bool, **kw) -> None:
-        super().__init__(**kw)
-        self.clean = clean
-        self.clean_calls: list[str] = []
-
-    def screenshot_is_clean(self, path):
-        self.clean_calls.append(str(path))
-        return self.clean, "bandeau cookies au milieu" if not self.clean else "propre"
-
-
-class TestScreenshotQualityGate:
-    def test_messy_capture_is_dropped(self, settings, shots):
-        w = CleanCheckWriter(clean=False)
-        assert visuals.prepare(settings, _draft("https://openai.com/index/x"), w, "news") == (None, None)
-        assert len(w.clean_calls) == 1
-        assert not any((utils.MEDIA_DIR / "shots").glob("*.png"))   # image supprimée
-
-    def test_clean_capture_is_kept(self, settings, shots):
-        w = CleanCheckWriter(clean=True)
-        path, kind = visuals.prepare(settings, _draft("https://openai.com/index/x"), w, "news")
-        assert kind == "screenshot" and path and len(w.clean_calls) == 1
-
+# ---------------------------------------------------------------------------
+# Claude regarde la capture
+# ---------------------------------------------------------------------------
+class TestScreenshotCheckByClaude:
     def test_writer_sends_the_image_to_claude(self, settings, state, tmp_path):
         from PIL import Image
         from bot.writer import Writer
         from tests.fakes import FakeLLM
-        img = tmp_path / "shot.png"
-        Image.new("RGB", (1600, 900), (255, 255, 255)).save(img)
+        img = tmp_path / "shot.jpg"
+        Image.new("RGB", (1560, 1720), (255, 255, 255)).save(img)
         llm = FakeLLM({"screenshot-check": {"ok": False, "issue": "titre coupé"}})
         ok, why = Writer(settings, llm, state).screenshot_is_clean(img)
         assert (ok, why) == (False, "titre coupé")

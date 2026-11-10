@@ -91,15 +91,16 @@ def test_maybe_refresh_interval(an, state, fake_x, clock):
 
 
 def test_refresh_remembers_format_from_item(an, state, fake_x):
-    it = state.new_item("tip", ["t"], image_path="/tmp/a.png", image_kind="screenshot",
-                        meta={"used_notes": ["I tried X"], "angle": ""})
+    it = state.new_item("tip", ["t"], image_path="/tmp/a.png", image_kind="card",
+                        meta={"used_notes": ["I tried X"], "angle": "", "card": {"type": "steps", "title": "T"}})
     th = state.new_item("thread", ["a", "b", "c"], meta={"angle": "tutorial"})
     pub(state, "1", "tip", "tip", item_id=it["id"])
     pub(state, "2", "thread", "thread", item_id=th["id"])
     fake_x.recent_posts = [api_tweet("1", 10), api_tweet("2", 20)]
     an.refresh_metrics()
     f1, f2 = state.data["published"][0]["fmt"], state.data["published"][1]["fmt"]
-    assert f1["media"] == "image" and f1["notes"] is True and f1["image_kind"] == "screenshot"
+    assert f1["media"] == "image" and f1["notes"] is True and f1["image_kind"] == "card"
+    assert f1["card"] == "steps" and f2["card"] == ""
     assert f2["genre"] == "tutorial" and f2["tweets"] == 3 and f2["media"] == "text"
 
 
@@ -339,3 +340,30 @@ def test_followers_line_single_entry(an, state):
 def test_kind_labels_cover_all_kinds():
     for k in amod.KINDS:
         assert k in amod.KIND_FR
+
+
+def test_card_type_is_remembered_and_compared(an, state, fake_x):
+    """Quel genre de carte marche sur CE compte : noté avec le post, puis dit à Claude."""
+    tweets = []
+    for i in range(3):
+        it = state.new_item("tip", [f"prompt post {i}"], image_path=f"/tmp/p{i}.png", image_kind="card",
+                            meta={"card": {"type": "prompt", "title": "Dinner"}})
+        pub(state, f"p{i}", "tip", f"Prompt card post {i}", days=2 + i, item_id=it["id"])
+        tweets.append(api_tweet(f"p{i}", 4000, likes=40, bookmarks=30))
+    for i in range(3):
+        it = state.new_item("news", [f"phone post {i}"], image_path=f"/tmp/n{i}.png", image_kind="phone",
+                            meta={"card": {"type": "phone", "title": "Voice is free"}})
+        pub(state, f"n{i}", "news", f"Phone card post {i}", days=2 + i, hour=19, item_id=it["id"])
+        tweets.append(api_tweet(f"n{i}", 400, likes=1))
+    plain = state.new_item("tip", ["no card"], meta={})
+    pub(state, "x1", "tip", "Text only post", days=3, item_id=plain["id"])
+    tweets.append(api_tweet("x1", 2200))
+    fake_x.recent_posts = tweets
+    an.refresh_metrics()
+    fmts = {p["tweet_id"]: p["fmt"] for p in state.data["published"]}
+    assert fmts["p0"]["card"] == "prompt" and fmts["p0"]["image_kind"] == "card"
+    assert fmts["n0"]["card"] == "phone" and fmts["x1"]["card"] == ""
+    perf = an.compute()
+    assert set(perf["by_card"]) == {"prompt", "phone"} and perf["by_card"]["prompt"]["count"] == 3
+    notes = an.performance_notes()
+    assert 'posts with a "prompt" card do' in notes.lower() and '"phone" cards only' in notes

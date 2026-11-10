@@ -29,8 +29,8 @@ class NewsItem:
 
 @dataclass
 class Visual:
-    kind: str                # "screenshot" | "ai"
-    target: str              # URL (screenshot) ou description de photo (ai)
+    kind: str                # "phone" (page de l'actu vue dans un smartphone) | "ai"
+    target: str              # URL de la page (phone) ou description de photo (ai)
 
 
 @dataclass
@@ -44,3 +44,9 @@ class Draft:
     angle: str = ""
     from_fallback: bool = False
     used_notes: list[str] = field(default_factory=list)   # notes perso (/note) utilisées
+    # La carte jointe au post, écrite par Claude et dessinée par bot/cards.py :
+    # {"type": prompt|steps|list|fact|phone, "title", "lines": [...], "note"}.
+    card: dict | None = None
+    # Renseignés par le planificateur quand l'image est prête (🔄 Autre version).
+    image_path: str | None = None
+    image_kind: str | None = None

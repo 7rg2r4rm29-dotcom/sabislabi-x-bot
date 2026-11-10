@@ -522,8 +522,9 @@ def test_dedupe_same_url_and_similar_titles_keep_best_score(settings, state):
         (press2, (200, rss_feed(entry("Google ships Gemini in Chrome", "https://ars.com/gemini", 1)))),
     ])
     items = hub.collect()
-    assert [i.source for i in items] == ["OpenAI", "Ars Technica AI"]
-    assert items[0].url == "https://openai.com/index/gpt-6/"
+    # (L'annonce « pour développeurs » passe derrière : le compte parle au grand public.)
+    assert [i.source for i in items] == ["Ars Technica AI", "OpenAI"]
+    assert items[1].url == "https://openai.com/index/gpt-6/"       # des 3 doublons, l'officiel est gardé
     assert hub.last_stats["dupes"] == 2
 
 
@@ -544,7 +545,8 @@ def test_scoring_formula_and_order(settings, state):
     items = hub.collect()
     scores = {i.title: i.score for i in items}
     assert scores["Codex now reviews pull requests"] == pytest.approx(0.5 * 3, rel=1e-4)
-    assert scores["Claude agents in production"] == pytest.approx(2 * (1 + math.log1p(100) / 3), rel=1e-4)
+    assert scores["Claude agents in production"] == pytest.approx(
+        2 * (1 + math.log1p(100) / 3) * sources.INSIDER_PENALTY, rel=1e-4)      # actu d'initiés : freinée
     assert scores["A fresh prompt trick for meetings"] == pytest.approx(0.5 ** 0.1, rel=1e-4)
     assert scores["A day-old Gemini tutorial"] == pytest.approx(0.25, rel=1e-4)
     assert [i.title for i in items] == ["Claude agents in production", "Codex now reviews pull requests",
@@ -717,3 +719,116 @@ def test_news_rereads_an_account_the_radar_stopped_reading(settings, state):
     state.data["news_x_fetched_at"] = {"openai": (now_local() - timedelta(hours=3)).isoformat()}
     NewsHub(settings, state, x, http_get=lambda *a, **k: None).collect(use_x=True)
     assert ("user_posts", "1", None) in x.calls     # le radar n'a rien lu depuis 3 h : l'actu relit
+
+
+# ---------------------------------------------------------------------------
+# Grand public : flux généralistes filtrés, actus « pour tout le monde » d'abord
+# ---------------------------------------------------------------------------
+def test_general_feed_keeps_only_ai_stories(settings, state):
+    bbc = dict(feed("BBC News", "https://feeds.bbci.co.uk/news/technology/rss.xml"), filter="ai")
+    body = rss_feed(
+        entry("New folding phone survives 385,000 folds", "https://bbc.com/news/1", 1),
+        entry("ChatGPT can now talk to you for free", "https://bbc.com/news/2", 1),
+        entry("Console prices rise again", "https://bbc.com/news/3", 1, desc="Nothing about AI here? It says AI."),
+        entry("Streaming service adds a sleep timer", "https://bbc.com/news/4", 1, desc="A new feature for viewers."),
+        entry("Why your aid package arrived late", "https://bbc.com/news/5", 1),       # « aid » n'est pas « AI »
+    )
+    hub, _ = hub_with(settings, state, [(bbc, (200, body))])
+    assert sorted(i.url for i in hub.collect()) == ["https://bbc.com/news/2", "https://bbc.com/news/3"]
+    # Sans filtre, tout passe (flux déjà consacré à l'IA).
+    plain = feed("BBC News", "https://feeds.bbci.co.uk/news/technology/rss.xml")
+    hub2, _ = hub_with(settings, state, [(plain, (200, body))])
+    assert len(hub2.collect()) == 5
+
+
+@pytest.mark.parametrize("title, expected", [
+    ("ChatGPT voice mode is now free for everyone", sources.EVERYDAY_BOOST),
+    ("I turned my messy handwritten notes into a polished PDF with Gemini", sources.EVERYDAY_BOOST),
+    ("7 ways to use ChatGPT before you buy anything", sources.EVERYDAY_BOOST),
+    ("A new kind of AI voice scam targets parents", sources.EVERYDAY_BOOST),
+    ("Anthropic targets valuation of up to $1.4tn in stock market flotation", sources.INSIDER_PENALTY),
+    ("Introducing the new embeddings API for developers", sources.INSIDER_PENALTY),
+    ("Google broadens its AI hardware portfolio with two new specialized chips", sources.INSIDER_PENALTY),
+    ("Free API credits for developers", sources.EVERYDAY_BOOST * sources.INSIDER_PENALTY),
+    ("Claude gets a new look", 1.0),
+])
+def test_audience_factor(title, expected):
+    item = NewsItem(id="x", title=title, summary="", url="https://e.com/a", source="s", published=None)
+    assert sources.audience_factor(item) == pytest.approx(expected)
+    assert sources.EVERYDAY_BOOST > 1 > sources.INSIDER_PENALTY > 0
+
+
+def test_everyday_news_outranks_insider_news(settings, state):
+    press = feed("Press", "https://press.example/feed", 2)
+    hub, _ = hub_with(settings, state, [(press, (200, rss_feed(
+        entry("Chip maker raises $2bn in new funding round", "https://press.example/funding", 1),
+        entry("Gemini can now read your handwritten notes, for free", "https://press.example/notes", 3),
+        entry("Assistant gets a redesigned settings page", "https://press.example/settings", 2),
+    )))])
+    assert [i.url.rsplit("/", 1)[1] for i in hub.collect()] == ["notes", "settings", "funding"]
+
+
+def test_shipped_feeds_are_well_formed():
+    import json as _json
+    from pathlib import Path
+    shipped = _json.loads((Path(__file__).resolve().parent.parent / "config" / "settings.json").read_text())
+    feeds = shipped["news_feeds"]
+    assert len(feeds) >= 12 and len({f["url"] for f in feeds}) == len(feeds)
+    for f in feeds:
+        assert f["url"].startswith("https://") and f["name"] and f["weight"] >= 1
+        assert f.get("filter", "ai") == "ai"
+        assert "hn.algolia.com" not in f["url"]                 # plus de Hacker News : c'est pour les développeurs
+    assert len(shipped["radar_accounts"]) <= 20 and len(shipped["x_news_accounts"]) <= 10
+    for handle in shipped["radar_accounts"] + shipped["x_news_accounts"]:
+        assert handle.isascii() and "@" not in handle and " " not in handle
+
+
+def test_summary_prefers_the_article_over_the_author_bio(settings, state):
+    """Flux façon TechRadar / Tom's Guide : chapô d'une ligne, article dans <dc:content>, et la
+    bio de l'auteur (échappée deux fois) dans <content:encoded>."""
+    bio = ("&amp;lt;p&amp;gt;Eric Hal Schwartz is a freelance writer for TechRadar with more than 15 years of "
+           "experience covering the intersection of the world and technology.&amp;lt;/p&amp;gt;")
+    body = ('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+            "<channel><title>F</title><link>https://example.com/</link><description>d</description><item>"
+            "<title>I turned my messy handwritten notes into a polished PDF with Gemini</title>"
+            "<link>https://www.techradar.com/notes</link>"
+            f"<pubDate>{rfc822(2)}</pubDate>"
+            "<description>Gemini can read your handwriting now</description>"
+            "<dc:content><![CDATA[<p>Take a photo of a page of notes, upload it and ask for a clean PDF. "
+            "It kept my headings and fixed my spelling.</p>]]></dc:content>"
+            f"<content:encoded>{bio}</content:encoded>"
+            "</item></channel></rss>")
+    hub, _ = hub_with(settings, state, [(feed("TechRadar", "https://www.techradar.com/feeds/tag/ai"), (200, body))])
+    (item,) = hub.collect()
+    assert item.summary == ("Take a photo of a page of notes, upload it and ask for a clean PDF. It kept my "
+                            "headings and fixed my spelling.")
+    assert "freelance writer" not in item.summary and "<" not in item.summary
+
+
+def test_double_escaped_tags_and_author_bios():
+    assert sources.strip_html("&lt;p&gt;Hello &amp;amp; welcome&lt;/p&gt;") == "Hello & welcome"
+    assert sources.strip_html("5 < 7 and 9 > 3") == "5 < 7 and 9 > 3"              # pas des balises
+    bio = sources._AUTHOR_BIO_RE
+    assert bio.match("Eric Hal Schwartz is a freelance writer for TechRadar with 15 years of experience")
+    assert bio.match("Jane O’Neil covers consumer tech for the site and writes about phones")
+    assert not bio.match("Google is rolling out a new editor for Docs today")
+    assert not bio.match("ChatGPT is a writer's best friend, says a new study")
+    assert not bio.match("OpenAI wants to build more data centers. Sam Smith is a reporter.")
+
+
+def test_image_caption_is_not_a_summary(settings, state):
+    """Flux façon blog Google : <description> = légende de l'image, le vrai résumé est dans le contenu."""
+    body = ('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" '
+            'xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+            "<channel><title>F</title><link>https://blog.google/</link><description>d</description><item>"
+            "<title>Gemini Intelligence: New features, on more devices</title>"
+            "<link>https://blog.google/gemini-devices/</link>"
+            f"<pubDate>{rfc822(1)}</pubDate>"
+            "<description>A man speaks into a phone.</description>"
+            '<content:encoded><![CDATA[<img src="https://storage.googleapis.com/x.webp">Gemini Intelligence is '
+            "rolling out to more devices.]]></content:encoded>"
+            "</item></channel></rss>")
+    hub, _ = hub_with(settings, state, [(feed("Google Gemini", "https://blog.google/products/gemini/rss/"),
+                                         (200, body))])
+    assert hub.collect()[0].summary == "Gemini Intelligence is rolling out to more devices."

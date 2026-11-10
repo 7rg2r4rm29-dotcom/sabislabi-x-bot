@@ -1,7 +1,12 @@
 # Assistant X de @sabislabi — version 2
 
-Claude rédige, **tu valides d'un geste sur Telegram**, le bot publie à l'heure via l'**API officielle de X**.
+Claude rédige, **tu valides d'un geste sur Telegram** (ou le bot publie seul, en mode automatique), et tout
+part à l'heure via l'**API officielle de X**.
 Plus de navigateur qui se fait passer pour toi sur x.com, plus de réponses ni de likes automatiques.
+
+**La ligne du compte (novembre 2026) : « l'IA simplement, pour la vie de tous les jours ».** On parle à
+M. et Mme Tout-le-monde, pas aux passionnés de tech : une situation que tout le monde connaît, la phrase
+exacte à taper, zéro jargon — et **chaque post part avec une belle image** à enregistrer.
 
 > Guide écrit pour être suivi sans connaissances techniques. Les commandes sont à copier-coller telles quelles.
 
@@ -59,26 +64,47 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 
 | Contenu | Publication | La carte arrive vers |
 |---|---|---|
-| Actu IA de la nuit (les annonces américaines tombent pendant la nuit européenne) | 8 h 30 | 2 h avant (45 min en mode automatique) |
-| Mode d'emploi IA (une nouveauté expliquée pas à pas, ou un prompt à copier) | 14 h | 2 h 30 avant (45 min en auto) |
-| Actu IA du jour | 18 h 30 | 2 h avant (45 min en auto) |
-| Thread : tutoriel le mardi, **récap de la semaine IA** le dimanche | mardi 15 h et dimanche 17 h | 4 h avant (1 h 30 en auto) |
-| **Actu chaude** : une annonce officielle (OpenAI, Anthropic, Google…) expliquée dans l'heure | jusqu'à 4 par jour, de 8 h à 1 h | dès qu'elle tombe |
+| **L'IA au quotidien** : une situation de tous les jours et la phrase exacte à taper (le frigo, une lettre incompréhensible, un mail délicat, les devoirs…) | 14 h 30 | 2 h 30 avant (45 min en mode automatique) |
+| **L'actu IA en mots simples** : la nouveauté du jour qui concerne tout le monde. S'il n'y en a pas, un autre post du quotidien | 19 h | 2 h avant (45 min en auto) |
+| Thread : usages du quotidien le mardi, **la semaine de l'IA en mots simples** le dimanche | mardi 14 h 30 et dimanche 16 h | 4 h avant (1 h 30 en auto) |
+| **Actu à chaud** : seulement quand une annonce touche vraiment tout le monde (gratuit, sur le téléphone, une arnaque à éviter) | 1 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
 
-Le style est celui des comptes IA qui grandissent le plus vite (The Rundown, Min Choi, Allie K. Miller) :
-« [Entreprise] vient de sortir [nouveauté]. » puis 2 à 4 faits qui comptent (→), puis pourquoi c'est
-important ou quoi essayer ; des modes d'emploi concrets ; des listes qu'on enregistre ; et la capture de
-la page officielle quand c'est une annonce.
+Deux posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
+19 h = leur pause de midi et la soirée en Europe). Moins de posts, mais chacun soigné : un post médiocre
+coûte plus cher qu'un post en moins.
 
-- **Les jours de thread**, le thread prend la place du post le plus proche (l'astuce le mardi, l'actu le
-  dimanche) : jamais plus de 3 posts prévus dans la journée.
-- Si Claude ne trouve rien de solide pour l'actu ou le thread, le créneau est **sauté** (tu es prévenu)
-  plutôt que rempli avec un texte creux.
-- Chaque texte est **vérifié** par une seconde lecture de Claude : faits d'actu, chiffres, et surtout
-  aucune « expérience perso » inventée.
-- Les **captures d'écran** sont recadrées sur le titre de l'article (sans menus ni bandeaux), au format
-  16:9 qu'X affiche en entier, puis **regardées par Claude** : une capture pas nette n'est pas utilisée, le
-  post part sans image.
+**À qui on parle.** Une infirmière, un prof, une commerçante, un parent, un retraité : des gens qui ont
+entendu parler de ChatGPT et qui veulent savoir ce que ça peut faire **pour eux, ce soir**. Donc :
+
+- on part d'un moment de la vie (« Tu ouvres le frigo et tu n'as aucune idée »), jamais de la technologie ;
+- on donne **la phrase exacte à taper**, entre guillemets ;
+- **zéro jargon** : les mots comme « LLM », « API », « benchmark », « open-source » sont refusés par le
+  bot, et une seconde lecture de Claude vérifie qu'un lecteur qui n'a jamais ouvert ChatGPT comprend tout ;
+- pour l'actu, on laisse de côté ce qui n'intéresse que les développeurs ou les investisseurs (levées de
+  fonds, tests de performance, puces, procès…) ;
+- les thèmes tournent (cuisine, courriers, mails, enfants, emploi, voyages, achats, arnaques…) : jamais
+  deux fois le même à la suite.
+
+**Chaque post part avec une image** (format portrait 4:5, affiché en entier dans le fil) :
+
+| Image | Quand |
+|---|---|
+| **La phrase à copier**, dans une bulle de messagerie | la plupart des astuces |
+| **Des étapes** numérotées, ou **une liste** | les pas-à-pas, la couverture des threads |
+| **Un fait en très grand** | une actu résumée en une phrase |
+| **La page de l'article, vue dans un smartphone** | une actu : la vraie page (chargée comme sur un téléphone, cadrée sur son titre), posée dans une maquette de smartphone |
+
+Même identité à chaque fois (mêmes polices, même mise en page), et **cinq palettes qui tournent** : deux
+posts de suite ne se ressemblent pas. La capture « smartphone » est **regardée par Claude** avant de
+servir : si la page n'est pas impeccable (bandeau, mur d'abonnement, titre coupé), une carte dessinée la
+remplace. Plus jamais de capture ratée publiée. Un sondage, lui, n'a pas d'image (X ne le permet pas).
+
+- **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 2 ou 3 contenus
+  dans la journée.
+- Si Claude ne trouve rien de solide, le créneau est **sauté** (tu es prévenu) plutôt que rempli avec un
+  texte creux. En mode automatique, aucun texte « de secours » n'est jamais publié tout seul.
+- Chaque texte (et sa carte) est **vérifié** par une seconde lecture de Claude : faits d'actu, chiffres,
+  aucune « expérience perso » inventée, et des mots que tout le monde comprend.
 - Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**,
   même si tu appuies sur ✅ plus tard.
 - Si le bot a été arrêté et qu'un post validé a plus de 3 h de retard, il ne part pas non plus
@@ -97,6 +123,23 @@ c'est ce qui a fait supprimer 42 000 comptes). La suggestion reste valable 90 mi
 retard ne sert à rien.
 
 **Les bilans.** Un récap chaque matin à 8 h 30, un bilan de la semaine le dimanche à 20 h 30.
+
+**Voir ce que le bot écrirait, sans rien publier.** Depuis le Terminal :
+
+```
+ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --preview'
+```
+
+Tu reçois sur Telegram une astuce et une actu rédigées à l'instant, **avec leur image**, marquées
+« APERÇU ». Rien n'est publié et le planning du bot n'est pas touché (`--preview tip,news,thread` pour
+voir aussi un thread).
+
+**Les chiffres.** Pour savoir ce que chaque post a donné (vues, j'aime, réponses, signets) et comment
+évolue le nombre d'abonnés :
+
+```
+ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --report'
+```
 
 ### Les commandes Telegram
 
@@ -126,7 +169,7 @@ Chaque note peut être utilisée 2 fois, pendant 14 jours, sans rien ajouter au-
 
 **API X** (paiement à l'usage) : un post coûte 0,015 $, une réponse 0,01 $, la lecture d'un post 0,005 $.
 
-- 3 posts par jour : environ 1,40 $ par mois ; 2 threads par semaine : environ 1 $ par mois.
+- 2 posts par jour : environ 1 $ par mois ; 2 threads par semaine : environ 1 $ par mois.
 - Le reste sert à lire (radar, comptes d'actu, statistiques).
 - **Plafond du bot : 30 $ par mois.** Les lectures (radar…) ne peuvent jamais dépasser 75 % de ce plafond,
   réparties sur le mois : le dernier quart reste toujours disponible pour publier.
@@ -234,6 +277,7 @@ sont gardées et la nouvelle version par défaut est posée à côté (`….nouv
 | Ce que tu vois | Quoi faire |
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
+| Les posts partent **sans image** | Le serveur n'arrive plus à dessiner les cartes. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
 | « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
 | « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
 | « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
@@ -264,21 +308,28 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 
 | Réglage | Par défaut | Rôle |
 |---|---|---|
-| `POST_SLOTS` | `news@08:30,tip@14:00,news@18:30` | posts du jour (type@heure ; `gm` existe encore si tu y tiens) |
-| `THREAD_SLOTS` | `tue@15:00,sun@17:00` | threads (jour@heure) |
+| `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = l'IA au quotidien, `news` = l'actu en mots simples ; `gm` existe encore si tu y tiens) |
+| `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure) |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |
 | `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes |
 | `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
-| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `4` | actu chaude expliquée dans l'heure |
+| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | actu à chaud, seulement si elle touche tout le monde |
+| `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
+| `SCREENSHOTS_ENABLED` | `true` | `false` = jamais de page « dans un smartphone », seulement des cartes dessinées |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |
 | `DRY_RUN` | `false` | `true` = simulation, rien n'est publié |
-| `APPROVAL_MODE` | `telegram` | `auto` publie sans toi : **déconseillé** (étiquette « Automated » obligatoire, pas de rémunération) |
+| `APPROVAL_MODE` | `telegram` | `auto` publie sans toi (étiquette « Automated » obligatoire sur le profil, pas de rémunération des créateurs) |
 
-La liste des comptes du radar et des sources d'actu est dans `config/settings.json`.
+La liste des comptes du radar et des sources d'actu est dans `config/settings.json` (presse et blogs
+qui parlent des produits que tout le monde utilise ; `"filter": "ai"` ne garde que les articles sur l'IA
+d'un flux généraliste). Les sujets de threads sont dans `config/content.json`.
+
+Les couleurs des images (la « direction artistique ») sont dans `bot/cards.py`, bloc `THEMES` : pour suivre
+une tendance, on y change une palette, rien d'autre.
 
 ---
 
@@ -287,5 +338,9 @@ La liste des comptes du radar et des sources d'actu est dans `config/settings.js
 - Architecture et choix techniques : [`DESIGN.md`](DESIGN.md).
 - Tests : `python -m pytest` (tous les appels à Claude, X et Telegram sont simulés ; une journée complète
   est rejouée dans `tests/test_integration.py`).
-- Vérification réelle de la configuration : `python -m bot.main --check`.
+- Vérification réelle de la configuration : `python -m bot.main --check` (dessine aussi une carte d'essai).
+- Aperçu sans publier : `python -m bot.main --preview [tip,news,thread,reactive]` ; chiffres :
+  `python -m bot.main --report`.
+- Images : `bot/cards.py` (HTML/CSS rendu par Chromium, polices embarquées sous licence OFL dans
+  `bot/assets/fonts/`). Tests de rendu réel : `XBOT_RENDER_TESTS=1 python -m pytest tests/test_cards.py`.
 - Scripts d'installation : `deploy/` (testés dans `tests/test_deploy_scripts.py`).
