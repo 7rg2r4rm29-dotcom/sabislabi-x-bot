@@ -94,14 +94,15 @@ ALLOWED_DOMAINS = (
 X_DOMAINS = ("x.com", "twitter.com", "t.co", "twimg.com")
 _X_REQUEST_RE = re.compile(r"^[a-z]+://([^/?#]*\.)?(x\.com|twitter\.com|t\.co|twimg\.com)(:\d+)?([/?#]|$)", re.I)
 
-# Bandeaux à fermer, toutes langues confondues. Le texte du bouton doit être EXACTEMENT
-# l'un de ceux-ci (:has-text cherche un morceau, sans les majuscules : « OK » trouvait
-# « Cookie settings », « Bookmark », « Share on Facebook », et « Close » « Closed captions »).
+# Bandeaux à fermer, toutes langues confondues. Le NOM du bouton (son texte, celui de ses
+# enfants compris, espaces normalisés) doit être EXACTEMENT l'un de ceux-ci : :has-text
+# cherchait un morceau, sans les majuscules (« OK » trouvait « Cookie settings »,
+# « Bookmark », « Share on Facebook », et « Close » « Closed captions »).
 _DISMISS_SELECTORS = (
     '#onetrust-accept-btn-handler', '.cc-btn.cc-dismiss',
-    'button:text-matches("^(accept all|accept all cookies|accept|accept cookies|allow all|allow all cookies|'
-    'i agree|agree|agree and close|got it|ok|okay|tout accepter|accepter|accepter et fermer|j.accepte)$", "i")',
-    'button:text-matches("^(close|dismiss|no thanks|no, thanks|not now|×|✕)$", "i")',
+    'role=button[name=/^(accept all|accept all cookies|accept|accept cookies|allow all|allow all cookies|'
+    'i agree|agree|agree and close|got it|ok|okay|tout accepter|accepter|accepter et fermer|j.accepte)$/i]',
+    'role=button[name=/^(close|dismiss|no thanks|no, thanks|not now|×|✕)$/i]',
     'button[aria-label="Close"]', 'button[aria-label="Dismiss"]', '[data-testid="close-button"]',
 )
 

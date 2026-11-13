@@ -402,6 +402,7 @@ class PreviewWriter:
         self.seen: list[list] = []          # les actus données à chaque rédaction
 
     def draft_post(self, kind, news, notes, perf):
+        self.perfs = getattr(self, "perfs", []) + [perf]
         self.calls.append((kind, len(news), tuple(notes)))
         self.seen.append(list(news))
         return self.drafts.get(kind)
@@ -470,6 +471,13 @@ class TestPreview:
                                  llm=object(), news=news, writer=writer, telegram=tg,
                                  prepare_visual=fake_visual, out=lines.append)
         return code, "\n".join(lines), tg, writer, news, visuals_seen
+
+    def test_preview_gives_claude_the_same_performance_notes_as_the_live_bot(self, settings, tmp_path, clock,
+                                                                             monkeypatch):
+        from bot import analytics
+        monkeypatch.setattr(analytics.Analytics, "performance_notes", lambda self: "Last 30 days, 6 posts: …")
+        _c, _o, _t, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="tip")
+        assert writer.perfs == ["Last 30 days, 6 posts: …"]
 
     def test_drafts_are_shown_and_sent_but_nothing_is_published(self, settings, tmp_path, clock):
         from bot.models import Draft, Visual

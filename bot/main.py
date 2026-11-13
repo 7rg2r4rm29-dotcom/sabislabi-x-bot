@@ -602,6 +602,11 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             items = []
         out(f"=== Aperçu : {len(items)} actus lues, {len(kinds)} post(s) à rédiger — RIEN n'est publié ===")
         notes = [str(n.get("text")) for n in state.active_notes() if n.get("text")]
+        try:   # comme le bot en marche : les notes de performance (copie de l'état, aucun appel à X)
+            from .analytics import Analytics
+            perf = Analytics(settings, state, None, None).performance_notes() or ""
+        except Exception:  # noqa: BLE001
+            perf = ""
         done = 0
         from .scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD, WEEKLY_RECAP_WEEKDAYS, Bot
         for kind in kinds:
@@ -623,13 +628,13 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                 except Exception:  # noqa: BLE001
                     pass
             if kind == "thread":
-                draft = writer.draft_thread(picked, notes, "")
+                draft = writer.draft_thread(picked, notes, perf)
             elif kind == "reactive":
                 # Comme le bot en marche : jamais les annonces pour initiés (intérêt < 1).
                 picked = [it for it in picked if Bot._appeal(it) >= 1.0]
-                draft = writer.draft_reactive(picked, notes, "")
+                draft = writer.draft_reactive(picked, notes, perf)
             else:
-                draft = writer.draft_post(kind, picked, notes, "")
+                draft = writer.draft_post(kind, picked, notes, perf)
             label = KIND_FR.get(kind, kind)
             if draft is None or not getattr(draft, "texts", None):
                 why = ("rien, dans l'actu fraîche, ne mérite un post à chaud (c'est le cas le plus "

@@ -944,7 +944,7 @@ class TestCaptureInBrowser:
 
     def test_accept_button_found_by_its_exact_text(self, fake_browser):
         accept = visuals._DISMISS_SELECTORS[2]
-        assert accept.startswith("button:text-matches(") and '"^(' in accept and ')$", "i")' in accept
+        assert accept.startswith("role=button[name=/^(") and accept.endswith(")$/i]")
         fake_browser.visible = {accept}
         assert self.capture() is not None and fake_browser.clicked == [accept]
 
@@ -1503,6 +1503,18 @@ class TestRealBrowser:
         assert real_page.evaluate(visuals._PREPARE_JS) is True
         assert real_page.evaluate("() => document.querySelector('h1').innerText") == \
             "Google rethinks advertising for the age of AI"
+
+    def test_banner_buttons_are_found_by_their_full_name(self, real_page):
+        """Le nom du bouton (texte des enfants compris, espaces normalisés) doit être exactement
+        « OK », « Accept all »… : « Cookie settings », « Bookmark », « Closed captions » jamais."""
+        real_page.set_content(
+            "<button id='a'>\n  Accept all\n</button><button id='b'><span>OK</span></button>"
+            "<button id='c'>Cookie settings</button><button id='d'>Bookmark</button>"
+            "<button id='e'>Closed captions</button><div role='button' id='f'>Got it</div>"
+            "<button id='g'> Close </button>", wait_until="load")
+        accept, close = visuals._DISMISS_SELECTORS[2], visuals._DISMISS_SELECTORS[3]
+        found = {el.get_attribute("id") for sel in (accept, close) for el in real_page.locator(sel).all()}
+        assert found == {"a", "b", "f", "g"}
 
     def test_broken_hero_image_does_not_hide_the_headline(self, real_page):
         html = article_html(kicker="", headline="").replace("<h1></h1>", "").replace(

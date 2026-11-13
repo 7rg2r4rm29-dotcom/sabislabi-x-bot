@@ -1629,3 +1629,71 @@ def test_summary_boilerplate_keeps_real_sentences(raw, expected):
 ])
 def test_tech_filter_misfires_on_unrelated_topics(text):
     assert not sources.topic_filter({"filter": "tech"})(text)
+
+
+
+# ---------------------------------------------------------------------------
+# Deuxième relecture : l'article du titre ou rien ; bons plans ; marine ; puces ; flux lent seul
+# ---------------------------------------------------------------------------
+def test_article_text_never_falls_back_on_the_next_story():
+    short_main = "<article><h1>Optimus serves popcorn</h1><p>" + _HAND_1 + "</p></article>"
+    nxt = "<article>" + "".join(f"<p>{_OTHER_STORY}</p>" for _ in range(2)) + "</article>"
+    assert sources.article_text(_page(short_main + nxt)) == ""            # le résumé du flux restera
+    in_header = ("<article><header><h1>Optimus serves popcorn</h1></header><p>" + _HAND_1 + "</p></article>")
+    assert sources.article_text(_page(in_header + nxt)) == ""
+    # Le texte de l'histoire dans un bloc au nom trompeur, titre hors <article> : c'est lui.
+    noisy = (f"<h1>Robot hand walks</h1><div class='entry-content sharing-enabled'><p>{_HAND_1}</p>"
+             f"<p>{_HAND_3}</p><p>{_HAND_4}</p><p>{_HAND_5}</p></div>{nxt}")
+    assert sources.article_text(_page(noisy)).split("\n") == [_HAND_1, _HAND_3, _HAND_4, _HAND_5]
+
+
+@pytest.mark.parametrize("title", [
+    "Waymo strikes deals for robotaxis in three new cities",
+    "Nvidia signs deals on humanoid robots with five carmakers",
+    "Google's AI could save 40% of the energy used to cool data centres",
+])
+def test_business_deals_and_savings_are_not_shopping(settings, state, title):
+    hub, _ = hub_with(settings, state, [])
+    assert hub._blocked_reason(news_item(title)) is None
+
+
+def test_promo_savings_are_still_slowed_down():
+    promo = NewsItem(id="p", title="A quiet update for a note-taking app", summary="Save 40% on the annual plan.",
+                     url="https://e.com/p", source="E", published=None)
+    assert sources.audience_factor(promo) == pytest.approx(0.3)
+    deal = NewsItem(id="d", title="Best robot vacuum deals this weekend", summary="", url="https://e.com/d",
+                    source="E", published=None)
+    assert sources._SHOPPING_BLOCK_RE.search(deal.title)
+
+
+@pytest.mark.parametrize("text, blocked", [
+    ("The Navy is testing robot boats", True),
+    ("Navy ships get an AI copilot", True),
+    ("The new Pixel comes in navy and white", False),
+    ("A navy jacket that charges your phone", False),
+    ("Navy blue is this year's colour for smartwatches", False),
+])
+def test_navy_means_the_military_not_the_colour(text, blocked):
+    from bot import filters
+    assert bool(filters.military_term(text)) is blocked
+
+
+@pytest.mark.parametrize("title", [
+    "Apple's M5 chip makes the new MacBook twice as fast",
+    "The new iPad can now run desktop apps",
+    "Vision Pro gets a cheaper sibling",
+])
+def test_tech_filter_knows_chips_and_apple_devices(title):
+    assert sources.topic_filter({"filter": "tech"})(title)
+
+
+def test_one_slow_feed_alone_never_blocks_collect(settings, state, monkeypatch):
+    import time as _time
+    feed = {"name": "Slow", "url": "https://slow.example/feed", "weight": 1}
+    settings.news_feeds = [feed]
+    hub = sources.NewsHub(settings, state, http_get=lambda url: (_time.sleep(2), (200, ""))[1])
+    monkeypatch.setattr(sources, "FEEDS_MAX_SECONDS", 0.2)
+    t0 = _time.monotonic()
+    hub.collect()
+    assert _time.monotonic() - t0 < 1.5
+    assert hub.last_stats["failed_feeds"] == ["Slow"]

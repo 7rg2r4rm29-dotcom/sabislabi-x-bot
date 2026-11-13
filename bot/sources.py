@@ -144,6 +144,8 @@ _TECH_TOPIC_RE = re.compile(r"\b(?:" + "|".join([
     r"computers?", r"processors?", r"microchips?", r"software", r"solar (?:panels?|cells?|power\w*|planes?|cars?|farms?)",
     r"aircraft", r"planes?", r"jets?", r"maglev", r"hyperloop", r"(?:bullet|high[- ]speed) trains?", r"headphones",
     r"earbuds", r"TVs?", r"devices?", r"sensors?",
+    r"(?:[AM]\d+(?: (?:pro|max|ultra))?|AI|computer|phone|silicon|processor|quantum|brain) chips?", r"chipsets?",
+    r"macbooks?", r"ipads?", r"imacs?", r"vision pro",
 ]) + r")(?!\w)", re.I)
 
 # Le compte doit INTRIGUER le grand public : coup de pouce aux actus qui font dire
@@ -182,12 +184,13 @@ _INSIDER_RE = re.compile(r"\b(?:" + "|".join([
 # with OpenAI »), « goes on sale » (un lancement), « cheapest », « could save 34,000 lives »
 # ne sont PAS des bons plans.
 _SHOPPING_BLOCK_RE = re.compile(
-    r"(?:\b(?:black friday|cyber monday|prime day|deal of the day|deals (?:on|for)\b|best [\w' -]{2,40} deals|"
+    r"(?:\b(?:black friday|cyber monday|prime day|deal of the day|best [\w' -]{2,40} deals|"
     r"coupons?|promo codes?|discount codes?|buying guide|gift guide|how to choose|best [\w' -]{2,40} of 20\d\d|"
     r"lowest price|good price|price drops?|our (?:favou?rite|top) picks?)\b|"
-    r"\breviews?:|\d+ ?% off\b|\bpercent off\b|\$\d+ off\b|\bsave (?:[$£€]\d+|\d+ ?(?:%|percent\b)))", re.I)
+    r"\breviews?:|\d+ ?% off\b|\bpercent off\b|\$\d+ off\b|\bsave [$£€]\d+)", re.I)
 # Freinés seulement (titre ou début du résumé).
-_SHOPPING_RE = re.compile(_SHOPPING_BLOCK_RE.pattern + r"|\b(?:discount(?:s|ed)?|price (?:cut|hike)s?|"
+_SHOPPING_RE = re.compile(_SHOPPING_BLOCK_RE.pattern + r"|\bsave \d+ ?(?:%|percent\b)|\b(?:deals (?:on|for)|"
+                          r"discount(?:s|ed)?|price (?:cut|hike)s?|"
                           r"save \$\d+|worth (?:buying|it)|hands[- ]on)\b", re.I)
 # Hors ligne éditoriale du compte (guerres, armement) : jamais montré à Claude.
 _MILITARY_RE = filters.MILITARY_RE
@@ -520,7 +523,7 @@ def default_http_get(url: str, accept: str = FEED_ACCEPT) -> tuple[int, str]:
             status = resp.status_code
             chunks: list[bytes] = []
             size = 0
-            for chunk in resp.iter_content(chunk_size=16384):
+            for chunk in resp.iter_content(chunk_size=4096):
                 if not chunk:
                     continue
                 size += len(chunk)
@@ -648,7 +651,8 @@ class _ParagraphExtractor(HTMLParser):
             self._article += 1
         if tag == "a":
             self._links += 1
-        if tag == "h1" and self.h1_article is None and not self._skip:
+        # Un <h1> dans l'en-tête (<header>, ignoré) d'un <article> compte : c'est son titre.
+        if tag == "h1" and self.h1_article is None and (not self._skip or self._article):
             self.h1_article = self._article_no if self._article else 0
             self.h1_index = len(self.paras)
         if tag in self.BLOCKS and not self._skip:
@@ -714,10 +718,13 @@ def _story_number(parser: _ParagraphExtractor) -> int | None:
     paragraphe qui suit le titre <h1>. None sans <h1>."""
     if parser.h1_index is None:
         return None
-    for max_noise in (0, 1):
-        for text, number, heading, noise in parser.paras[parser.h1_index:]:
-            if noise <= max_noise and not heading and len(text) >= 80:
-                return number
+    if parser.h1_article:                       # le titre est dans un <article> : c'est lui
+        return parser.h1_article
+    # Titre hors <article> : le texte qui le suit, même dans un bloc au nom trompeur
+    # (« entry-content sharing-enabled »).
+    for text, number, heading, noise in parser.paras[parser.h1_index:]:
+        if noise <= 1 and not heading and len(text) >= 80:
+            return number
     return None
 
 
@@ -733,8 +740,9 @@ def _story_paragraphs(paras: list[tuple[str, int, bool]], story: int | None) -> 
     def size(seq: list[tuple[str, bool]]) -> int:
         return sum(len(t) for t, _ in seq)
 
-    if story is not None and size(by_number.get(story, [])) >= ARTICLE_MIN_CHARS:
-        return by_number[story]
+    if story is not None:                      # l'histoire du titre, ou rien (le résumé du flux reste)
+        seq = by_number.get(story, [])
+        return seq if size(seq) >= ARTICLE_MIN_CHARS else []
     first = next((by_number[n] for n in sorted(k for k in by_number if k)
                   if size(by_number[n]) >= ARTICLE_MIN_CHARS), [])
     candidates = [c for c in (by_number.get(0, []), first) if size(c) >= ARTICLE_MIN_CHARS]
@@ -1222,24 +1230,21 @@ class NewsHub:
             else:
                 todo.append(f)
         if todo:
-            if len(todo) == 1:
-                fetched = [self._fetch_feed(todo[0])]
-            else:
-                pool = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(todo)), thread_name_prefix="news")
-                futures = [pool.submit(self._fetch_feed, f) for f in todo]
-                done, _ = wait(futures, timeout=FEEDS_MAX_SECONDS)
-                pool.shutdown(wait=False, cancel_futures=True)   # un flux qui traîne ne bloque pas le bot
-                fetched = []
-                for f, fut in zip(todo, futures, strict=True):
-                    if fut not in done or fut.cancelled():
-                        log.warning("Actu : %s trop lent, ignoré pour cette fois", _feed_name(f))
-                        fetched.append(None)
-                        continue
-                    try:
-                        fetched.append(fut.result())
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("Actu : %s illisible (%s)", _feed_name(f), type(e).__name__)
-                        fetched.append(None)
+            pool = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(todo)), thread_name_prefix="news")
+            futures = [pool.submit(self._fetch_feed, f) for f in todo]
+            done, _ = wait(futures, timeout=FEEDS_MAX_SECONDS)
+            pool.shutdown(wait=False, cancel_futures=True)   # un flux qui traîne ne bloque pas le bot
+            fetched = []
+            for f, fut in zip(todo, futures, strict=True):
+                if fut not in done or fut.cancelled():
+                    log.warning("Actu : %s trop lent, ignoré pour cette fois", _feed_name(f))
+                    fetched.append(None)
+                    continue
+                try:
+                    fetched.append(fut.result())
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Actu : %s illisible (%s)", _feed_name(f), type(e).__name__)
+                    fetched.append(None)
             for f, items in zip(todo, fetched, strict=True):
                 url = str(f["url"])
                 if items is None:
