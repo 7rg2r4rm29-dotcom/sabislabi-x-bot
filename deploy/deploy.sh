@@ -66,6 +66,28 @@ PY
     if [ -f "$cur" ] && [ -f "$shipped" ] && ! cmp -s "$cur" "$shipped"; then
       cp "$new" "$cur.nouveau" || return 1
       echo "config/$f : tes modifications sont gardées (nouvelle version par défaut : config/$f.nouveau)"
+      # La liste des sites d'actualité va avec le code (ligne éditoriale) : elle est mise
+      # à jour même dans des réglages modifiés à la main ; tout le reste est gardé.
+      if [ "$f" = settings.json ] && "$PY" - "$cur" "$new" 2>/dev/null <<'PY'
+import json, os, sys
+cur, new = sys.argv[1], sys.argv[2]
+with open(cur, encoding="utf-8") as fh:
+    mine = json.load(fh)
+with open(new, encoding="utf-8") as fh:
+    theirs = json.load(fh)
+if not isinstance(mine, dict) or not isinstance(theirs, dict) or not isinstance(theirs.get("news_feeds"), list):
+    sys.exit(1)
+if mine.get("news_feeds") == theirs["news_feeds"]:
+    sys.exit(1)
+mine["news_feeds"] = theirs["news_feeds"]
+with open(cur + ".tmp", "w", encoding="utf-8") as fh:
+    json.dump(mine, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+os.replace(cur + ".tmp", cur)
+PY
+      then
+        echo "config/$f : la liste des sites d'actualité est mise à jour (le reste de tes réglages est gardé)"
+      fi
     else
       cp "$new" "$cur" || return 1
     fi

@@ -463,6 +463,44 @@ def test_update_keeps_owner_settings(tmp_path):
     assert not (app / "config" / "content.json.nouveau").exists()
 
 
+def test_update_brings_the_new_news_sources_into_owner_settings(tmp_path):
+    app = make_v1_app(tmp_path / "app")
+    stage = make_stage(tmp_path / "stage")
+    assert run(DEPLOY / "deploy.sh", str(stage), env=deploy_env(app)).returncode == 0
+    custom = json.loads((app / "config" / "settings.json").read_text())
+    custom["radar_accounts"] = ["my_custom_account"]
+    custom["news_feeds"] = [{"name": "Old feed", "url": "https://old.example/rss", "weight": 1}]
+    (app / "config" / "settings.json").write_text(json.dumps(custom))
+    res = run(DEPLOY / "deploy.sh", str(stage), env=deploy_env(app))
+    assert res.returncode == 0, out(res)
+    assert "la liste des sites d'actualité est mise à jour" in res.stdout
+    now = json.loads((app / "config" / "settings.json").read_text())
+    shipped = json.loads((stage / "config" / "settings.json").read_text())
+    assert now["radar_accounts"] == ["my_custom_account"]               # ses réglages restent
+    assert now["news_feeds"] == shipped["news_feeds"]                    # les sources suivent le code
+    assert (app / "config" / "settings.json.nouveau").exists()
+
+
+@pytest.mark.skipif(shutil.which("unzip") is None or shutil.which("curl") is None,
+                    reason="curl et unzip (présents sur un Mac) sont nécessaires")
+def test_install_from_github_downloads_then_runs_the_mac_assistant(tmp_path):
+    import zipfile
+    fake = tmp_path / "zip"
+    (fake / "sabislabi-x-bot-main" / "deploy").mkdir(parents=True)
+    (fake / "sabislabi-x-bot-main" / "deploy" / "push_from_mac.sh").write_text('echo "PUSH_OK from $0"\n')
+    archive = tmp_path / "main.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.write(fake / "sabislabi-x-bot-main" / "deploy" / "push_from_mac.sh",
+                "sabislabi-x-bot-main/deploy/push_from_mac.sh")
+    env = {"XBOT_ZIP_URL": archive.as_uri(), "TMPDIR": str(tmp_path)}
+    res = run(DEPLOY / "install_from_github.sh", env=env)
+    assert res.returncode == 0, out(res)
+    assert "PUSH_OK" in res.stdout and "sabislabi-x-bot-main/deploy/push_from_mac.sh" in res.stdout
+    bad = run(DEPLOY / "install_from_github.sh", env={"XBOT_ZIP_URL": (tmp_path / "missing.zip").as_uri(),
+                                                     "TMPDIR": str(tmp_path)})
+    assert bad.returncode == 1 and "Rien n'a changé" in bad.stdout
+
+
 def test_interrupted_install_is_rolled_back(tmp_path):
     import signal
     import time

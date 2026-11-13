@@ -206,21 +206,17 @@ console.anthropic.com ; `/budget` affiche une estimation. Pour diviser la factur
 
 ## 5. Installation (une seule fois)
 
-Tu n'as que **deux choses à faire**. L'assistant fait le reste et te guide quand il a besoin de toi.
-
-### 1. Télécharger le code (un clic)
-
-Sur **github.com/7rg2r4rm29-dotcom/sabislabi-x-bot** : bouton vert **Code → Download ZIP**.
-Safari le décompresse tout seul dans *Téléchargements* (dossier `sabislabi-x-bot-main`). Avec Chrome,
-double-clique sur le fichier zip.
-
-### 2. Coller une commande
+Tu n'as **qu'une chose à faire** : coller une ligne. L'assistant télécharge lui-même la dernière version,
+fait le reste et te guide quand il a besoin de toi.
 
 Ouvre l'app **Terminal** (Cmd + Espace, tape « Terminal »), colle cette ligne et appuie sur Entrée :
 
 ```
-bash ~/Downloads/sabislabi-x-bot-main/deploy/push_from_mac.sh
+curl -fsSL https://raw.githubusercontent.com/7rg2r4rm29-dotcom/sabislabi-x-bot/main/deploy/install_from_github.sh | bash
 ```
+
+(Ancienne méthode, toujours valable : bouton vert **Code → Download ZIP** sur GitHub, puis
+`bash ~/Downloads/sabislabi-x-bot-main/deploy/push_from_mac.sh`.)
 
 Ensuite, laisse-toi guider :
 
@@ -270,10 +266,10 @@ serveur.
 
 ## 6. Mettre à jour plus tard
 
-Quand une nouvelle version est prête : supprime l'ancien dossier `sabislabi-x-bot-main` de
-*Téléchargements*, retélécharge le ZIP et relance la même commande. Tes clés, l'historique du bot et tes
-réglages sont conservés. Si tu as modifié `config/settings.json` ou `config/content.json`, tes modifications
-sont gardées et la nouvelle version par défaut est posée à côté (`….nouveau`).
+Quand une nouvelle version est prête : recolle la même ligne (section 5). Tes clés, l'historique du bot et
+tes réglages sont conservés. Si tu as modifié `config/settings.json` ou `config/content.json`, tes
+modifications sont gardées et la nouvelle version par défaut est posée à côté (`….nouveau`) ; seule la liste
+des sites d'actualité (`news_feeds`), qui va avec la ligne éditoriale, est toujours mise à jour.
 
 ## 7. Revenir en arrière, mettre en pause, arrêter
 
