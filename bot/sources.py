@@ -530,12 +530,30 @@ _ARTICLE_NOISE_RE = re.compile(
     r"commission|terms of (?:use|service)|privacy policy|follow us|share this|read more|related:|©|"
     r"click here|download the app|enable javascript|your inbox|free trial|gift article|"
     r"unlimited access|ad-free|already a subscriber|support (?:our|independent) journalism|"
-    r"this article (?:first |originally )?appeared|sponsored|all products featured|we may earn", re.I)
+    r"this article (?:first |originally )?appeared|sponsored|all products featured|we may earn|"
+    r"preferred source|on google news", re.I)
+
+
+# Blocs qui ne sont pas l'article lui-même, repérés à leur classe ou à leur id :
+# « à lire aussi », bio de l'auteur, partage, commentaires, publicité…
+_NOISE_BLOCK_RE = re.compile(
+    r"(?:^|[\s_-])(?:related|recirc\w*|more-?(?:from|on|stories|articles|news)|read-?(?:more|next)|"
+    r"recommend\w*|trending|popular|most-?read|newsletter|subscribe|signup|promo\w*|sponsor\w*|advert\w*|"
+    r"author-?(?:bio|info|card|box|details)|bio|byline|comments?|share|sharing|social|tags?|breadcrumbs?|"
+    r"sidebar|outbrain|taboola|teaser|carousel|jump-?link)(?:$|[\s_-])", re.I)
+# Intertitre qui annonce la fin de l'article (la suite n'en fait plus partie).
+_END_HEADING_RE = re.compile(
+    r"^(?:related|more (?:on|from|stories|news)|read (?:more|next)|recommended|most (?:popular|read)|"
+    r"you (?:may|might) also like|trending|latest (?:news|stories)|up next|keep reading)\b", re.I)
 
 
 class _ParagraphExtractor(HTMLParser):
     """Les paragraphes d'une page : texte des <p>, <li>, <h2>, <h3>, <blockquote>, hors
-    menus, pieds de page, formulaires et scripts. Ceux qui sont dans <article> sont notés."""
+    menus, pieds de page, formulaires, scripts et encarts (« à lire aussi », bio de
+    l'auteur, partage…). Chaque paragraphe est noté avec le numéro de l'<article> qui le
+    contient (0 = hors <article>) et s'il s'agit d'un intertitre. Un intertitre
+    « Related » / « More on… » arrête la lecture de cet article. Un court paragraphe
+    fait surtout de liens est écarté (ce sont des titres d'autres articles)."""
     BLOCKS = {"p", "li", "h2", "h3", "blockquote"}
     SKIP = {"script", "style", "noscript", "template", "nav", "header", "footer", "form", "aside", "button",
             "select", "svg", "figure", "figcaption", "iframe", "dialog"}
@@ -544,56 +562,78 @@ class _ParagraphExtractor(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.paras: list[tuple[str, bool]] = []   # (texte, dans <article> ?)
-        self._stack: list[str] = []
+        self.paras: list[tuple[str, int, bool]] = []  # (texte, n° de l'<article> ou 0, intertitre ?)
+        self._stack: list[tuple[str, bool]] = []  # (balise, ouvre une zone ignorée ?)
         self._skip = 0
-        self._article = 0
+        self._article = 0                          # profondeur dans <article>
+        self._article_no = 0                       # numéro de l'<article> en cours
+        self._ended: set[int] = set()              # articles dont la lecture est finie
         self._buf: list[str] | None = None
         self._buf_level = 0
+        self._links = 0                            # profondeur dans <a>
+        self._link_chars = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
         if tag in self.VOID:
             if tag == "br" and self._buf is not None:
                 self._buf.append(" ")
             return
-        self._stack.append(tag)
-        if tag in self.SKIP:
+        names = " ".join(str(v) for k, v in attrs if k in ("class", "id") and v)
+        noisy = tag in self.SKIP or (tag not in ("html", "body", "main", "article") and bool(names)
+                                     and bool(_NOISE_BLOCK_RE.search(names)))
+        self._stack.append((tag, noisy))
+        if noisy:
             self._skip += 1
         elif tag == "article":
+            if self._article == 0:
+                self._article_no += 1
             self._article += 1
-        elif tag in self.BLOCKS and self._buf is None and not self._skip:
+        elif tag == "a":
+            self._links += 1
+        if tag in self.BLOCKS and self._buf is None and not self._skip:
             self._buf = []
             self._buf_level = len(self._stack)
+            self._link_chars = 0
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in self.VOID or tag not in self._stack:
+        if tag in self.VOID or all(t != tag for t, _ in self._stack):
             return
         while self._stack:
-            t = self._stack.pop()
-            if t in self.SKIP:
+            t, noisy = self._stack.pop()
+            if noisy:
                 self._skip = max(0, self._skip - 1)
             elif t == "article":
                 self._article = max(0, self._article - 1)
+            elif t == "a":
+                self._links = max(0, self._links - 1)
             if self._buf is not None and len(self._stack) < self._buf_level:
-                self._flush()
+                self._flush(t)
             if t == tag:
                 break
 
     def handle_data(self, data: str) -> None:
         if self._buf is not None and not self._skip:
             self._buf.append(data)
+            if self._links:
+                self._link_chars += len(data.strip())
 
-    def _flush(self) -> None:
+    def _flush(self, tag: str = "p") -> None:
         text = re.sub(r"\s+", " ", "".join(self._buf or [])).strip()
-        if text:
-            self.paras.append((text, self._article > 0))
         self._buf = None
+        number = self._article_no if self._article else 0
+        if not text or number in self._ended:
+            return
+        if tag in ("h2", "h3") and _END_HEADING_RE.match(text):
+            self._ended.add(number)               # « More on… » : la suite n'est plus l'article
+            return
+        if len(text) < 220 and self._link_chars > 0.6 * len(text):
+            return                                 # surtout des liens : titres d'autres articles
+        self.paras.append((text, number, tag in ("h2", "h3")))
 
     def close(self) -> None:
         super().close()
         if self._buf is not None:
             self._flush()
-
 
 
 def article_text(page_html: str, max_chars: int = ARTICLE_MAX_CHARS) -> str:
@@ -606,11 +646,19 @@ def article_text(page_html: str, max_chars: int = ARTICLE_MAX_CHARS) -> str:
         parser.close()
     except Exception:  # noqa: BLE001 — HTML très cassé
         return ""
-    inside = [t for t, in_article in parser.paras if in_article]
-    paras = inside if sum(len(t) for t in inside) >= ARTICLE_MIN_CHARS else [t for t, _ in parser.paras]
-    kept: list[str] = []
+    # Le premier <article> qui a assez de texte (le suivant est souvent un autre article,
+    # chargé plus bas sur la même page) ; à défaut, tous les paragraphes de la page.
+    paras: list[tuple[str, bool]] = []
+    for number in sorted({n for _, n, _ in parser.paras if n}):
+        texts = [(t, h) for t, n, h in parser.paras if n == number]
+        if sum(len(t) for t, _ in texts) >= ARTICLE_MIN_CHARS:
+            paras = texts
+            break
+    if not paras:
+        paras = [(t, h) for t, _, h in parser.paras]
+    cleaned: list[tuple[str, bool]] = []
     seen: set[str] = set()
-    for text in paras:
+    for text, heading in paras:
         text = text.replace("\u00a0", " ").strip()
         if len(text) < 40 or text in seen:
             continue
@@ -619,7 +667,11 @@ def article_text(page_html: str, max_chars: int = ARTICLE_MAX_CHARS) -> str:
         if _AUTHOR_BIO_RE.match(text):
             continue
         seen.add(text)
-        kept.append(text)
+        cleaned.append((text, heading))
+    # Un vrai intertitre est suivi d'un paragraphe ; des titres qui s'enchaînent, ou un
+    # titre en toute fin, ce sont les titres d'autres articles (« à lire aussi »).
+    kept = [text for i, (text, heading) in enumerate(cleaned)
+            if not heading or (i + 1 < len(cleaned) and not cleaned[i + 1][1])]
     if sum(len(t) for t in kept) < ARTICLE_MIN_CHARS:
         return ""
     out: list[str] = []

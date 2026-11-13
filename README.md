@@ -97,7 +97,12 @@ virtuelle, gadgets, IA, voitures, espace…). Trois étapes à chaque post :
    (ChatGPT, Claude, Gemini…) en fait toujours partie. Il écarte l'argent des entreprises, les outils
    pour programmeurs, les bons plans, les avis de produits.
 2. Le bot **lit les articles en entier** (plus seulement les trois lignes du flux).
-3. Claude **écrit** le post à partir de ces articles, puis une **seconde lecture** vérifie chaque fait.
+3. Claude **écrit** le post à partir de ces articles, puis une **seconde lecture** vérifie chaque fait,
+   phrase de l'article à l'appui. Un chiffre qui n'est pas dans l'article est refusé d'office.
+
+Le bot note aussi la **forme d'accroche** de chaque post (« ça peut faire quoi ? », « le chiffre », « bientôt,
+plus besoin de… »…). Au fil des chiffres, il privilégie celles qui marchent sur ton compte, et il ne
+recommence jamais deux posts de suite par les mêmes mots.
 
 S'il n'y a rien d'assez fort, le créneau est sauté : mieux vaut pas de post qu'un post tiède.
 
@@ -107,8 +112,9 @@ navigateur) et on coupe proprement en bas, entre deux lignes. On voit le titre d
 photo et ses premières lignes. Pas de maquette de téléphone, pas de carte dessinée, rien d'ajouté.
 
 - Format : la largeur d'un écran d'iPhone (1170 px), en portrait 4:5 au plus — X l'affiche en entier dans le fil.
-- Avant de servir, les bandeaux de cookies, les publicités et les menus sont retirés, et **Claude regarde
-  la capture** : titre coupé, bandeau, mur d'abonnement, page vide → elle est écartée.
+- Avant de servir, les bandeaux de cookies, les publicités, les menus et les encarts « à lire aussi »
+  sont retirés, et **Claude regarde la capture** : titre coupé, bandeau, mur d'abonnement, page vide, ou
+  page qui n'est pas celle de l'article cité → elle est écartée.
 - Si la page n'est pas présentable, le bot essaie la page d'un autre site qui raconte la même histoire.
   Si aucune ne convient, le post part **en texte seul** : jamais de capture ratée.
 - Un sondage n'a pas d'image (X ne le permet pas).
