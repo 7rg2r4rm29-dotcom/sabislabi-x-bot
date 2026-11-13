@@ -178,10 +178,26 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - messages de commit en anglais, courts ;
   - pas de pull request sauf demande ;
   - pousser souvent (un travail non poussé peut être perdu si la session est réinitialisée).
+  - Sur le Mac, le clone est `~/Documents/sabislabi-x-bot`. Il pousse avec une clé de déploiement propre à
+    ce dépôt (`~/.ssh/sabislabi_x_bot_github`, « Mac - push to main » dans les réglages GitHub, écriture
+    permise), déjà branchée dans la config git du clone (`core.sshCommand`, `pushurl` en SSH). Auteur des
+    commits : `Claude <noreply@anthropic.com>` (config locale du clone). Un clone neuf doit reprendre ces
+    trois réglages.
 
 ## 8. État au 13/11/2026, limites connues, pistes
 
-- **Installé** : `main` `7d5e462`.
+- **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, puis la correction de `--report` (heure de
+  publication au lieu de l'heure de rédaction).
+- **Bilan du 13/11** : `--check` au vert, aucune erreur depuis le 28/10, aucun créneau sauté du 10 au 13/11.
+  Aperçu réel de la v4 : deux posts corrects, captures TechCrunch propres. Sur TechCrunch mobile, la photo
+  est au-dessus du titre et ne tient pas dans le cadre : la capture commence au titre, c'est voulu.
+  Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et
+  réponses aux commentaires : aucune suggestion utilisée (62 et 10 expirées). Le flux IEEE Spectrum
+  répond 403 (refus des robots) : le bot le saute.
+- **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
+  fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
+  `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
+  le radar.
 - **À surveiller les premiers jours** :
   - la qualité des posts et des captures ;
   - les créneaux sautés (normal s'il n'y a pas d'histoire assez forte, à creuser si c'est fréquent) ;
