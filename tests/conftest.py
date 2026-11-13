@@ -27,6 +27,14 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setattr(utils, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(utils, "LOGS_DIR", tmp_path / "logs")
     monkeypatch.setattr(utils, "MEDIA_DIR", tmp_path / "media")
+    # Aucun test ne doit sortir sur Internet : un test qui lirait un flux ou un article
+    # « pour de vrai » échoue tout de suite, au lieu de dépendre du réseau.
+    from bot import sources
+
+    def _no_network(url, *a, **kw):
+        raise AssertionError(f"accès réseau interdit pendant les tests : {url}")
+
+    monkeypatch.setattr(sources, "default_http_get", _no_network)
     yield
     utils.set_clock(None)
 

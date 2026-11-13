@@ -42,7 +42,8 @@ def is_too_similar(candidate: str, sources: list[str], threshold: float = 0.7) -
 # Nettoyage
 # ---------------------------------------------------------------------------
 def clean_output(raw: str) -> str:
-    """Guillemets englobants, hashtags, @mentions, espaces. Garde les sauts de ligne."""
+    """Guillemets englobants, hashtags, @mentions, tirets longs, espaces. Garde les
+    sauts de ligne."""
     t = (raw or "").strip()
     t = re.sub(r"^(here'?s (the |a |your )?(post|reply|tweet)\s*:?\s*|(post|reply|tweet)\s*:\s*)", "", t,
                flags=re.I).strip()
@@ -51,6 +52,10 @@ def clean_output(raw: str) -> str:
             t = t[1:-1].strip()
     t = re.sub(r"(?<![\w&])#\w+", "", t)
     t = re.sub(r"(?<![\w.])@\w+", "", t)
+    t = re.sub(r"(?<=\d)[–—](?=\d)", "-", t)            # 2–3 → 2-3
+    t = re.sub(r"[ \t]*[—–][ \t]*(?=\S)", ", ", t)      # tiret long → virgule
+    t = re.sub(r"[ \t]*[—–][ \t]*$", "", t, flags=re.M)  # en fin de ligne : rien
+    t = re.sub(r"^, ", "", t, flags=re.M)
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r" *\n *", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
@@ -104,6 +109,24 @@ def find_tech_jargon(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+# Formules toutes faites qui sentent la pub ou la machine : un lecteur les repère, et un
+# texte qu'on croit écrit par une machine est moins cru et moins partagé.
+_HYPE_RE = re.compile("|".join([
+    r"\bgame[- ]?chang\w+", r"\bmind[- ]?blow\w+", r"\bjaw[- ]?dropping\b", r"\bground[- ]?breaking\b",
+    r"\bcutting[- ]edge\b", r"\brevolutioni[sz]\w+", r"\brevolutionary\b", r"\blet that sink in\b",
+    r"\bbuckle up\b", r"\bthe future is here\b", r"\b(?:this )?changes everything\b",
+    r"\bthis is (?:insane|huge)\b", r"\bdelv(?:e|es|ed|ing)\b", r"\btapestry\b", r"\ba testament to\b",
+    r"\bunleash\w*", r"\bsupercharg\w+", r"\bin today'?s (?:fast[- ]paced )?world\b",
+]), re.I)
+_HYPE_CAPS_RE = re.compile(r"\b(?:BREAKING|JUST IN|RIP)\b")     # en capitales seulement
+
+
+def find_hype(text: str) -> str | None:
+    """Première formule toute faite trouvée (« game changer », « BREAKING »…)."""
+    m = _HYPE_RE.search(text or "") or _HYPE_CAPS_RE.search(text or "")
+    return m.group(0) if m else None
+
+
 def too_many_numbers(text: str, max_numbers: int = 1) -> bool:
     nums = re.findall(r"(?<![:\w])\$?\d[\d,.]*\s*[kKmMbB%]?(?![:\w])", text or "")
     big = [n for n in nums if re.search(r"[kKmMbB%$]|\d{3,}", n)]
@@ -138,6 +161,7 @@ _SENSITIVE_RE = re.compile("|".join([
 # autorisés ; « gambling », « sports betting », « casino »… ne le sont pas.
 _FAITH_RE = re.compile("|".join([
     r"\bporn\w*", r"\bnsfw\b", r"\bonlyfans\b", r"\bnudes?\b", r"\bnudity\b", r"\bsex\w*",
+    r"\badults?[- ]only\b", r"\bexplicit content\b", r"\bdating (?:apps?|sites?|profiles?)\b", r"\btinder\b",
     r"\bhookups?\b", r"\bescorts?\b", r"\bstrip ?clubs?\b", r"\bcasinos?\b", r"\bgambling\b",
     r"\bsports ?betting\b", r"\bbetting (?:apps?|sites?|odds|tips|slips?)\b", r"\bsportsbooks?\b",
     r"\bbookmakers?\b", r"\bpoker\b", r"\blotter(?:y|ies)\b", r"\bjackpots?\b", r"\broulette\b",
@@ -287,6 +311,9 @@ def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int
         tech = find_tech_jargon(text)
         if tech:
             return f"trop technique ({tech})"
+        hype = find_hype(text)
+        if hype:
+            return f"formule toute faite ({hype})"
     if check_numbers and too_many_numbers(text, allow_numbers):
         return "trop de chiffres"
     if weighted_length(text) > max_len:

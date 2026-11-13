@@ -24,7 +24,7 @@ from .x_api import XError
 log = logging.getLogger("xbot.analytics")
 
 KINDS = ("gm", "tip", "news", "thread", "reactive")
-KIND_FR = {"gm": "gm", "tip": "astuce", "news": "actu", "thread": "thread", "reactive": "réactif",
+KIND_FR = {"gm": "gm", "tip": "futur", "news": "actu", "thread": "thread", "reactive": "à chaud",
            "comment_reply": "réponse"}
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 
@@ -167,8 +167,8 @@ class Analytics:
         p["fmt"] = {
             "media": media,
             "image_kind": it.get("image_kind") or "",
-            "card": str((meta.get("card") or {}).get("type") or "") if isinstance(meta.get("card"), dict) else "",
             "genre": str(meta.get("angle") or "") if p.get("kind") == "thread" else "",
+            "hook": str(meta.get("hook") or ""),
             "notes": bool(meta.get("used_notes")),
             "fallback": bool(meta.get("from_fallback")),
             "tweets": len(it.get("texts") or []),
@@ -232,7 +232,7 @@ class Analytics:
         by_media: dict[str, list] = {}
         by_notes: dict[str, list] = {}
         by_genre: dict[str, list] = {}
-        by_card: dict[str, list] = {}
+        by_hook: dict[str, list] = {}
         for p in posts:
             by_kind.setdefault(p["kind"], []).append(p)
             dt = _local(p)
@@ -244,8 +244,8 @@ class Analytics:
                 by_notes.setdefault("with_notes" if fmt.get("notes") else "without_notes", []).append(p)
             if fmt.get("genre"):
                 by_genre.setdefault(fmt["genre"], []).append(p)
-            if fmt.get("card"):
-                by_card.setdefault(fmt["card"], []).append(p)
+            if fmt.get("hook"):
+                by_hook.setdefault(fmt["hook"], []).append(p)
         recent_ids = {id(p) for p in self._posts(BEST_DAYS)}
         recent = [p for p in posts if id(p) in recent_ids]
         best = max(recent, key=lambda p: _m(p, "impressions"), default=None)
@@ -260,7 +260,7 @@ class Analytics:
             "by_format": {k: stats(v) for k, v in sorted(by_media.items())},
             "by_notes": {k: stats(v) for k, v in sorted(by_notes.items())},
             "by_thread_genre": {k: stats(v) for k, v in sorted(by_genre.items())},
-            "by_card": {k: stats(v) for k, v in sorted(by_card.items())},
+            "by_hook": {k: stats(v) for k, v in sorted(by_hook.items())},
             "best": self._brief(best),
             "worst": self._brief(worst) if worst is not best else None,
         }
@@ -330,7 +330,7 @@ class Analytics:
 
         extra = []
         f_over, f_under = self._compare(perf["by_format"], ov)
-        names = {"image": "posts with an image", "poll": "polls", "text": "text-only posts"}
+        names = {"image": "posts with a screenshot", "poll": "polls", "text": "text-only posts"}
         for r, name, st in f_over[:1]:
             extra.append(f"{names.get(name, name)} do {r:.1f}x avg impressions (n={st['count']})")
         for r, name, st in f_under[:1]:
@@ -343,14 +343,17 @@ class Analytics:
         g_over, _ = self._compare(perf["by_thread_genre"], perf["by_kind"].get("thread") or {})
         for r, name, st in g_over[:1]:
             extra.append(f"{name} threads do {r:.1f}x the average thread")
-        c_over, c_under = self._compare(perf.get("by_card") or {}, ov)
-        for r, name, st in c_over[:1]:
-            extra.append(f"posts with a \"{name}\" card do {r:.1f}x avg impressions (n={st['count']})")
-        for r, name, st in c_under[:1]:
-            extra.append(f"\"{name}\" cards only {r:.1f}x (n={st['count']})")
         if extra:
             line = "; ".join(extra) + "."
             lines.append(line[0].upper() + line[1:])
+
+        # Quelle forme d'accroche marche sur CE compte (le rédacteur note la sienne à chaque post).
+        k_over, k_under = self._compare(perf.get("by_hook") or {}, ov)
+        hooks = [f"\"{name}\" hooks do {r:.1f}x avg impressions (n={st['count']})" for r, name, st in k_over[:2]]
+        hooks += [f"\"{name}\" only {r:.1f}x (n={st['count']})" for r, name, st in k_under[:1]]
+        if hooks:
+            lines.append("Hook shapes on this account: " + "; ".join(hooks)
+                         + ". Lean toward what works, but keep varying.")
 
         h_over, h_under = self._compare(perf["by_hour"], ov)
         hours = []
@@ -368,7 +371,7 @@ class Analytics:
         if best and best.get("impressions"):
             lines.append(f"Top post of the last {BEST_DAYS} days ({best['kind']}, {en_int(best['impressions'])} "
                          f"impressions, {best['likes']} likes): \"{best['text']}\"")
-        return "\n".join(lines[:6])
+        return "\n".join(lines[:7])
 
     # ==================================================================
     # Récap du matin (français)

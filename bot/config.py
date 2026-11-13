@@ -30,9 +30,10 @@ POST_KINDS = ("gm", "tip", "news")
 # chance « cold start » pendant ~2 h, et le 2e/3e post qu'une même personne voit
 # de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc deux posts
 # soignés plutôt que cinq : 14 h 30 = matin aux États-Unis + après-midi en Europe
-# (l'IA au quotidien) ; 19 h = midi aux États-Unis + soirée en Europe (l'actu en
-# mots simples). Chaque post part avec sa carte. Le « gm » (héritage crypto)
-# n'est plus au planning ; le type existe encore pour qui y tient.
+# (« le futur arrive ») ; 19 h = midi aux États-Unis + soirée en Europe
+# (« l'histoire du jour »). Chaque post part avec une capture d'écran de l'article
+# qu'il raconte. Le « gm » (héritage crypto) n'est plus au planning ; le type
+# existe encore pour qui y tient.
 DEFAULT_POST_SLOTS = "tip@14:30,news@19:00"
 DEFAULT_THREAD_SLOTS = "tue@14:30,sun@16:00"
 DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240}

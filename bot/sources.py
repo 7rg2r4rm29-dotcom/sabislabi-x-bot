@@ -59,6 +59,8 @@ X_TITLE_MAX = 120
 
 # --- Score ---
 HALF_LIFE_HOURS = 10.0
+SLOW_HALF_LIFE_HOURS = 48.0     # « le futur arrive » et les threads : une belle histoire ne périme pas en un jour
+DAY_HALF_LIFE_HOURS = 24.0      # « l'histoire du jour » : parmi le frais, l'intérêt compte plus que l'heure
 UNDATED_AGE_HOURS = 24.0        # un article sans date compte comme vieux d'un jour
 X_ACCOUNT_WEIGHT = 2.0          # comptes officiels lus via l'API X
 DEFAULT_WEIGHT = 1.0
@@ -115,16 +117,45 @@ _AI_TOPIC_RE = re.compile(r"\b(?:A\.?I\.?|artificial intelligence|ChatGPT|GPT[\w
                           r"voice (?:assistant|clone|cloning)s?|generative|machine learning|Midjourney|Sora)(?!\w)",
                           re.I)
 
-# Le compte parle au grand public : coup de pouce aux actus « pour tout le monde »
-# (un produit qu'on a dans la poche, quelque chose de gratuit, un mode d'emploi, une
-# arnaque à éviter), frein à celles pour initiés (développeurs, entreprises, bourse).
-_EVERYDAY_RE = re.compile(r"\b(?:" + "|".join([
-    r"free", r"for everyone", r"all users", r"everyone can", r"now available", r"rolls? out", r"rolling out",
-    r"new feature", r"your phone", r"iphone", r"android", r"whatsapp", r"instagram", r"gmail",
-    r"google (?:search|maps|photos|docs|messages)", r"voice", r"photos?", r"camera", r"students?",
-    r"teachers?", r"parents?", r"kids", r"teens?", r"school", r"homework", r"shopping", r"travel",
-    r"recipes?", r"scams?", r"deepfakes?", r"privacy", r"how to", r"ways to", r"tips", r"tricks",
-    r"i (?:tried|tested|used|asked|turned)", r"here'?s how", r"everyday", r"caregivers?", r"famil(?:y|ies)",
+# "filter": "tech" : tout ce qui touche à la technologie et au futur (IA, robots, jeux
+# vidéo, gadgets, véhicules, espace…). Sert aux flux qui parlent aussi de nature, de
+# santé ou de politique.
+_TECH_TOPIC_RE = re.compile(r"\b(?:" + "|".join([
+    r"robots?", r"robotic\w*", r"humanoids?", r"drones?", r"exoskeletons?", r"cyborgs?", r"bionic\w*",
+    r"prosthe\w+", r"brain[- ](?:computer|implant|chip|interface)\w*", r"neuralink", r"implants?",
+    r"wearables?", r"smart ?(?:glasses|watch\w*|rings?|homes?|speakers?)", r"VR", r"AR glasses",
+    r"virtual reality", r"augmented reality", r"mixed reality", r"headsets?", r"holograms?",
+    r"video ?games?", r"gaming", r"gamers?", r"consoles?", r"controllers?", r"playstation", r"xbox",
+    r"nintendo", r"game ?boy", r"arcade", r"steam deck", r"handhelds?", r"smartphones?", r"phones?", r"iphones?", r"android",
+    r"foldables?", r"gadgets?", r"laptops?", r"batter(?:y|ies)", r"electric (?:car|vehicle|truck|bike|plane)s?",
+    r"EVs?", r"self[- ]driving", r"driverless", r"autonomous", r"robotaxis?", r"tesla", r"waymo",
+    r"flying cars?", r"eVTOLs?", r"air tax(?:i|is)", r"jetpacks?", r"rockets?", r"spacex", r"starship",
+    r"satellites?", r"starlink", r"moon", r"lunar", r"mars", r"space station", r"telescopes?", r"fusion",
+    r"reactors?", r"quantum", r"supercomputers?", r"3d[- ]print\w*", r"lasers?", r"internet", r"wi-?fi",
+    r"6g", r"apps?", r"tiktok", r"instagram", r"whatsapp", r"youtube", r"hack(?:ed|ers?|ing)?",
+    r"cyberattacks?", r"scams?", r"passwords?", r"tech", r"technology", r"technologies", r"engineers?",
+    r"inventions?", r"invent(?:s|ed|ors?)", r"prototypes?",
+]) + r")(?!\w)", re.I)
+
+# Le compte doit INTRIGUER le grand public : coup de pouce aux actus qui font dire
+# « attends, quoi ? » (un robot, une première mondiale, quelque chose qui remplace un
+# geste de tous les jours, un nom que tout le monde connaît), frein à celles pour
+# initiés (bourse, entreprises, développeurs) et aux bons plans.
+_WOW_RE = re.compile(r"\b(?:" + "|".join([
+    r"robots?", r"humanoids?", r"robot ?dogs?", r"brain", r"telepath\w*", r"mind[- ]read\w*", r"implants?",
+    r"bionic", r"cyborgs?", r"exoskeletons?", r"prosthe\w+", r"video ?games?", r"gaming", r"gamers?",
+    r"controllers?", r"consoles?", r"playstation", r"xbox", r"nintendo", r"smart ?glasses", r"AR glasses",
+    r"headsets?", r"holograms?", r"self[- ]driving", r"driverless", r"robotaxis?", r"flying cars?",
+    r"air tax(?:i|is)", r"jetpacks?", r"world'?s first", r"first[- ]ever", r"for the first time",
+    r"breakthroughs?", r"record[- ]breaking", r"world record", r"unveil(?:s|ed)?", r"reveal(?:s|ed)?",
+    r"can now", r"no longer need", r"without (?:a|an|any) (?:human|driver|pilot|controller|screen|keyboard)\w*",
+    r"replac(?:e|es|ed|ing)", r"clon(?:e|es|ed|ing)", r"deepfakes?", r"your (?:phone|voice|face|car|home|job|kids)",
+    r"iphones?", r"whatsapp", r"instagram", r"youtube", r"tiktok", r"chatgpt", r"claude", r"gemini",
+    r"siri", r"alexa", r"sora", r"tesla", r"optimus", r"neuralink", r"starship", r"scams?",
+    r"hollywood", r"invent(?:s|ed|ions?|ors?)", r"prototypes?", r"science fiction", r"sci-fi",
+    r"terrifying", r"scary", r"creepy", r"lab[- ]grown", r"3d[- ]print\w*", r"teleport\w*", r"invisib\w+",
+    r"fusion", r"quantum", r"lasers?", r"drones?", r"supersonic", r"underwater", r"moon", r"mars",
+    r"hack(?:ed|ers?|ing)", r"rogue", r"spy(?:ing|ware)?", r"spies", r"secretly", r"fooled", r"tricked",
 ]) + r")\b", re.I)
 _INSIDER_RE = re.compile(r"\b(?:" + "|".join([
     r"APIs?", r"SDKs?", r"developers?", r"devs", r"enterprises?", r"benchmarks?", r"funding", r"raises?",
@@ -132,21 +163,58 @@ _INSIDER_RE = re.compile(r"\b(?:" + "|".join([
     r"acqui(?:res?|red|sition)", r"merger", r"CEO", r"executives?", r"chips?", r"GPUs?",
     r"data cent(?:er|re)s?", r"open[- ]source", r"open[- ]weights?", r"regulat\w+", r"senate", r"congress",
     r"parliament", r"earnings", r"revenue", r"layoffs?", r"antitrust", r"research paper", r"arxiv",
-    r"robotics", r"agents?", r"agentic", r"cloud", r"B2B", r"startups?",
+    r"cloud", r"B2B", r"SaaS", r"startups?", r"partnerships?", r"integrations?", r"roadmap", r"tariffs?",
+    r"compliance", r"procurement", r"governance",
 ]) + r")\b", re.I)
-EVERYDAY_BOOST = 1.6
+# Bons plans, tests de produits, guides d'achat : pas des histoires à raconter.
+_SHOPPING_RE = re.compile(r"(?:\b(?:black friday|cyber monday|prime day|deals?|discount(?:s|ed)?|on sale|"
+                          r"coupons?|promo codes?|price (?:drop|cut|hike)s?|buying guide|gift guide|"
+                          r"how to choose|best [\w' -]{2,40} of 20\d\d|save \$?\d+|good price|"
+                          r"lowest price|cheapest|worth (?:buying|it)|hands[- ]on|our (?:favou?rite|top) picks?)\b|"
+                          r"\breviews?:|\d+ ?% off|\bpercent off\b)",
+                          re.I)
+WOW_BOOST = 1.6
 INSIDER_PENALTY = 0.45
+INSIDER_SUMMARY_PENALTY = 0.7     # mot d'initiés seulement dans le résumé : frein léger
+SHOPPING_PENALTY = 0.3
+
+# Hors ligne éditoriale du compte (guerres, armement) : jamais montré à Claude.
+_MILITARY_RE = re.compile(r"\b(?:militar\w+|missiles?|weapons?|weaponry|warships?|warplanes?|fighter jets?|"
+                          r"air force|army|navy|naval|pentagon|troops|soldiers?|battlefields?|munitions?|"
+                          r"artiller\w+|warfare|warheads?|hypersonic|torpedo\w*|mine hunting|minesweep\w*|"
+                          r"lockheed|raytheon|northrop|anduril|helsing|veterans?|service ?members?|"
+                          r"defen[cs]e (?:department|ministry|contractors?|firms?|tech)|battle ?tanks?|"
+                          r"combat)\b", re.I)
 
 
 def audience_factor(item: NewsItem) -> float:
-    """> 1 : parle à tout le monde ; < 1 : actu d'initiés ; 1 : ni l'un ni l'autre."""
-    text = f"{getattr(item, 'title', '') or ''} {(getattr(item, 'summary', '') or '')[:300]}"
-    factor = 1.0
-    if _EVERYDAY_RE.search(text):
-        factor *= EVERYDAY_BOOST
-    if _INSIDER_RE.search(text):
-        factor *= INSIDER_PENALTY
+    """> 1 : de quoi intriguer tout le monde ; < 1 : actu d'initiés ou bon plan ; 1 : entre les deux.
+
+    Le TITRE décide quand il dit quelque chose (un mot qui intrigue : ×1,6 ; un mot
+    d'initiés : ×0,45 ; les deux : neutre). S'il ne dit rien, le début du résumé décide,
+    plus doucement : un mot d'initiés au détour d'une phrase ne condamne pas une belle
+    histoire."""
+    title = getattr(item, "title", "") or ""
+    lead = (getattr(item, "summary", "") or "")[:300]
+    wow_t, ins_t = bool(_WOW_RE.search(title)), bool(_INSIDER_RE.search(title))
+    if wow_t or ins_t:
+        factor = 1.0 if (wow_t and ins_t) else (WOW_BOOST if wow_t else INSIDER_PENALTY)
+    else:
+        wow_s, ins_s = bool(_WOW_RE.search(lead)), bool(_INSIDER_RE.search(lead))
+        factor = 1.0 if wow_s == ins_s else (WOW_BOOST if wow_s else INSIDER_SUMMARY_PENALTY)
+    if _SHOPPING_RE.search(f"{title} {lead}"):
+        factor *= SHOPPING_PENALTY
     return factor
+
+
+def topic_filter(feed: dict):
+    """Filtre d'un flux généraliste (settings.json : "filter": "ai" ou "tech"), ou None."""
+    name = str(feed.get("filter") or "").strip().lower()
+    if name == "ai":
+        return lambda text: bool(_AI_TOPIC_RE.search(text))
+    if name == "tech":
+        return lambda text: bool(_TECH_TOPIC_RE.search(text) or _AI_TOPIC_RE.search(text))
+    return None
 
 
 _BOILERPLATE_RES = (
@@ -154,6 +222,12 @@ _BOILERPLATE_RES = (
     re.compile(r"\s*The post .{1,300}? appeared first on .{1,150}?$", re.I | re.S),
     re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.)?\s*(?:continue reading|read more|keep reading|"
                r"read the full (?:story|article|post))\b[^.]{0,80}\.?\s*$", re.I),
+    # Signature en fin de résumé (« … stories are written, fact-checked, and edited by humans, never
+    # generated by AI. Don't miss a story, subscribe here. ») : sans rapport avec l'actu, et ses mots
+    # (« AI », « humans ») faussent les filtres.
+    re.compile(r"\s*\S+ (?:stories|articles) are written,? fact-checked,? and edited by humans.{0,160}$",
+               re.I | re.S),
+    re.compile(r"\s*Don.t miss a story,? subscribe here\.?\s*$", re.I),
 )
 
 
@@ -402,19 +476,23 @@ def _declared_encoding(head: bytes) -> str | None:
     return name
 
 
-def default_http_get(url: str) -> tuple[int, str]:
-    """GET simple (timeout 15 s, User-Agent de navigateur, 5 Mo et 40 s maximum).
+# En-têtes « Accept » : un flux (RSS / Atom) ou une page web (texte d'un article).
+FEED_ACCEPT = ("application/rss+xml, application/atom+xml, application/xml;q=0.9, "
+               "application/json;q=0.9, text/xml;q=0.8, */*;q=0.5")
+HTML_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+
+
+def default_http_get(url: str, accept: str = FEED_ACCEPT) -> tuple[int, str]:
+    """GET simple d'un flux (ou, avec `accept=HTML_ACCEPT`, d'une page) : timeout 15 s,
+    User-Agent de navigateur, 5 Mo et 40 s maximum.
     Sans charset dans l'en-tête, on lit la déclaration XML, sinon UTF-8 (requests
     supposerait ISO-8859-1 et abîmerait les accents)."""
     import time
 
     import requests
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, "
-                  "application/json;q=0.9, text/xml;q=0.8, */*;q=0.5",
-    }
+    headers = {"User-Agent": USER_AGENT, "Accept": accept}
     with requests.get(url, timeout=HTTP_TIMEOUT, headers=headers, stream=True) as resp:
         status = resp.status_code
         chunks: list[bytes] = []
@@ -440,6 +518,140 @@ def default_http_get(url: str) -> tuple[int, str]:
     except LookupError:
         text = raw.decode("utf-8", errors="replace")
     return status, text
+
+
+# ---------------------------------------------------------------------------
+# Texte d'un article (pour les histoires que la rédaction a retenues)
+# ---------------------------------------------------------------------------
+ARTICLE_MAX_CHARS = 8000          # ce que Claude lit d'un article (les réserves sont souvent plus bas dans le texte)
+ARTICLE_MIN_CHARS = 400           # en dessous, ce n'est pas un article (mur, page vide) : on garde le résumé du flux
+_ARTICLE_NOISE_RE = re.compile(
+    r"cookies?\b|newsletter|subscribe|sign up|sign in|log in|all rights reserved|advertisement|affiliate|"
+    r"commission|terms of (?:use|service)|privacy policy|follow us|share this|read more|related:|©|"
+    r"click here|download the app|enable javascript|your inbox|free trial|gift article|"
+    r"unlimited access|ad-free|already a subscriber|support (?:our|independent) journalism|"
+    r"this article (?:first |originally )?appeared|sponsored|all products featured|we may earn", re.I)
+
+
+class _ParagraphExtractor(HTMLParser):
+    """Les paragraphes d'une page : texte des <p>, <li>, <h2>, <h3>, <blockquote>, hors
+    menus, pieds de page, formulaires et scripts. Ceux qui sont dans <article> sont notés."""
+    BLOCKS = {"p", "li", "h2", "h3", "blockquote"}
+    SKIP = {"script", "style", "noscript", "template", "nav", "header", "footer", "form", "aside", "button",
+            "select", "svg", "figure", "figcaption", "iframe", "dialog"}
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+            "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.paras: list[tuple[str, bool]] = []   # (texte, dans <article> ?)
+        self._stack: list[str] = []
+        self._skip = 0
+        self._article = 0
+        self._buf: list[str] | None = None
+        self._buf_level = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self.VOID:
+            if tag == "br" and self._buf is not None:
+                self._buf.append(" ")
+            return
+        self._stack.append(tag)
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag == "article":
+            self._article += 1
+        elif tag in self.BLOCKS and self._buf is None and not self._skip:
+            self._buf = []
+            self._buf_level = len(self._stack)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.VOID or tag not in self._stack:
+            return
+        while self._stack:
+            t = self._stack.pop()
+            if t in self.SKIP:
+                self._skip = max(0, self._skip - 1)
+            elif t == "article":
+                self._article = max(0, self._article - 1)
+            if self._buf is not None and len(self._stack) < self._buf_level:
+                self._flush()
+            if t == tag:
+                break
+
+    def handle_data(self, data: str) -> None:
+        if self._buf is not None and not self._skip:
+            self._buf.append(data)
+
+    def _flush(self) -> None:
+        text = re.sub(r"\s+", " ", "".join(self._buf or [])).strip()
+        if text:
+            self.paras.append((text, self._article > 0))
+        self._buf = None
+
+    def close(self) -> None:
+        super().close()
+        if self._buf is not None:
+            self._flush()
+
+
+
+def article_text(page_html: str, max_chars: int = ARTICLE_MAX_CHARS) -> str:
+    """Texte d'un article à partir du HTML de sa page : les vrais paragraphes, sans
+    menus, bandeaux, bios d'auteur ni appels à s'abonner. "" si la page n'a pas
+    l'air d'un article lisible (mur d'abonnement, contenu chargé après coup…)."""
+    parser = _ParagraphExtractor()
+    try:
+        parser.feed(page_html or "")
+        parser.close()
+    except Exception:  # noqa: BLE001 — HTML très cassé
+        return ""
+    inside = [t for t, in_article in parser.paras if in_article]
+    paras = inside if sum(len(t) for t in inside) >= ARTICLE_MIN_CHARS else [t for t, _ in parser.paras]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for text in paras:
+        text = text.replace("\u00a0", " ").strip()
+        if len(text) < 40 or text in seen:
+            continue
+        if len(text) < 220 and _ARTICLE_NOISE_RE.search(text):
+            continue
+        if _AUTHOR_BIO_RE.match(text):
+            continue
+        seen.add(text)
+        kept.append(text)
+    if sum(len(t) for t in kept) < ARTICLE_MIN_CHARS:
+        return ""
+    out: list[str] = []
+    size = 0
+    for text in kept:
+        if size + len(text) > max_chars:
+            if not out:
+                out.append(shorten(text, max_chars))
+            break
+        out.append(text)
+        size += len(text) + 1
+    return "\n".join(out)
+
+
+def fetch_article_text(url: str, http_get: HttpGet | None = None) -> str:
+    """Lit la page d'une actu et rend le texte de l'article ("" si illisible, bloqué,
+    ou si c'est un post X : on ne lit jamais x.com en HTTP). Ne lève jamais."""
+    url = (url or "").strip()
+    if not url.lower().startswith(("http://", "https://")) or _is_x_url(url):
+        return ""
+    try:
+        status, page = http_get(url) if http_get is not None else default_http_get(url, accept=HTML_ACCEPT)
+    except Exception as e:  # noqa: BLE001 — réseau, délai, encodage
+        log.info("Article illisible (%s) : %s", type(e).__name__, _host(url))
+        return ""
+    if status != 200:
+        log.info("Article illisible (HTTP %s) : %s", status, _host(url))
+        return ""
+    text = article_text(page)
+    if not text:
+        log.info("Article sans texte exploitable (mur, page chargée après coup ?) : %s", _host(url))
+    return text
 
 
 _XML_DECL_ENCODING_RE = re.compile(r"""^(\s*<\?xml[^>]*?\bencoding\s*=\s*["'])[^"']*(["'])""", re.I)
@@ -487,7 +699,7 @@ def parse_rss(text: str, feed: dict) -> list[NewsItem]:
     name = _feed_name(feed)
     base = str(feed.get("url") or "")
     official = bool(feed.get("official"))
-    only_ai = str(feed.get("filter") or "").strip().lower() == "ai"
+    keep = topic_filter(feed)
     items: list[NewsItem] = []
     undated = 0
     for entry in entries[:MAX_ENTRIES_PER_FEED]:
@@ -495,8 +707,8 @@ def parse_rss(text: str, feed: dict) -> list[NewsItem]:
         url = _entry_link(entry, base)
         if not title or not url or not url.lower().startswith(("http://", "https://")):
             continue
-        if only_ai and not _AI_TOPIC_RE.search(f"{title} {_entry_summary(entry)}"):
-            continue        # flux généraliste : cet article ne parle pas d'IA
+        if keep and not keep(f"{title} {_entry_summary(entry)}"):
+            continue        # flux généraliste : cet article n'est pas dans le thème du compte
         published = _entry_datetime(entry)
         if published is None:
             undated += 1
@@ -587,6 +799,13 @@ def score_item(item: NewsItem, weight: float, now: datetime | None = None) -> fl
     return round(freshness * max(0.1, float(weight)) * engagement, 6)
 
 
+def appeal_of(item: NewsItem, weight: float) -> float:
+    """L'intérêt d'une actu SANS la fraîcheur : poids du flux × engagement × public visé.
+    Sert à classer les histoires des derniers jours (« le futur arrive », threads)."""
+    engagement = 1.0 + math.log1p(max(0, int(item.engagement or 0))) / 3.0
+    return round(max(0.1, float(weight)) * engagement * audience_factor(item), 6)
+
+
 def _words(text: str) -> set[str]:
     # Même découpage que filters.is_too_similar
     return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
@@ -621,65 +840,90 @@ def dedupe(items: list[NewsItem]) -> list[NewsItem]:
 # ---------------------------------------------------------------------------
 # Sélection pour un type de post
 # ---------------------------------------------------------------------------
-def _diverse(items: list[NewsItem], n: int, per_source: int) -> list[NewsItem]:
-    """Meilleurs scores en limitant chaque source à `per_source` (puis complète
-    si ça ne suffit pas). Résultat trié par score décroissant."""
+def _diverse(items: list[NewsItem], n: int, per_source: int, max_official: int | None = None) -> list[NewsItem]:
+    """Les `n` premiers de `items` (déjà classés), en limitant chaque source à
+    `per_source` titres et les blogs officiels d'entreprises à `max_official` en tout
+    (puis complète si ça ne suffit pas). L'ordre de `items` est conservé."""
     picked: list[NewsItem] = []
     counts: dict[str, int] = {}
+    official = 0
     for it in items:
         if len(picked) >= n:
             break
         src = (it.source or "").lower()
         if counts.get(src, 0) >= per_source:
             continue
+        if max_official is not None and it.official and official >= max_official:
+            continue
         counts[src] = counts.get(src, 0) + 1
+        official += 1 if it.official else 0
         picked.append(it)
-    for it in items:
-        if len(picked) >= n:
-            break
-        if not any(it is p for p in picked):
-            picked.append(it)
-    picked.sort(key=lambda i: i.score, reverse=True)
+    if len(picked) < n:
+        chosen = {id(p) for p in picked}
+        for it in items:
+            if len(picked) >= n:
+                break
+            if id(it) not in chosen:
+                picked.append(it)
+        rank = {id(it): i for i, it in enumerate(items)}
+        picked.sort(key=lambda i: rank[id(i)])
     return picked
+
+
+def _slow_rank(item: NewsItem, now: datetime, half_life_h: float | None) -> float:
+    """Classement des histoires des derniers jours : l'intérêt (`appeal`), avec une
+    fraîcheur lente (`half_life_h`) ou sans fraîcheur du tout (None)."""
+    base = float(getattr(item, "appeal", 0.0) or 0.0)
+    if base <= 0:
+        return float(item.score or 0.0)      # actu construite sans NewsHub : le score tel quel
+    if half_life_h is None:
+        return base
+    if item.published is not None:
+        age_h = max(0.0, (now - item.published).total_seconds() / 3600.0)
+    else:
+        age_h = UNDATED_AGE_HOURS
+    return base * 0.5 ** (age_h / half_life_h)
 
 
 def top_for(kind: str, items: list[NewsItem], n: int = 15) -> list[NewsItem]:
-    """Sélection d'actus pour un type de contenu.
+    """Les actus proposées à la rédaction en chef (Claude) pour un type de contenu,
+    la plus prometteuse d'abord.
 
-    - news : d'abord le frais (< 24 h) au meilleur score, complété par le reste ;
-    - reactive : uniquement le frais (< 24 h) — on ne réagit pas à du réchauffé ;
-    - tip / gm / thread (et autres) : un mélange plus large, 2 par source d'abord,
-      avec au moins un tiers d'annonces officielles quand il y en a (ce sont
-      elles qui donnent de vrais « comment utiliser l'outil X »).
+    - news : d'abord le frais (< 24 h), classé par intérêt (l'histoire la plus forte de
+      la journée d'abord, pas la dernière parue), complété par le reste ;
+    - reactive : uniquement le frais (< 24 h), le plus récent d'abord — on ne réagit pas
+      à du réchauffé ;
+    - tip (« le futur arrive »), thread et autres : les derniers jours, classés par
+      intérêt avec une fraîcheur LENTE (demi-vie 48 h) : une belle histoire d'avant-hier
+      passe devant une actu tiède de ce matin ;
+    - weekly (la semaine en revue) : classé par intérêt seul, sans fraîcheur.
+
+    Chaque source est plafonnée (`max(3, n // 8)` titres), pour qu'un seul site ne
+    remplisse pas la liste, et les blogs officiels d'entreprises aussi (`max(3, n // 15)`
+    en tout) : leurs annonces sont le plus souvent écrites pour des professionnels.
     """
     if n <= 0 or not items:
         return []
+    now = now_local()
+    per_source = max(3, n // 8)
+    max_official = max(3, n // 15)
     ordered = sorted(items, key=lambda i: i.score, reverse=True)
-    limit = now_local() - timedelta(hours=FRESH_HOURS)
+    limit = now - timedelta(hours=FRESH_HOURS)
     fresh = [i for i in ordered if i.published is not None and i.published >= limit]
     if kind == "reactive":
-        return _diverse(fresh, n, per_source=3)
+        return _diverse(fresh, n, per_source)       # une annonce officielle peut valoir un post immédiat
     if kind == "news":
-        picked = _diverse(fresh, n, per_source=3)
+        fresh = sorted(fresh, key=lambda i: _slow_rank(i, now, DAY_HALF_LIFE_HOURS), reverse=True)
+        picked = _diverse(fresh, n, per_source, max_official)
         if len(picked) < n:
-            rest = [i for i in ordered if not any(i is p for p in picked)]
-            picked += _diverse(rest, n - len(picked), per_source=3)
+            chosen = {id(p) for p in picked}
+            rest = [i for i in ordered if id(i) not in chosen]
+            left = max(0, max_official - sum(1 for p in picked if p.official))
+            picked += _diverse(rest, n - len(picked), per_source, left)
         return picked[:n]
-    picked = _diverse(ordered, n, per_source=2)
-    want_official = n // 3
-    have = sum(1 for p in picked if p.official)
-    if have < want_official:
-        extra = [i for i in ordered if i.official and not any(i is p for p in picked)]
-        for off in extra[:want_official - have]:
-            # remplace l'élément non officiel le moins bien noté
-            for idx in range(len(picked) - 1, -1, -1):
-                if not picked[idx].official:
-                    picked[idx] = off
-                    break
-            else:
-                break
-        picked.sort(key=lambda i: i.score, reverse=True)
-    return picked
+    half_life = None if kind == "weekly" else SLOW_HALF_LIFE_HOURS
+    ranked = sorted(items, key=lambda i: _slow_rank(i, now, half_life), reverse=True)
+    return _diverse(ranked, n, per_source, max_official)
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +1009,7 @@ class NewsHub:
                 log.debug("Actu écartée (%s) : %s — %s", reason, it.source, it.title[:80])
                 continue
             it.score = round(score_item(it, weight, now) * audience_factor(it), 6)
+            it.appeal = appeal_of(it, weight)
             kept.append(it)
         out = dedupe(kept)
         stats["dupes"] = len(kept) - len(out)
@@ -778,8 +1023,15 @@ class NewsHub:
         hb = hard_block_hit(text)
         if hb:
             return f"sujet bloqué : {hb}"
+        mil = _MILITARY_RE.search(text)
+        if mil:
+            return f"sujet militaire : {mil.group(0)}"
         if filters.is_noise(text):
             return "bruit"
+        # Codes promo, soldes, guides d'achat (dans le TITRE) : jamais une histoire à raconter.
+        deal = _SHOPPING_RE.search(it.title or "")
+        if deal:
+            return f"bon plan : {deal.group(0)}"
         low = text.lower()
         for kw in self.settings.blacklist_keywords or []:
             if kw and str(kw).lower() in low:

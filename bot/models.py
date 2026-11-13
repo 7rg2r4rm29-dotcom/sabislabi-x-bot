@@ -22,6 +22,8 @@ class NewsItem:
     kind: str = "rss"        # rss | hn | x
     engagement: int = 0      # points HN ou likes X
     score: float = 0.0
+    appeal: float = 0.0      # intérêt hors fraîcheur (poids du flux × engagement × public), calculé par NewsHub
+    body: str = ""           # texte de l'article, lu seulement pour les histoires retenues
 
     def brief(self) -> dict:
         return {"title": self.title, "url": self.url, "source": self.source}
@@ -29,8 +31,8 @@ class NewsItem:
 
 @dataclass
 class Visual:
-    kind: str                # "phone" (page de l'actu vue dans un smartphone) | "ai"
-    target: str              # URL de la page (phone) ou description de photo (ai)
+    kind: str                # "shot" (capture de la page de l'actu, façon téléphone) | "ai"
+    target: str              # URL de la page (shot) ou description de photo (ai)
 
 
 @dataclass
@@ -42,11 +44,10 @@ class Draft:
     sources: list[NewsItem] = field(default_factory=list)
     reason: str = ""
     angle: str = ""
+    hook: str = ""           # forme d'accroche du post (writer.HOOK_SHAPES), pour apprendre ce qui marche
     from_fallback: bool = False
     used_notes: list[str] = field(default_factory=list)   # notes perso (/note) utilisées
-    # La carte jointe au post, écrite par Claude et dessinée par bot/cards.py :
-    # {"type": prompt|steps|list|fact|phone, "title", "lines": [...], "note"}.
-    card: dict | None = None
-    # Renseignés par le planificateur quand l'image est prête (🔄 Autre version).
+    # Renseignés par le planificateur quand l'image est prête (🔄 Autre version) :
+    # la capture montre la page de l'actu du NOUVEAU texte, pas celle de l'ancien.
     image_path: str | None = None
-    image_kind: str | None = None
+    image_kind: str | None = None        # "shot" | "ai"

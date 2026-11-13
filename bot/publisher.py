@@ -74,8 +74,9 @@ def _norm(text: str) -> str:
 
 # (sujet, participe accordé) pour les messages d'échec.
 KIND_FR = {
-    "gm": ("Le GM", "publié"), "tip": ("L'astuce IA", "publiée"), "news": ("L'actu IA", "publiée"),
-    "reactive": ("Le post réactif", "publié"), "thread": ("Le thread", "publié"),
+    "gm": ("Le GM", "publié"), "tip": ("Le post « le futur arrive »", "publié"),
+    "news": ("L'histoire du jour", "publiée"), "reactive": ("Le post « ça vient de tomber »", "publié"),
+    "thread": ("Le thread", "publié"),
     "comment_reply": ("La réponse au commentaire", "envoyée"),
 }
 

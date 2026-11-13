@@ -41,14 +41,15 @@ WATCHDOG_S = 420
 ANALYTICS_EVERY_MIN = 180
 GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
-REACTIVE_MAX_CHECKS_PER_DAY = 12   # appels à Claude pour l'actu chaude, au plus par jour
+REACTIVE_MAX_CHECKS_PER_DAY = 6    # appels à Claude pour l'actu chaude, au plus par jour
 BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
 WEEKLY_REPORT_LATE_MAX_H = 24
 STARTUP_NOTICE_EVERY_MIN = 360    # pas de rafale de « démarré » si systemd relance en boucle
-NEWS_PER_POST = 15
-NEWS_PER_THREAD = 20
+FUTURE_NEWS_HOURS = 96            # actus lues pour « le futur arrive » et les threads
+NEWS_PER_POST = 120               # titres proposés à la rédaction en chef (writer.MAX_ITEMS_PICK)
+NEWS_PER_THREAD = 120
 
 # Marqueurs de créneau (state.slots_done) autres qu'un id d'item.
 SLOT_PENDING = "pending"          # rédaction en cours (posé AVANT d'appeler Claude : jamais de doublon)
@@ -57,8 +58,8 @@ SLOT_FAILED = "failed"            # erreur inattendue pendant la rédaction
 SLOT_MARKERS = (SLOT_PENDING, SLOT_SKIPPED, SLOT_FAILED)
 
 POST_KINDS = ("gm", "tip", "news")
-KIND_FR = {"gm": "☀️ GM", "tip": "💡 IA au quotidien", "news": "📰 actu simple", "thread": "🧵 thread",
-           "reactive": "⚡ actu du moment", "comment_reply": "💬 réponse", "radar": "🎯 radar"}
+KIND_FR = {"gm": "☀️ GM", "tip": "🔮 le futur arrive", "news": "📰 l'histoire du jour", "thread": "🧵 thread",
+           "reactive": "⚡ ça vient de tomber", "comment_reply": "💬 réponse", "radar": "🎯 radar"}
 JOURS_COURTS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 ITEM_STATUS_FR = {
@@ -209,7 +210,7 @@ class Bot:
         finally:
             self.writer.regen_item_id = None
         if draft is not None and getattr(draft, "texts", None):
-            # La carte va avec le texte : nouvelle version, nouvelle image.
+            # L'image va avec le texte : nouvelle version, nouvelle capture.
             path, image_kind = self._visual(draft, f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
             try:
                 draft.image_path, draft.image_kind = path, image_kind
@@ -446,15 +447,14 @@ class Bot:
                         "solide, créneau sauté. Mieux vaut pas de thread qu'un thread faible (les « pas "
                         "intéressé » coûtent cher dans l'algorithme).")
                     return None
-                if kind == "news" or self.settings.approval_mode == "auto":
-                    # Mode automatique : personne ne relit, donc jamais de texte « de secours »
-                    # générique publié tout seul. Le créneau est sauté.
-                    # Pas de texte bouche-trou sur le créneau « actu » : une maxime de
-                    # développement perso sur un compte d'actu IA fait fuir.
+                if kind != "gm" or self.settings.approval_mode == "auto":
+                    # Pas de texte bouche-trou : sans histoire assez forte et vérifiable, le
+                    # créneau est sauté (et en mode automatique, personne ne relirait un texte
+                    # « de secours »). Seul l'ancien « gm » garde le sien, en mode Telegram.
                     self.state.mark_slot(date, slot.key, SLOT_SKIPPED)
                     self.approvals.notify(
-                        f"📰 {esc(self._slot_label(slot, occ))} : rien d'assez solide ou de vérifiable, créneau "
-                        "sauté. Mieux vaut pas de post qu'un post creux ou faux.",
+                        f"📰 {esc(self._slot_label(slot, occ))} : rien d'assez fort ni de vérifiable dans "
+                        "l'actu, créneau sauté. Mieux vaut pas de post qu'un post tiède ou faux.",
                         silent=True)
                     return None
                 draft = self.writer.fallback_post(kind)
@@ -514,10 +514,13 @@ class Bot:
 
     # ---- Ingrédients de la rédaction -----------------------------------
     def _news(self, kind: str, use_x: bool = True) -> list:
-        # Fin de semaine, le thread est le récap de la semaine IA : 7 jours d'actu.
+        # Fin de semaine, le thread est le récap de la semaine : 7 jours d'actu. Les
+        # autres threads et le post « le futur arrive » puisent dans les 4 derniers
+        # jours (une belle histoire ne périme pas en 36 h) ; l'actu, dans le frais.
         weekly = kind == "thread" and now_local().weekday() in WEEKLY_RECAP_WEEKDAYS
+        hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread") else None)
         try:
-            items = (self.news.collect(max_age_hours=168, use_x=use_x) if weekly
+            items = (self.news.collect(max_age_hours=hours, use_x=use_x) if hours
                      else self.news.collect(use_x=use_x)) or []
         except Exception as e:  # noqa: BLE001
             log.exception("Actu : collecte impossible : %s", e)
@@ -525,7 +528,10 @@ class Bot:
         picker = getattr(self.news, "top_for", None)
         if callable(picker) and items:
             try:
-                items = picker(kind, items, NEWS_PER_THREAD if kind == "thread" else NEWS_PER_POST)
+                # La semaine en revue se classe par intérêt seul ; les autres threads et « le
+                # futur arrive », avec une fraîcheur lente (voir sources.top_for).
+                items = picker("weekly" if weekly else kind, items,
+                               NEWS_PER_THREAD if kind == "thread" else NEWS_PER_POST)
             except Exception as e:  # noqa: BLE001
                 log.warning("Actu : sélection pour %s impossible (%s), liste complète", kind, e)
         return list(items)
@@ -552,11 +558,9 @@ class Bot:
         return self.writer.draft_post(kind, news, notes, perf)
 
     def _visual(self, draft, tag: str) -> tuple[str | None, str | None]:
-        """Image du post : la carte écrite par Claude (dessinée, ou page de l'actu
-        dans un smartphone). Un sondage n'a pas d'image."""
-        if getattr(draft, "poll", None):
-            return None, None
-        if getattr(draft, "visual", None) is None and not getattr(draft, "card", None):
+        """Image du post : la capture, façon téléphone, de la page de l'actu dont il
+        parle. Un sondage n'a pas d'image ; un post sans source non plus."""
+        if getattr(draft, "poll", None) or getattr(draft, "visual", None) is None:
             return None, None
         fn = self._prepare_visual
         if fn is None:
@@ -588,8 +592,9 @@ class Bot:
 
     def _new_breaking_candidates(self, news: list, now) -> list[str]:
         """Ids des actus fraîches (< 12 h) qui peuvent valoir un post immédiat — annonce
-        officielle, ou actu qui décolle (likes sur X, points sur Hacker News) — et que
-        la rédaction n'a pas encore examinées."""
+        officielle, actu qui décolle (likes sur X, points sur Hacker News) ou histoire
+        de nature à intriguer tout le monde — et que la rédaction n'a pas encore
+        examinées. Ce n'est qu'un déclencheur : c'est Claude qui décide ensuite."""
         seen = set(self.state.data.get("breaking_seen") or [])
         out: list[str] = []
         for it in news:
@@ -599,20 +604,24 @@ class Bot:
             published = getattr(it, "published", None)
             if published is None or (now - published) > timedelta(hours=12):
                 continue
-            hot = bool(getattr(it, "official", False)) or int(getattr(it, "engagement", 0) or 0) >= BREAKING_MIN_ENGAGEMENT
-            if hot and not self._for_insiders_only(it):
+            appeal = self._appeal(it)
+            hot = (bool(getattr(it, "official", False))
+                   or int(getattr(it, "engagement", 0) or 0) >= BREAKING_MIN_ENGAGEMENT
+                   or appeal > 1.0)
+            if hot and appeal >= 1.0:
                 out.append(iid)
         return out
 
     @staticmethod
-    def _for_insiders_only(it) -> bool:
-        """Annonce pour développeurs, entreprises ou investisseurs : inutile de
+    def _appeal(it) -> float:
+        """> 1 : de quoi intriguer tout le monde (un robot, une première, un nom connu) ;
+        < 1 : annonce pour développeurs, entreprises ou investisseurs — inutile de
         demander à Claude si elle mérite un post grand public."""
         try:
             from .sources import audience_factor
-            return audience_factor(it) < 1.0
+            return float(audience_factor(it))
         except Exception:  # noqa: BLE001
-            return False
+            return 1.0
 
     def _remember_breaking_candidates(self, ids: list[str]) -> None:
         seen = [i for i in (self.state.data.get("breaking_seen") or []) if isinstance(i, str)]
@@ -653,6 +662,9 @@ class Bot:
             return 0
         self.state.incr("reactive_checks")
         self._remember_breaking_candidates(fresh)
+        # La rédaction en chef ne lit que ce qui peut parler à tout le monde : les annonces
+        # pour développeurs, entreprises ou investisseurs ne valent jamais un post immédiat.
+        news = [it for it in news if self._appeal(it) >= 1.0]
         draft = self.writer.draft_reactive(news, self._notes(), self._perf())
         if draft is None or not getattr(draft, "texts", None):
             log.info("Réactif : rien d'assez fort pour l'instant")
