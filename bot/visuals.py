@@ -872,6 +872,8 @@ def _shot_visual(settings, draft, writer, tag: str) -> tuple[str | None, str | N
     check = getattr(writer, "screenshot_is_clean", None)
     titles = {str(getattr(src, "url", "") or "").rstrip("/").lower(): str(getattr(src, "title", "") or "")
               for src in (getattr(draft, "sources", None) or [])}
+    texts = getattr(draft, "texts", None) or [""]
+    first_text = str(texts[0] or "") if isinstance(texts, list) and texts else ""
     for n, url in enumerate(shot_candidates(draft), start=1):
         shot = capture_with_timeout(url, f"{tag}-{n}" if n > 1 else tag)
         if not shot:
@@ -885,7 +887,8 @@ def _shot_visual(settings, draft, writer, tag: str) -> tuple[str | None, str | N
         clean, issue = False, "aucun contrôle visuel possible"
         if callable(check):
             try:
-                clean, issue = check(path)
+                clean, issue = check(path, headline=titles.get(url.rstrip("/").lower(), ""),
+                                     post=first_text)
             except Exception as e:  # noqa: BLE001
                 clean, issue = False, f"vérification impossible ({type(e).__name__})"
         if clean:
