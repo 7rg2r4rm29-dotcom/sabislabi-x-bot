@@ -140,6 +140,9 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
     published = [p for p in (data.get("published") or []) if isinstance(p, dict)]
     metrics = {str(p.get("item_id")): p["metrics"] for p in published
                if p.get("item_id") and isinstance(p.get("metrics"), dict)}
+    # L'heure qui compte est celle de la publication ; la rédaction a lieu bien avant.
+    posted_at = {str(p.get("item_id")): str(p.get("created_at") or "") for p in published
+                 if p.get("item_id") and p.get("created_at")}
     out = [f"=== {n} derniers posts (du plus ancien au plus récent) ==="]
     for it in [i for i in items if i.get("kind") in POST_FAMILY][-n:]:
         meta = it.get("meta") if isinstance(it.get("meta"), dict) else {}
@@ -152,7 +155,10 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
             flags.append("sondage")
         texts = [str(t) for t in (it.get("texts") or [])]
         body = " // ".join(texts).replace("\n", " / ")
-        out.append(f"- {str(it.get('created_at') or '')[:16]} {it.get('kind')} [{it.get('status')}]"
+        posted = posted_at.get(str(it.get("id")))
+        when = (f"publié {posted[:16]}" if posted
+                else f"rédigé {str(it.get('created_at') or '')[:16]}").replace("T", " ")
+        out.append(f"- {when} {it.get('kind')} [{it.get('status')}]"
                    + (f" ({', '.join(flags)})" if flags else ""))
         out.append(f"  texte : {body[:600]}")
         if meta.get("reason"):

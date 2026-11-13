@@ -384,6 +384,9 @@ def test_report_shows_numbers_screenshots_and_followers(tmp_path, clock):
     sp.write_text(json.dumps(state))
     out = m.report(sp, tmp_path / "missing.log")
     assert "tip [published] (image shot)" in out and "raison : le robot" in out
+    # L'heure affichée est celle de la publication, pas celle de la rédaction.
+    assert "- publié 2026-10-28 14:02 tip [published]" in out
+    assert "- rédigé 2026-10-30 09:00 tip [approved]" in out
     assert "carte :" not in out and "Voice is free" not in out
     assert "chiffres : 812 vues · 9 j'aime · 2 réponse(s) · 2 repartage(s) · 14 signet(s)" in out
     assert out.count("chiffres :") == 2 and "chiffres : pas encore relevés" in out   # rien pour le post programmé
