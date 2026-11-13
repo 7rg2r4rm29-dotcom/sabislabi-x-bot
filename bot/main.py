@@ -42,7 +42,8 @@ EXIT_OK, EXIT_FAIL, EXIT_CONFIG, EXIT_BUSY = 0, 1, 2, 3
 BUSY_AHEAD_MIN = 15      # publication prévue dans moins de 15 min → occupé
 BUSY_STALE_MIN = 30      # au-delà, un item en retard est considéré bloqué (bot arrêté), pas « en cours »
 
-KIND_FR = {"gm": "GM", "tip": "astuce", "news": "actu", "thread": "thread", "reactive": "post réactif",
+KIND_FR = {"gm": "GM", "tip": "le futur arrive", "news": "l'histoire du jour", "thread": "thread",
+           "reactive": "ça vient de tomber",
            "comment_reply": "réponse à un commentaire"}
 PREVIEW_KINDS = ("tip", "news", "thread", "reactive")
 PREVIEW_DEFAULT = "tip,news"
@@ -156,9 +157,6 @@ def report(state_path: str | Path | None = None, log_path: str | Path | None = N
         out.append(f"  texte : {body[:600]}")
         if meta.get("reason"):
             out.append(f"  raison : {str(meta['reason'])[:200]}")
-        card = meta.get("card") if isinstance(meta.get("card"), dict) else None
-        if card:
-            out.append(f"  carte : [{card.get('type')}] {str(card.get('title') or '')[:80]}")
         srcs = [str(x.get("title") or "")[:90] for x in (meta.get("sources") or []) if isinstance(x, dict)]
         out.append("  sources : " + (" | ".join(srcs[:3]) if srcs else "aucune"))
         if it.get("status") == "published":
@@ -283,8 +281,8 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
-        f"Images : une carte par post{'' if has_pw else ' (Playwright absent : aucune image)'} · "
-        f"page de l'actu dans un smartphone {'oui' if s.screenshots_enabled else 'non'} · "
+        f"Images : capture d'écran de l'article {'oui' if s.screenshots_enabled else 'non'}"
+        f"{'' if has_pw else ' (Playwright absent : aucune image)'} · "
         f"photos IA {'oui' if s.image_ai_enabled else 'non'}"
         f"{'' if has_openai or not s.image_ai_enabled else ' (paquet openai absent)'}",
         f"Récap du matin {s.health_report_at:%H:%M} · bilan hebdo {weekly}",
@@ -418,20 +416,21 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
                 out(f"❌ Claude : pas de réponse valide (clé ANTHROPIC_API_KEY, crédits, ou modèle "
                     f"{settings.llm_model} indisponible ? voir logs/bot.log)")
                 ok = False
-        # --- Images : une carte d'essai est vraiment dessinée (jamais bloquant)
+        # --- Images : une vraie capture d'essai, sur une page locale (jamais bloquant)
         try:
             if images is None:
-                from . import cards
-                images = cards.self_test
+                from . import visuals
+                images = visuals.self_test
             drawn, why = images()
         except Exception as e:  # noqa: BLE001
             drawn, why = False, type(e).__name__
         if drawn:
             parts["images"] = "ok"
-            out("✅ Images : les cartes se dessinent correctement")
+            out("✅ Images : le navigateur des captures d'écran fonctionne")
         else:
             parts["images"] = "bad"
-            out(f"⚠️ Images : impossible de dessiner les cartes ({why}). Les posts partiraient SANS image. "
+            out(f"⚠️ Images : le navigateur des captures d'écran ne marche pas ({why}). Les posts partiraient "
+                "SANS image. "
                 "Sur le serveur : .venv/bin/python -m playwright install chromium")
     finally:
         tmp.cleanup()
@@ -564,8 +563,8 @@ def preview_kinds(raw: str) -> list[str]:
 def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, llm=None, news=None,
                 writer=None, telegram=None, prepare_visual: Callable | None = None,
                 out: Callable[[str], None] = print) -> int:
-    """Rédige un post de chaque type demandé, dessine son image et envoie le tout sur
-    Telegram, pour voir ce que le bot publierait MAINTENANT. Rien n'est publié, et
+    """Rédige un post de chaque type demandé, prend sa capture d'écran et envoie le tout
+    sur Telegram, pour voir ce que le bot publierait MAINTENANT. Rien n'est publié, et
     l'état du bot en service n'est pas touché : tout se passe sur une copie jetable
     (lecture de l'actu gratuite ; seuls les appels à Claude sont payants)."""
     import shutil
@@ -604,23 +603,36 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
         out(f"=== Aperçu : {len(items)} actus lues, {len(kinds)} post(s) à rédiger — RIEN n'est publié ===")
         notes = [str(n.get("text")) for n in state.active_notes() if n.get("text")]
         done = 0
+        from .scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD, WEEKLY_RECAP_WEEKDAYS, Bot
         for kind in kinds:
+            # Les mêmes actus que le bot en service : 4 jours pour « le futur arrive » et les
+            # threads, 7 jours pour la semaine en revue (fin de semaine), le frais sinon.
+            weekly = kind == "thread" and utils.now_local().weekday() in WEEKLY_RECAP_WEEKDAYS
+            hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread") else None)
             picked = items
-            picker = getattr(news, "top_for", None)
-            if callable(picker) and items:
+            if hours:
                 try:
-                    picked = picker(kind, items, 20 if kind == "thread" else 15)
+                    picked = list(news.collect(max_age_hours=hours, use_x=False) or []) or items
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Aperçu : actu des derniers jours indisponible (%s)", type(e).__name__)
+            picker = getattr(news, "top_for", None)
+            if callable(picker) and picked:
+                try:
+                    picked = picker("weekly" if weekly else kind, picked,
+                                    NEWS_PER_THREAD if kind == "thread" else NEWS_PER_POST)
                 except Exception:  # noqa: BLE001
-                    picked = items
+                    pass
             if kind == "thread":
                 draft = writer.draft_thread(picked, notes, "")
             elif kind == "reactive":
+                # Comme le bot en marche : jamais les annonces pour initiés (intérêt < 1).
+                picked = [it for it in picked if Bot._appeal(it) >= 1.0]
                 draft = writer.draft_reactive(picked, notes, "")
             else:
                 draft = writer.draft_post(kind, picked, notes, "")
             label = KIND_FR.get(kind, kind)
             if draft is None or not getattr(draft, "texts", None):
-                why = ("rien, dans l'actu fraîche, ne mérite un post grand public (c'est le cas le plus "
+                why = ("rien, dans l'actu fraîche, ne mérite un post à chaud (c'est le cas le plus "
                        "fréquent)") if kind == "reactive" else "Claude n'a rien proposé de publiable"
                 out(f"--- {label} : {why}.")
                 continue
@@ -629,16 +641,10 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             out(f"--- {label} ---")
             for i, text in enumerate(draft.texts, start=1):
                 out((f"{i}/ " if len(draft.texts) > 1 else "") + text)
-            card = getattr(draft, "card", None)
-            if isinstance(card, dict):
-                out(f"[carte {card.get('type')}] {str(card.get('title') or '').replace('*', '')}")
-                for line in card.get("lines") or []:
-                    out(f"   • {line}")
-                if card.get("note"):
-                    out(f"   ({card['note']})")
             if getattr(draft, "poll", None):
                 out("[sondage] " + " · ".join(str(o) for o in draft.poll.get("options") or []))
-            out(f"image : {path or 'aucune'}" + (f" ({image_kind})" if path else ""))
+            out(f"capture : {path or 'aucune (le post partirait sans image)'}"
+                + (f" ({image_kind})" if path else ""))
             if getattr(draft, "reason", ""):
                 out(f"pourquoi : {draft.reason}")
             if telegram is not None:

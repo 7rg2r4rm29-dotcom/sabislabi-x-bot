@@ -35,17 +35,19 @@ CARD_MAX_RETRIES = 24          # … pendant 2 h au plus
 
 KIND_LABELS = {
     "gm": ("☀️", "GM"),
-    "tip": ("💡", "L'IA au quotidien"),
-    "news": ("📰", "Actu IA en mots simples"),
+    "tip": ("🔮", "Le futur arrive"),
+    "news": ("📰", "L'histoire du jour"),
     "thread": ("🧵", "Thread"),
-    "reactive": ("⚡", "Actu du moment"),
+    "reactive": ("⚡", "Ça vient de tomber"),
     "comment_reply": ("💬", "Réponse à un commentaire"),
     "radar": ("🎯", "Radar"),
 }
-THREAD_GENRES_FR = {"timely": "une actu expliquée", "tutorial": "pas à pas", "beginner": "l'IA au quotidien",
-                    "weekly": "la semaine de l'IA", "practical": "pratique", "mindset": "mindset",
-                    "story": "histoire vraie"}
-IMAGE_KINDS_FR = {"card": "carte", "phone": "page de l'actu dans un smartphone", "ai": "image IA"}
+THREAD_GENRES_FR = {"timely": "l'histoire que personne ne réalise", "future": "bientôt, plus besoin de…",
+                    "weekly": "cette semaine, le futur s'est rapproché",
+                    # anciens genres (items créés avant novembre 2026)
+                    "tutorial": "pas à pas", "beginner": "l'IA au quotidien", "practical": "pratique",
+                    "mindset": "mindset", "story": "histoire vraie"}
+IMAGE_KINDS_FR = {"shot": "capture d'écran", "ai": "image IA"}
 
 # Statuts dans lesquels chaque bouton a encore un sens.
 _ACTIONABLE = {
@@ -242,14 +244,12 @@ class Approvals:
         meta: dict[str, Any] = {
             "reason": draft.reason or "",
             "angle": draft.angle or "",
+            "hook": getattr(draft, "hook", "") or "",
             "sources": sources,
             "used_notes": list(getattr(draft, "used_notes", None) or []),
             "from_fallback": bool(draft.from_fallback),
             "scheduled_at": iso(publish_at),
         }
-        card = getattr(draft, "card", None)
-        if isinstance(card, dict) and image_path:
-            meta["card"] = {"type": card.get("type"), "title": str(card.get("title") or "").replace("*", "")}
         fields: dict[str, Any] = {
             "status": "awaiting",
             "publish_at": iso(publish_at),
@@ -441,10 +441,10 @@ class Approvals:
                 lines.append("⚠️ Sondage + image : X n'accepte pas les deux, l'image ne sera pas publiée")
             elif item.get("image_kind") == "ai":
                 lines.append("🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)")
-            elif item.get("image_kind") == "phone":
-                lines.append("📱 Image jointe : la page de l'actu, vue dans un smartphone (au-dessus)")
+            elif item.get("image_kind") == "shot":
+                lines.append("📱 Capture d'écran jointe : la page de l'actu, comme sur un téléphone (au-dessus)")
             else:
-                lines.append("🖼️ Carte jointe (image au-dessus)")
+                lines.append("🖼️ Image jointe (au-dessus)")
         reason = str(meta.get("reason") or "").strip()
         if reason:
             lines.append(f"💭 Pourquoi : {esc(_trunc(reason, 300 if limit is None else 120))}")
@@ -940,6 +940,7 @@ class Approvals:
                 meta["reason"] = result.reason
             if getattr(result, "angle", ""):
                 meta["angle"] = result.angle
+            meta["hook"] = getattr(result, "hook", "") or ""     # l'accroche de la NOUVELLE version
             srcs = getattr(result, "sources", None) or []
             if srcs:
                 meta["sources"] = [s.brief() if hasattr(s, "brief") else dict(s) for s in srcs]
@@ -952,7 +953,7 @@ class Approvals:
         return True
 
     def _swap_image(self, item: dict, meta: dict, result: Any) -> None:
-        """🔄 : l'image (une carte dont le texte va avec le post) suit la nouvelle
+        """🔄 : l'image (la capture de la page de l'actu du post) suit la nouvelle
         version. Sans nouvelle image, l'ancienne est retirée : elle parlerait d'autre
         chose. Un résultat sans champ `image_path` (ancien format) ne touche à rien."""
         if not hasattr(result, "image_path"):
@@ -961,11 +962,7 @@ class Approvals:
         kind = (getattr(result, "image_kind", None) or None) if path else None
         item["image_path"], item["image_kind"] = path, kind
         self.state.update_item(item["id"], image_path=path, image_kind=kind)
-        card = getattr(result, "card", None)
-        if path and isinstance(card, dict):
-            meta["card"] = {"type": card.get("type"), "title": str(card.get("title") or "").replace("*", "")}
-        else:
-            meta.pop("card", None)
+        meta.pop("card", None)        # ancien format (carte dessinée) : n'a plus de sens
         if path and self.tg is not None and Path(path).is_file():
             try:
                 emoji, label = self._label(item)

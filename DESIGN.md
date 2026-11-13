@@ -1,17 +1,21 @@
 # sabislabi-x-bot v2 — design technique
 
-Assistant X pour **@sabislabi** (compte international en anglais). Ligne éditoriale depuis novembre 2026 : **« AI made simple, for everyday life »** — on écrit pour le grand public, pas pour les passionnés de tech, et chaque post part avec une carte (image) à enregistrer.
+Assistant X pour **@sabislabi** (compte international en anglais). Ligne éditoriale depuis novembre 2026 : **« le futur arrive plus vite qu'on ne le croit »**, raconté avec des mots simples au grand public — et chaque post part avec une capture d'écran de l'article, comme prise au téléphone.
 
 ## Ligne éditoriale et images (novembre 2026)
 
-- **Public** : une infirmière, un prof, une commerçante, un parent. Chaque post montre UNE chose utile que l'IA peut faire pour eux (une situation de la vie + la phrase exacte à taper), ou explique une actu IA en mots simples. Formats A–E du `PLAYBOOK` (`bot/writer.py`).
-- **Zéro jargon, trois barrières** : les consignes (`AUDIENCE`, `PLAIN_WORDS`) ; un filtre côté code (`filters.find_tech_jargon` : LLM, API, benchmark, open-source… → motif « trop technique (mot) » et nouvel essai) ; la relecture par Claude, qui rend deux verdicts dans le même appel (`ok`/`issues` pour les faits, `plain`/`hard_words` pour la lisibilité). Au second essai, un texte dont les faits sont justes mais encore jugé « un peu technique » part quand même (mieux qu'un créneau vide).
-- **Variété** : le créneau `tip` reçoit un « moment de la vie » tiré au sort parmi `LIFE_AREAS` (cuisine, courriers, mails, enfants, emploi…), jamais un des 8 derniers. Le créneau `news` prend l'actu qui concerne tout le monde, sinon redevient un post du quotidien (aucune source obligatoire ; la relecture recale tout fait d'actu non sourcé).
-- **Tri de l'actu** : `sources.audience_factor` multiplie le score par 1,6 pour ce qui parle à tout le monde (gratuit, téléphone, mode d'emploi, arnaque…) et par 0,45 pour les sujets d'initiés (API, levées de fonds, puces…). Les flux généralistes sont filtrés (`"filter": "ai"`). Le bureau « à chaud » n'appelle Claude que pour une actu fraîche, officielle ou qui décolle, et non réservée aux initiés.
-- **Une carte par post** (`bot/cards.py`) : Claude écrit `card_type` (`prompt | steps | list | fact | phone | none`), `card_title` (un passage `*entre astérisques*` est mis en valeur), `card_lines`, `card_note`. `Writer._parse_card` nettoie et valide (longueurs, pas de lien, pas de sujet interdit, pas de jargon) ; une carte refusée déclenche un nouvel essai, puis le post part en texte seul plutôt que de perdre le créneau. Un sondage n'a pas d'image.
-- **Rendu** : HTML/CSS → PNG par Chromium headless (Playwright), 1080 × 1350 (4:5) à 2×, sans aucun accès réseau (polices OFL embarquées en base64 : Inter, Bricolage Grotesque, Instrument Serif). Un script ajuste les tailles pour que tout tienne sans grand vide et sans jamais couper un mot du titre. Cinq palettes (`THEMES`) tournent d'un post à l'autre ; changer la « DA » = changer `THEMES`.
-- **Carte « phone »** : la page de l'actu CITÉE est chargée comme sur un iPhone (390 px, ×4), nettoyée (menus fixes, bandeaux cookies, pop-ups), cadrée sur son titre (`visuals._PREPARE_JS`, `_ALIGN_JS`, `headline_fits`), regardée par Claude (`Writer.screenshot_is_clean`), puis posée dans une maquette de smartphone dont la barre reprend la couleur de la page. Au moindre doute (page cassée, titre coupé, redirection vers un autre site, relecture négative ou impossible), une carte dessinée (`list` ou `fact`, mêmes textes) la remplace. Jamais de capture de X.
-- **Rythme** : `POST_SLOTS=tip@14:30,news@19:00`, `THREAD_SLOTS=tue@14:30,sun@16:00` (genres `beginner | tutorial | timely | weekly`), actu à chaud 1/jour au plus entre 12 h et 23 h 30.
+- **Public** : une infirmière, un chauffeur de taxi, un étudiant qui joue, un parent, un retraité. Ils ne suivent pas la tech ; ils s'arrêtent pour ce qui fait dire « attends, quoi ? » : de la science-fiction devenue réelle, un geste de tous les jours qui va changer, quelque chose d'un peu inquiétant. Consignes : `AUDIENCE`, `INTRIGUE`, `PLAYBOOK` (formes d'accroche), `TONE` (`bot/writer.py`).
+- **Intriguer sans inventer** (`TRUTH`, `GROUNDING`) : le cadrage (« incroyable », « terrifiant ») est une opinion permise ; les faits viennent tous des articles cités. Une démo reste une démo, le futur se dit « bientôt / pourrait », pas de date, de prix ni de catastrophe absents de la source. La relecture (`FACTCHECK_PROMPT`) recale l'exagération et la certitude, pas l'émotion.
+- **Zéro jargon, trois barrières** : les consignes (`PLAIN_WORDS`) ; un filtre côté code (`filters.find_tech_jargon` : LLM, API, benchmark, open-source… → motif « trop technique (mot) » et nouvel essai) ; la relecture par Claude, qui rend deux verdicts dans le même appel (`ok`/`issues` pour les faits, `plain`/`hard_words` pour la lisibilité). Au second essai, un texte dont les faits sont justes mais encore jugé « un peu technique » part quand même.
+- **Rédaction en deux temps** :
+  1. *La rédaction en chef* — `Writer._pick(brief, pool, n)` : Claude lit jusqu'à `MAX_ITEMS_PICK` (120) titres (`_headlines_block` : source · âge — titre — début du résumé), les consignes `EDITOR_PROMPT` + `PICKS` et le brief du post (`PICK_BRIEFS` : `news`, `tip`, `reactive`, `thread-timely|future|weekly`), et rend `picks` (numéros, le meilleur d'abord) ; liste vide = rien ne mérite un post, le créneau est sauté. Effort `low`.
+  2. *La lecture* — `Writer._read_articles` : le texte des articles retenus (`sources.fetch_article_text`, ≤ 8 000 caractères, en parallèle, 45 s au plus en tout, jamais x.com) est rangé dans `NewsItem.body`. Un article illisible garde son résumé de flux. Le lecteur (`_ParagraphExtractor`, `article_text`) prend l'histoire qui suit le titre `<h1>` — jamais l'histoire suivante chargée plus bas, ni les cartes « à lire aussi » —, s'arrête à un intertitre « More on… / Related » une fois l'article commencé, écarte les encarts repérés à leur classe (bio, partage, promo ; un bloc WordPress « tag-… » n'en est pas un) et suit les redirections une à une, jamais vers x.com.
+  3. *L'écriture* — `Writer._write_post` / `_thread_candidate` : Claude écrit d'abord cinq premières lignes possibles (`hook_options`), garde la meilleure, écrit à partir de ces seules histoires (article montré jusqu'à `ARTICLE_SHOWN`), cite ses sources (`source_ids`, obligatoires), désigne la page à capturer (`visual_url` = `"[n]"`) et nomme sa forme d'accroche (`hook`, normalisée par `hook_shape` parmi `HOOK_SHAPES`, rangée dans `Draft.hook` puis dans les statistiques).
+  4. *Les garde-fous du code* — `filters.publish_problem` (liens, jargon, formules toutes faites `find_hype`, longueur, et `blocked_topic` : mort, guerre, armée, police, maladie, procès… refusés même quand seul le texte de l'article en parlait), `ungrounded_number` (un chiffre absent des histoires citées est refusé ; les VALEURS sont comparées : « 3 billion » = « 3bn » = « 3,000,000,000 » = « three billion », l'année en cours seulement si la source la donne), `_echoes_recent` (pas les mêmes trois premiers mots ni la même dernière ligne qu'un post récent), `is_too_similar`. Les posts récents montrés à Claude sont dans l'ordre de publication (`recent_all`). Un thread de plus de 7 tweets est réécrit, jamais coupé ; la numérotation « 2/ » est retirée, jamais un chiffre (« 2.5 million »).
+  5. *La relecture* — `Writer._factcheck` : Claude liste chaque affirmation avec la phrase de l'article qui la soutient (`claims`) ; une seule non soutenue suffit à refuser. Un refus déclenche un second essai avec le motif (« reconstruire le texte, ne pas coller la correction en dernière ligne »), puis l'abandon.
+- **Tri de l'actu avant le choix** : `sources.audience_factor` multiplie le score par 1,6 pour ce qui peut intriguer tout le monde (robots, jeux vidéo, premières mondiales, noms connus…), par 0,45 pour les sujets d'initiés (API, levées de fonds, puces…) et par 0,3 pour le commerce. Les flux généralistes sont filtrés (`"filter": "tech"` ou `"ai"`). Sujets militaires (`filters.MILITARY_RE`, qui comprend le contexte : « robot army », « combat spam » passent) et titres de bons plans clairs (codes promo, « 40% off », guides d'achat ; pas un « deal » entre entreprises ni un lancement « on sale ») ne sont jamais montrés. `top_for` plafonne chaque source, frais et reste compris.
+- **La capture** (`bot/visuals.py`) : la page de l'actu citée est chargée comme sur un iPhone (390 × 844 px CSS, ×3 → 1170 px de large, agent mobile), nettoyée (`_PREPARE_JS` : éléments fixes ou collants, bandeaux de consentement, publicités, menus), stabilisée (`_SETTLE_JS` : images et polices chargées), cadrée sur le titre (`_ALIGN_JS` : ligne de rubrique au-dessus du titre, grande image d'ouverture gardée si elle précède le titre), coupée en bas entre deux lignes de texte (`_FRAME_JS`, 4:5 au plus, jamais un liseré d'image), la bande unie du bas retirée (`trim_flat_bottom`), enregistrée en JPEG. `title_on_page` vérifie que la page est bien celle de l'actu citée, puis Claude la REGARDE (`Writer.screenshot_is_clean(path, headline, post)` : propre, bon article, rien qui contredise le post). Jusqu'à `MAX_PAGES_TRIED` pages citées sont essayées ; sinon le post part en texte seul. Aucune maquette, aucune carte, rien d'ajouté. Jamais de capture de X : les domaines de X n'existent pas pour ce navigateur (`X_RESOLVER_RULES`), même au bout d'une redirection. Bandeaux : seul un bouton dont le texte EST « OK », « Accept all »… est cliqué. Refusées : une page dézoomée (pas faite pour un téléphone), une redirection vers une rubrique du même site. Une capture abandonnée (90 s) tue son navigateur (marqueur `--xbot-capture=…`).
+- **Rythme** : `POST_SLOTS=tip@14:30,news@19:00` (`tip` = « le futur arrive », `news` = « l'histoire du jour »), `THREAD_SLOTS=tue@14:30,sun@16:00` (genres `timely | future | weekly`), « ça vient de tomber » 1/jour au plus entre 12 h et 23 h 30. Sans histoire assez forte, un créneau est sauté ; si c'est Claude qui tombe pendant la rédaction (crédit, panne), le créneau est rédigé à son retour, tant que sa fenêtre est ouverte.
 
 ## Principes non négociables (sources officielles, oct. 2026)
 
@@ -34,17 +38,16 @@ Assistant X pour **@sabislabi** (compte international en anglais). Ligne éditor
 | `bot/telegram.py` | `Telegram` : `send`, `send_photo`, `edit`, `answer_callback`, `updates` ; `button()`, `esc()` |
 | `bot/filters.py` | garde-fous éditoriaux : `publish_problem`, `off_limits_term`, `find_tech_jargon`, `hard_blocked`, `is_noise`, `is_too_similar`, `clean_output`, `weighted_length`… |
 | `bot/models.py` | dataclasses partagées `NewsItem`, `Visual`, `Draft` |
-| `bot/sources.py` | `NewsHub.collect()` : flux RSS/Atom (+ Hacker News si configuré) + posts des comptes IA officiels (API) → `list[NewsItem]` triée ; `audience_factor` (grand public / initiés) |
-| `bot/writer.py` | `Writer` : toutes les consignes Claude et la génération (posts, threads, réactif, réponses, radar, vérifications) |
+| `bot/sources.py` | `NewsHub.collect()` : flux RSS/Atom (+ Hacker News si configuré) + posts des comptes officiels (API) → `list[NewsItem]` triée ; `audience_factor` (grand public / initiés / commerce), `topic_filter`, `top_for` ; lecteur d'articles `article_text` / `fetch_article_text` |
+| `bot/writer.py` | `Writer` : toutes les consignes Claude et la génération en deux temps (choix de l'histoire, lecture, rédaction, relecture) pour les posts, threads et actus à chaud ; réponses, radar, contrôle visuel des captures |
 | `bot/approvals.py` | `Approvals` : cartes Telegram avec boutons, édition, régénération, commandes (/statut, /plan, /pause, /reprendre, /note, /budget, /aide) |
 | `bot/publisher.py` | `Publisher` : publie les items validés à l'heure, reprises, erreurs |
 | `bot/comments.py` | `CommentDesk.check()` : nouvelles réponses sous mes posts → brouillon de réponse à valider |
 | `bot/radar.py` | `Radar.check()` : posts frais des gros comptes → suggestion de réponse à publier soi-même |
 | `bot/analytics.py` | `Analytics` : statistiques de mes posts (owned reads), notes de performance pour Claude, récap du matin, bilan hebdo |
-| `bot/cards.py` | les cartes : `build_html`, `render` (Chromium headless, sans réseau), `THEMES`, `self_test` |
-| `bot/visuals.py` | `prepare(settings, draft, writer, tag)` → carte dessinée, ou page de l'actu dans un smartphone (capture mobile, jamais x.com) ; photo IA optionnelle (OpenAI) |
+| `bot/visuals.py` | `prepare(settings, draft, writer, tag)` → `(chemin, "shot")` : capture, façon téléphone, de la page de l'actu citée (jamais x.com), ou `(None, None)` ; `self_test()` pour `--check` ; photo IA optionnelle (OpenAI) |
 | `bot/scheduler.py` | `Bot` : assemble tout, `tick()` (un tour de boucle), `run_forever()` |
-| `bot/main.py` | point d'entrée : `run`, `--check` (dessine aussi une carte d'essai), `--preview [TYPES]` (vrais brouillons + images envoyés sur Telegram, rien n'est publié, état copié), `--report` (posts, chiffres, abonnés, coûts, erreurs), `--once JOB`, `--busy-check` |
+| `bot/main.py` | point d'entrée : `run`, `--check` (prend aussi une capture d'essai), `--preview [TYPES]` (vrais brouillons + images envoyés sur Telegram, rien n'est publié, état copié), `--report` (posts, chiffres, abonnés, coûts, erreurs), `--once JOB`, `--busy-check` |
 
 ## Modèles partagés (`bot/models.py`)
 
@@ -60,12 +63,13 @@ class NewsItem:
     official: bool = False
     kind: str = "rss"       # rss | hn | x
     engagement: int = 0     # points HN ou likes X
-    score: float = 0.0      # calculé par NewsHub (fraîcheur × poids × engagement)
+    score: float = 0.0      # calculé par NewsHub (fraîcheur × poids × engagement × public)
+    body: str = ""          # texte de l'article, lu seulement pour les histoires retenues
 
 @dataclass
 class Visual:
-    kind: str               # "phone" (page de l'actu dans un smartphone) | "ai"
-    target: str             # URL de la page (phone) ou description de photo (ai)
+    kind: str               # "shot" (capture de la page de l'actu, façon téléphone) | "ai"
+    target: str             # URL de la page (shot) ou description de photo (ai)
 
 @dataclass
 class Draft:
@@ -77,9 +81,8 @@ class Draft:
     reason: str = ""        # pourquoi ce sujet (affiché sur Telegram)
     angle: str = ""         # genre de thread, angle de réponse…
     from_fallback: bool = False
-    card: dict | None = None        # {"type", "title", "lines": [...], "note"} : l'image du post
-    image_path: str | None = None   # renseignés par le planificateur (🔄 : la carte suit le texte)
-    image_kind: str | None = None   # "card" | "phone" | "ai"
+    image_path: str | None = None   # renseignés par le planificateur (🔄 : l'image suit le texte)
+    image_kind: str | None = None   # "shot" | "ai"
 ```
 
 ## Item (dans `state.data["items"]`)
@@ -88,12 +91,12 @@ Champs créés par `StateStore.new_item(kind, texts, **fields)` : `id, kind, sta
 
 - `kind` : `gm | tip | news | thread | reactive | comment_reply | radar`
 - `status` : `awaiting` (attend ta validation) → `approved` (programmé) → `publishing` → `published` ; ou `rejected | expired | failed` ; pour le radar : `suggested` → `dismissed | expired`.
-- `meta` : `reason`, `angle`, `sources` (liste de {title,url,source}), `card` ({type, title} de la carte dessinée), `in_reply_to` (comment_reply), `comment_text`, `commenter`, `post_url`, `intent_url` (radar), `partial_ids` (thread interrompu), `retry_at`.
-- `image_kind` : `card` (carte dessinée) | `phone` (page de l'actu dans un smartphone) | `ai`.
+- `meta` : `reason`, `angle`, `sources` (liste de {title,url,source}), `in_reply_to` (comment_reply), `comment_text`, `commenter`, `post_url`, `intent_url` (radar), `partial_ids` (thread interrompu), `retry_at`.
+- `image_kind` : `shot` (capture d'écran de la page de l'actu) | `ai`.
 
 ## Cycle de vie d'un post planifié
 
-1. `Bot.plan_slots()` : pour chaque occurrence de créneau (aujourd'hui et demain) dont l'heure de rédaction (`occurrence - lead`) est passée et qui n'a pas encore d'item (`state.slot_item_id(date, slot.key)`), récupère l'actu (`NewsHub.collect`), les notes perso, les notes de performance, appelle `Writer.draft_post(kind, …)` / `draft_thread(…)` (2 essais, sinon `Writer.fallback_post`), prépare le visuel (`visuals.prepare`), crée l'item (`publish_at = occurrence + jitter aléatoire 0..PUBLISH_JITTER_MINUTES`, `expires_at = occurrence + APPROVAL_GRACE_MINUTES`), marque le créneau et appelle `Approvals.propose(item)`.
+1. `Bot.plan_slots()` : pour chaque occurrence de créneau (aujourd'hui et demain) dont l'heure de rédaction (`occurrence - lead`) est passée et qui n'a pas encore d'item (`state.slot_item_id(date, slot.key)`), récupère l'actu (`NewsHub.collect`), les notes perso, les notes de performance, appelle `Writer.draft_post(kind, …)` / `draft_thread(…)` (choix de l'histoire, lecture, 2 essais de rédaction ; sans histoire assez forte le créneau est sauté — seul l'ancien type `gm` a encore un texte de secours, en mode Telegram), prépare le visuel (`visuals.prepare`), crée l'item (`publish_at = occurrence + jitter aléatoire 0..PUBLISH_JITTER_MINUTES`, `expires_at = occurrence + APPROVAL_GRACE_MINUTES`), marque le créneau et appelle `Approvals.propose(item)`.
 2. Telegram : carte avec boutons `✅ Valider` · `✏️ Modifier` · `🔄 Autre version` · `❌ Annuler` (+ `📲 Publier moi-même` = lien intent pour un post simple sans image).
 3. `✅` : si `now < publish_at` → `approved` (« programmé à 13h32 ») ; sinon publication immédiate (`publish_at = now`).
 4. `Publisher.publish_due()` : items `approved` avec `publish_at <= now` → upload image éventuel → `post` / `post_thread` → `published`, `state.add_published(...)`, carte mise à jour avec le lien.
@@ -111,21 +114,21 @@ Toutes les `RADAR_CHECK_EVERY_MINUTES` dans `RADAR_WINDOW`, si le budget optionn
 
 ## Posts réactifs
 
-Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTIVE_MIN_GAP_MINUTES` autour d'un créneau, sous `REACTIVE_MAX_PER_DAY` (1 par défaut), et seulement s'il y a une actu fraîche (< 12 h), officielle ou qui décolle, pas réservée aux initiés, que la rédaction n'a pas encore examinée (12 appels par jour au plus) : `Writer.draft_reactive(news)` (porte stricte « est-ce que mon voisin s'en soucierait ? », la plupart du temps « non »). Si oui : item `reactive`, `publish_at = now`, `expires_at = now + 180 min`.
+Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTIVE_MIN_GAP_MINUTES` autour d'un créneau, sous `REACTIVE_MAX_PER_DAY` (1 par défaut), et seulement s'il y a une actu fraîche (< 12 h) que la rédaction n'a pas encore examinée et qui peut valoir un post immédiat — officielle, qui décolle, ou de nature à intriguer tout le monde (`Scheduler._appeal`), jamais réservée aux initiés (`REACTIVE_MAX_CHECKS_PER_DAY` appels par jour au plus) : `Writer.draft_reactive(news)` = la rédaction en chef (`_pick("reactive", …, 1)`, « la plupart du temps, la bonne réponse est une liste vide »), puis le même chemin d'écriture qu'un post. Si oui : item `reactive`, `publish_at = now`, `expires_at = now + 180 min`.
 
 ## Analytique (`analytics.py`)
 
 - `refresh_metrics()` toutes les 3 h : `my_recent_posts()` → `public_metrics` (impressions, likes, réponses, reposts, signets) rangées dans `state.published[*].metrics` ; agrégats par type et par créneau dans `state.data["performance"]`.
-- `performance_notes()` → 3-6 lignes pour Claude (« les posts avec une carte "prompt" font 1,8× plus de vues… »). Le genre de carte de chaque post est noté (`fmt.card`) et comparé (`by_card`).
+- `performance_notes()` → 3-6 lignes pour Claude (meilleurs types et créneaux, posts avec ou sans capture d'écran…).
 - `daily_report()` (à `HEALTH_REPORT_AT`) et `weekly_report()` (à `WEEKLY_REPORT_AT`) → texte Telegram en français.
 
 ## Coûts estimés
 
-API X : 2 posts/jour + 2 threads/semaine ≈ 2 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~20-50 appels/jour (chaque post = une rédaction + une relecture, plus un regard sur la capture pour une carte « phone »), consignes en cache.
+API X : 2 posts/jour + 2 threads/semaine ≈ 2 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~15-40 appels/jour (chaque post = un choix d'histoire, une rédaction, une relecture, un regard sur la capture ; les vérifications « à chaud » ne coûtent que le choix), soit de l'ordre de 25 $/mois avec `claude-opus-5-5` (4 $ / 20 $ par million de tokens), environ moitié moins avec `claude-sonnet-5-5`.
 
 ## Tests
 
-`pytest` sans réseau : faux `LLM`, faux `XClient`, faux `Telegram`, horloge figée (`utils.set_clock`). `deploy/deploy.sh` lance la suite sur une copie isolée avant toute installation. `tests/test_cards.py` dessine de vraies cartes (dont les textes les plus longs que le Writer accepte) seulement sur demande : `XBOT_RENDER_TESTS=1`, ou `XBOT_BROWSER_PATH` (navigateur préinstallé) ; sur le serveur, c'est `--check` qui dessine une carte d'essai, sans jamais bloquer une installation. `XBOT_BROWSER_PROXY` : proxy du navigateur, pour les environnements de test.
+`pytest` sans réseau (`tests/conftest.py` fait échouer tout accès à `sources.default_http_get`) : faux `LLM`, faux `XClient`, faux `Telegram`, faux lecteur d'articles (`Writer(read_article=…)`), horloge figée (`utils.set_clock`). `deploy/deploy.sh` lance la suite sur une copie isolée avant toute installation. Les tests qui lancent un vrai navigateur (sur une page locale) ne tournent que sur demande : `XBOT_REAL_BROWSER=1` ; sur le serveur, c'est `--check` qui prend une capture d'essai, sans jamais bloquer une installation. `XBOT_BROWSER_PATH` : navigateur préinstallé ; `XBOT_BROWSER_PROXY` : proxy du navigateur, pour les environnements de test.
 
 ## Installation (`deploy/`)
 

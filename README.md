@@ -4,9 +4,11 @@ Claude rédige, **tu valides d'un geste sur Telegram** (ou le bot publie seul, e
 part à l'heure via l'**API officielle de X**.
 Plus de navigateur qui se fait passer pour toi sur x.com, plus de réponses ni de likes automatiques.
 
-**La ligne du compte (novembre 2026) : « l'IA simplement, pour la vie de tous les jours ».** On parle à
-M. et Mme Tout-le-monde, pas aux passionnés de tech : une situation que tout le monde connaît, la phrase
-exacte à taper, zéro jargon — et **chaque post part avec une belle image** à enregistrer.
+**La ligne du compte (novembre 2026) : « le futur arrive plus vite qu'on ne le croit ».** On parle à
+M. et Mme Tout-le-monde, pas aux passionnés de tech : chaque post raconte, avec des mots simples, une
+nouveauté qui fait dire « attends, quoi ? » (un robot à la maison, une IA qui fait ce que seuls les humains
+faisaient, un geste de tous les jours qui va disparaître) — incroyable, parfois un peu inquiétant, toujours
+vrai. Et chaque post part avec **une capture d'écran de l'article, comme prise au téléphone**.
 
 > Guide écrit pour être suivi sans connaissances techniques. Les commandes sont à copier-coller telles quelles.
 
@@ -64,47 +66,68 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 
 | Contenu | Publication | La carte arrive vers |
 |---|---|---|
-| **L'IA au quotidien** : une situation de tous les jours et la phrase exacte à taper (le frigo, une lettre incompréhensible, un mail délicat, les devoirs…) | 14 h 30 | 2 h 30 avant (45 min en mode automatique) |
-| **L'actu IA en mots simples** : la nouveauté du jour qui concerne tout le monde. S'il n'y en a pas, un autre post du quotidien | 19 h | 2 h avant (45 min en auto) |
-| Thread : usages du quotidien le mardi, **la semaine de l'IA en mots simples** le dimanche | mardi 14 h 30 et dimanche 16 h | 4 h avant (1 h 30 en auto) |
-| **Actu à chaud** : seulement quand une annonce touche vraiment tout le monde (gratuit, sur le téléphone, une arnaque à éviter) | 1 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
+| **Le futur arrive** 🔮 : un geste de tous les jours qui va changer (« Bientôt, plus besoin de manette pour jouer »), raconté à partir d'une vraie nouveauté des derniers jours | 14 h 30 | 2 h 30 avant (45 min en mode automatique) |
+| **L'histoire du jour** 📰 : la nouveauté du jour qui intrigue tout le monde (« Amazon vient de dévoiler une caméra volante qui patrouille seule chez vous ») | 19 h | 2 h avant (45 min en auto) |
+| Thread 🧵 : une histoire racontée en grand le mardi, **« cette semaine, le futur s'est rapproché »** le dimanche | mardi 14 h 30 et dimanche 16 h | 4 h avant (1 h 30 en auto) |
+| **Ça vient de tomber** ⚡ : seulement pour une histoire dont tout le monde va parler (grande annonce d'un nom connu, première mondiale) | 1 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
 
 Deux posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
 19 h = leur pause de midi et la soirée en Europe). Moins de posts, mais chacun soigné : un post médiocre
 coûte plus cher qu'un post en moins.
 
-**À qui on parle.** Une infirmière, un prof, une commerçante, un parent, un retraité : des gens qui ont
-entendu parler de ChatGPT et qui veulent savoir ce que ça peut faire **pour eux, ce soir**. Donc :
+**À qui on parle.** Une infirmière, un chauffeur de taxi, un étudiant qui joue aux jeux vidéo, un parent,
+un retraité : des gens qui ne suivent pas la tech et qui font défiler leur fil très vite. Ils ne s'arrêtent
+que pour une chose : ce qui leur fait dire **« attends, quoi ? »**. Donc :
 
-- on part d'un moment de la vie (« Tu ouvres le frigo et tu n'as aucune idée »), jamais de la technologie ;
-- on donne **la phrase exacte à taper**, entre guillemets ;
+- la première ligne dit **ce que la chose FAIT**, ou ce qu'elle change dans la vie de tous les jours —
+  pas le nom de l'entreprise ni un numéro de version ;
+- on montre le futur comme **une scène du quotidien** (« Bientôt, plus besoin de manette pour jouer ») ;
+- quand c'est à la fois incroyable et un peu inquiétant, on le dit ;
 - **zéro jargon** : les mots comme « LLM », « API », « benchmark », « open-source » sont refusés par le
   bot, et une seconde lecture de Claude vérifie qu'un lecteur qui n'a jamais ouvert ChatGPT comprend tout ;
-- pour l'actu, on laisse de côté ce qui n'intéresse que les développeurs ou les investisseurs (levées de
-  fonds, tests de performance, puces, procès…) ;
-- les thèmes tournent (cuisine, courriers, mails, enfants, emploi, voyages, achats, arnaques…) : jamais
-  deux fois le même à la suite.
+- **intriguer, jamais inventer** : chaque fait vient de l'article cité. Une démonstration reste « une
+  démonstration », un prototype « un prototype » ; pas de date, de prix ni de catastrophe que la source
+  n'annonce pas.
 
-**Chaque post part avec une image** (format portrait 4:5, affiché en entier dans le fil) :
+**Comment une histoire est choisie.** Le bot lit une quarantaine de sources (robots, jeux vidéo, réalité
+virtuelle, gadgets, IA, voitures, espace…). Trois étapes à chaque post :
 
-| Image | Quand |
-|---|---|
-| **La phrase à copier**, dans une bulle de messagerie | la plupart des astuces |
-| **Des étapes** numérotées, ou **une liste** | les pas-à-pas, la couverture des threads |
-| **Un fait en très grand** | une actu résumée en une phrase |
-| **La page de l'article, vue dans un smartphone** | une actu : la vraie page (chargée comme sur un téléphone, cadrée sur son titre), posée dans une maquette de smartphone |
+1. **Le rédacteur en chef** (Claude) lit une centaine de titres et garde les 2 ou 3 histoires qui
+   intrigueront le plus quelqu'un qui ne suit pas la tech. Le lancement d'une IA que tout le monde connaît
+   (ChatGPT, Claude, Gemini…) en fait toujours partie. Il écarte l'argent des entreprises, les outils
+   pour programmeurs, les bons plans, les avis de produits.
+2. Le bot **lit les articles en entier** (plus seulement les trois lignes du flux).
+3. Claude **écrit** le post à partir de ces articles, puis une **seconde lecture** vérifie chaque fait,
+   phrase de l'article à l'appui. Un chiffre qui n'est pas dans l'article est refusé d'office.
 
-Même identité à chaque fois (mêmes polices, même mise en page), et **cinq palettes qui tournent** : deux
-posts de suite ne se ressemblent pas. La capture « smartphone » est **regardée par Claude** avant de
-servir : si la page n'est pas impeccable (bandeau, mur d'abonnement, titre coupé), une carte dessinée la
-remplace. Plus jamais de capture ratée publiée. Un sondage, lui, n'a pas d'image (X ne le permet pas).
+Le bot note aussi la **forme d'accroche** de chaque post (« ça peut faire quoi ? », « le chiffre », « bientôt,
+plus besoin de… »…). Au fil des chiffres, il privilégie celles qui marchent sur ton compte, et il ne
+recommence jamais deux posts de suite par les mêmes mots.
+
+S'il n'y a rien d'assez fort, le créneau est sauté : mieux vaut pas de post qu'un post tiède.
+
+**L'image : une capture d'écran, comme la tienne.** La page de l'article est ouverte comme sur un iPhone,
+puis recadrée comme tu le fais toi-même : on enlève le haut (l'heure, le réseau, la batterie, la barre du
+navigateur) et on coupe proprement en bas, entre deux lignes. On voit le titre de l'article, souvent sa
+photo et ses premières lignes. Pas de maquette de téléphone, pas de carte dessinée, rien d'ajouté.
+
+- Format : la largeur d'un écran d'iPhone (1170 px), en portrait 4:5 au plus — X l'affiche en entier dans le fil.
+- Avant de servir, les bandeaux de cookies, les publicités, les menus et les encarts « à lire aussi »
+  sont retirés, et **Claude regarde la capture** : titre coupé, bandeau, mur d'abonnement, page vide, ou
+  page qui n'est pas celle de l'article cité → elle est écartée.
+- Si la page n'est pas présentable, le bot essaie la page d'un autre site qui raconte la même histoire.
+  Si aucune ne convient, le post part **en texte seul** : jamais de capture ratée.
+- Un sondage n'a pas d'image (X ne le permet pas).
+- Bon à savoir : la capture montre le titre, parfois la photo et quelques lignes d'un article de presse,
+  comme le font la plupart des comptes d'actu. Si un site ou un photographe s'en plaignait un jour, X te
+  préviendrait : il suffit alors de supprimer le post concerné.
 
 - **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 2 ou 3 contenus
   dans la journée.
 - Si Claude ne trouve rien de solide, le créneau est **sauté** (tu es prévenu) plutôt que rempli avec un
   texte creux. En mode automatique, aucun texte « de secours » n'est jamais publié tout seul.
-- Chaque texte (et sa carte) est **vérifié** par une seconde lecture de Claude : faits d'actu, chiffres,
-  aucune « expérience perso » inventée, et des mots que tout le monde comprend.
+- Chaque texte est **vérifié** par une seconde lecture de Claude, article en main : faits, chiffres,
+  aucune exagération, aucune « expérience perso » inventée, et des mots que tout le monde comprend.
 - Tu as jusqu'à **2 h après l'heure prévue** pour valider. Passé ce délai, la carte expire : **rien ne part**,
   même si tu appuies sur ✅ plus tard.
 - Si le bot a été arrêté et qu'un post validé a plus de 3 h de retard, il ne part pas non plus
@@ -130,7 +153,7 @@ retard ne sert à rien.
 ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --preview'
 ```
 
-Tu reçois sur Telegram une astuce et une actu rédigées à l'instant, **avec leur image**, marquées
+Tu reçois sur Telegram les deux posts du jour rédigés à l'instant, **avec leur capture d'écran**, marqués
 « APERÇU ». Rien n'est publié et le planning du bot n'est pas touché (`--preview tip,news,thread` pour
 voir aussi un thread).
 
@@ -176,9 +199,10 @@ Chaque note peut être utilisée 2 fois, pendant 14 jours, sans rien ajouter au-
 - Crédits offerts par X : 20 $ à l'ajout d'une carte, puis jusqu'à 50 $ (égaux à ta première recharge
   automatique).
 
-**Claude** : à toi de surveiller sur console.anthropic.com ; `/budget` affiche une estimation. Le bot utilise
-le meilleur modèle (Opus 5.5). Pour diviser la facture environ par deux, mets `LLM_MODEL=claude-sonnet-5-5`
-dans les réglages (section 9).
+**Claude** : compte de l'ordre de **25 $ par mois** avec le modèle par défaut (Opus 5.5). Chaque post demande
+quatre appels : choisir l'histoire, écrire, relire, regarder la capture. À surveiller sur
+console.anthropic.com ; `/budget` affiche une estimation. Pour diviser la facture environ par deux, mets
+`LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
 
 ## 5. Installation (une seule fois)
 
@@ -277,7 +301,7 @@ sont gardées et la nouvelle version par défaut est posée à côté (`….nouv
 | Ce que tu vois | Quoi faire |
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
-| Les posts partent **sans image** | Le serveur n'arrive plus à dessiner les cartes. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
+| Les posts partent **sans image** | De temps en temps, c'est normal : aucune page n'était présentable. Si c'est **tous** les posts, le navigateur du serveur ne marche plus. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
 | « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
 | « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
 | « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
@@ -308,28 +332,25 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 
 | Réglage | Par défaut | Rôle |
 |---|---|---|
-| `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = l'IA au quotidien, `news` = l'actu en mots simples ; `gm` existe encore si tu y tiens) |
+| `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = « le futur arrive », `news` = « l'histoire du jour » ; `gm` existe encore si tu y tiens) |
 | `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure) |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |
 | `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes |
 | `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
-| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | actu à chaud, seulement si elle touche tout le monde |
+| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler |
 | `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
-| `SCREENSHOTS_ENABLED` | `true` | `false` = jamais de page « dans un smartphone », seulement des cartes dessinées |
+| `SCREENSHOTS_ENABLED` | `true` | `false` = aucune capture d'écran : tous les posts partent en texte seul |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |
 | `DRY_RUN` | `false` | `true` = simulation, rien n'est publié |
 | `APPROVAL_MODE` | `telegram` | `auto` publie sans toi (étiquette « Automated » obligatoire sur le profil, pas de rémunération des créateurs) |
 
-La liste des comptes du radar et des sources d'actu est dans `config/settings.json` (presse et blogs
-qui parlent des produits que tout le monde utilise ; `"filter": "ai"` ne garde que les articles sur l'IA
-d'un flux généraliste). Les sujets de threads sont dans `config/content.json`.
-
-Les couleurs des images (la « direction artistique ») sont dans `bot/cards.py`, bloc `THEMES` : pour suivre
-une tendance, on y change une palette, rien d'autre.
+La liste des comptes du radar et des sources d'actu est dans `config/settings.json` (presse grand public,
+science et tech ; `"filter": "tech"` ne garde d'un flux généraliste que ce qui touche à la technologie,
+`"filter": "ai"` que ce qui parle d'IA). Les thèmes de threads sont dans `config/content.json`.
 
 ---
 
@@ -338,9 +359,12 @@ une tendance, on y change une palette, rien d'autre.
 - Architecture et choix techniques : [`DESIGN.md`](DESIGN.md).
 - Tests : `python -m pytest` (tous les appels à Claude, X et Telegram sont simulés ; une journée complète
   est rejouée dans `tests/test_integration.py`).
-- Vérification réelle de la configuration : `python -m bot.main --check` (dessine aussi une carte d'essai).
+- Vérification réelle de la configuration : `python -m bot.main --check` (prend aussi une capture d'essai).
 - Aperçu sans publier : `python -m bot.main --preview [tip,news,thread,reactive]` ; chiffres :
   `python -m bot.main --report`.
-- Images : `bot/cards.py` (HTML/CSS rendu par Chromium, polices embarquées sous licence OFL dans
-  `bot/assets/fonts/`). Tests de rendu réel : `XBOT_RENDER_TESTS=1 python -m pytest tests/test_cards.py`.
+- Captures d'écran : `bot/visuals.py` (page chargée comme sur un iPhone par Chromium, nettoyée, cadrée
+  sur le titre, coupée entre deux lignes). Tests avec un vrai navigateur, sur une page locale :
+  `XBOT_REAL_BROWSER=1 python -m pytest tests/test_visuals.py`.
+- Rédaction en deux temps : `bot/writer.py` (`_pick` : le choix de l'histoire sur les titres ;
+  `_read_articles` + `sources.fetch_article_text` : le texte des articles ; puis rédaction et relecture).
 - Scripts d'installation : `deploy/` (testés dans `tests/test_deploy_scripts.py`).

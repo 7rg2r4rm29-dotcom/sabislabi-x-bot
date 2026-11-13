@@ -1,25 +1,27 @@
-"""Visuels des posts : carte dessinée, vraie page vue dans un smartphone, ou photo IA.
+"""Image des posts : la capture d'écran, façon téléphone, de la page de l'actu citée.
 
-Trois sortes d'images (voir bot/cards.py pour le dessin) :
-  - « card »  : une carte faite maison (prompt à copier, étapes, liste, fait).
-    Aucun réseau, toujours propre : c'est le visuel par défaut ;
-  - « phone » : la page de l'actu citée, chargée comme sur un téléphone
-    (largeur 390 px), cadrée sur son titre, puis posée dans une maquette de
-    smartphone. Si la page n'est pas impeccable (bandeau, mur, titre coupé…),
-    on retombe sur une carte : jamais de capture ratée publiée ;
-  - « ai »    : photo générée (OpenAI), désactivée par défaut.
-
+Ce que fait une capture (`prepare` → `_shot_visual` → `capture_with_timeout`) :
+  - la page d'une actu CITÉE par le post est chargée comme sur un iPhone
+    (390 × 844 px CSS, ×3 : 1170 px de large, agent mobile), dans un Chromium
+    headless neuf (aucun compte, aucune session, aucun cookie gardé) ;
+  - on la nettoie comme le ferait quelqu'un avant sa capture : bandeaux de
+    cookies, publicités, menus collants, pop-ups, encarts « à lire aussi » ;
+  - on la fait défiler jusqu'au titre de l'article (avec la petite ligne de
+    rubrique au-dessus, et la grande photo si elle précède le titre), puis on
+    coupe le bas entre deux lignes de texte, en portrait 4:5 au plus (le format
+    qu'X affiche en entier). Ni l'heure, ni la batterie, ni la barre d'adresse :
+    une capture brute, sans maquette, sans rien d'ajouté ;
+  - Claude REGARDE la capture avant qu'elle serve (`writer.screenshot_is_clean`) ;
+    au moindre doute, on essaie la page d'une autre actu citée, sinon le post
+    part en texte seul : jamais de capture ratée publiée.
 Règles gardées de la v2 :
   - JAMAIS de capture de x.com / twitter.com ; les requêtes vers les domaines
     de X sont même bloquées dans la page capturée ;
-  - Chromium headless À PART, jetable : aucun compte, aucune session, aucun
-    cookie gardé ;
-  - page d'erreur / vide / mur de connexion / redirection hors des sites
-    autorisés → pas de capture ;
-  - Claude REGARDE la capture avant qu'elle serve (`writer.screenshot_is_clean`) ;
-  - délai dur : capture et rendu tournent dans un thread de travail borné ; la
-    boucle principale ne reste jamais figée.
-
+  - page d'erreur / vide / mur de connexion / redirection hors du site ou vers
+    une page de rubrique → pas de capture ;
+  - délai dur : la capture tourne dans un thread de travail borné ; la boucle
+    principale ne reste jamais figée.
+Photo IA (OpenAI) : facultative, désactivée par défaut.
 `prepare()` ne lève jamais d'exception : (None, None) = post en texte seul.
 """
 from __future__ import annotations
@@ -28,29 +30,39 @@ import base64
 import logging
 import os
 import re
+import signal
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+import unicodedata
+from urllib.parse import unquote, urlparse
 
-from . import cards, utils
+from . import utils
 from .filters import off_limits_term
 from .x_api import contains_url
 
 log = logging.getLogger("xbot.visuals")
 
 CAPTURE_TIMEOUT_S = 90
-SHOTS_KEEP = 40
-CARDS_KEEP = 80
+SHOTS_KEEP = 60
 GENERATED_KEEP = 50
 VISIBLE_TEXT_CHARS = 1500
-# La page est chargée comme sur un iPhone (mise en page mobile : une colonne,
-# gros titre), en très haute définition pour rester nette dans la maquette.
+MAX_PAGES_TRIED = 3               # pages d'actus citées essayées avant d'abandonner l'image
+# La page est chargée comme sur un iPhone : une colonne, un gros titre, et la
+# définition d'une vraie capture d'écran (390 px × 3 = 1170 px de large).
 MOBILE_USER_AGENT = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 "
                      "(KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1")
-MOBILE_VIEWPORT_HEIGHT = 720
-MOBILE_SCALE = 4
-HEADLINE_MUST_END_BEFORE = 300    # px CSS : le titre entier doit tenir dans la partie montrée
+SHOT_WIDTH = 390                  # px CSS
+SHOT_VIEWPORT_HEIGHT = 844        # hauteur d'écran d'un iPhone
+SHOT_SCALE = 3
+# Hauteur de la capture, en px CSS. Le maximum donne du 4:5 (1170 × 1461), le
+# format portrait qu'X affiche en entier dans le fil ; le minimum, un carré large.
+SHOT_MAX_HEIGHT = 487
+SHOT_MIN_HEIGHT = 300
+SHOT_TOP_MARGIN = 22              # un peu d'air au-dessus du titre, comme sur un vrai écran
+HEADLINE_MUST_END_BEFORE = 360    # px CSS : quand une image précède le titre, il finit ici au plus tard
+HEADLINE_LATEST_END = SHOT_MAX_HEIGHT - 40   # au-delà, même un très long titre ne tient plus en entier
+JPEG_QUALITY = 93
 
 # Sites de confiance (sous-domaines acceptés), SANS x.com / twitter.com. La page
 # capturée est toujours celle d'une actu citée ; cette liste sert quand le lien
@@ -82,25 +94,34 @@ ALLOWED_DOMAINS = (
 X_DOMAINS = ("x.com", "twitter.com", "t.co", "twimg.com")
 _X_REQUEST_RE = re.compile(r"^[a-z]+://([^/?#]*\.)?(x\.com|twitter\.com|t\.co|twimg\.com)(:\d+)?([/?#]|$)", re.I)
 
-# Bandeaux à fermer, toutes langues confondues
+# Bandeaux à fermer, toutes langues confondues. Le texte du bouton doit être EXACTEMENT
+# l'un de ceux-ci (:has-text cherche un morceau, sans les majuscules : « OK » trouvait
+# « Cookie settings », « Bookmark », « Share on Facebook », et « Close » « Closed captions »).
 _DISMISS_SELECTORS = (
-    'button:has-text("Accept all")', 'button:has-text("Accept All")',
-    'button:has-text("Accept")', 'button:has-text("I agree")',
-    'button:has-text("Tout accepter")', 'button:has-text("Accepter")',
-    'button:has-text("Got it")', 'button:has-text("OK")',
-    'button:has-text("Close")', 'button[aria-label="Close"]',
-    'button[aria-label="Dismiss"]', '[data-testid="close-button"]',
     '#onetrust-accept-btn-handler', '.cc-btn.cc-dismiss',
+    'button:text-matches("^(accept all|accept all cookies|accept|accept cookies|allow all|allow all cookies|'
+    'i agree|agree|agree and close|got it|ok|okay|tout accepter|accepter|accepter et fermer|j.accepte)$", "i")',
+    'button:text-matches("^(close|dismiss|no thanks|no, thanks|not now|×|✕)$", "i")',
+    'button[aria-label="Close"]', 'button[aria-label="Dismiss"]', '[data-testid="close-button"]',
 )
 
 # Nettoyage de la page : on masque ce qui « flotte » (menus fixes, bandeaux
-# collants, pop-ups) et les barres de navigation, puis on repère le titre.
+# collants, pop-ups), les publicités et les barres de navigation, puis on
+# repère le titre. On ne touche jamais au contenu de l'article lui-même.
 _PREPARE_JS = """() => {
   const hide = el => el.style.setProperty('display', 'none', 'important');
+  // Rectangle d'un élément ; s'il n'a pas de boîte à lui (display: contents), celui de son contenu.
+  const rect = window.__xbotRect = el => {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return r;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect();
+  };
   const visible = e => {
-    const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+    const r = rect(e), cs = getComputedStyle(e);
     return r.width > 150 && r.height > 18 && cs.visibility !== 'hidden' && cs.display !== 'none'
-      && parseFloat(cs.opacity || '1') > 0.1 && (e.innerText || '').trim().length > 8;
+      && parseFloat(cs.opacity || '1') > 0.1 && (e.innerText || e.textContent || '').trim().length > 8;
   };
   // Le titre d'abord : sur certains sites il est lui-même dans un bloc « collant ».
   let h = null;
@@ -114,20 +135,61 @@ _PREPARE_JS = """() => {
     el.style.setProperty('overflow', 'visible', 'important');
     if (getComputedStyle(el).position === 'fixed') el.style.setProperty('position', 'static', 'important');
   }
-  for (const el of document.querySelectorAll('body *')) {
-    const cs = getComputedStyle(el);
-    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-    if (el.contains(h)) el.style.setProperty('position', 'static', 'important');  // on le « décolle »
-    else hide(el);
-  }
+  // Ce qui flotte (menus fixes, bandeaux collants). Refait au cadrage et à la coupe :
+  // certains sites ne « collent » leur barre qu'une fois la page défilée.
+  const unfloat = window.__xbotUnfloat = keepLayout => {
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      if (el.contains(h)) el.style.setProperty('position', 'static', 'important');  // on le « décolle »
+      else if (keepLayout && cs.position === 'sticky') el.style.setProperty('visibility', 'hidden', 'important');
+      else hide(el);
+    }
+  };
+  unfloat(false);
   // Bandeaux cookies, pop-ups, newsletters, chats (jamais la page ni le bloc du titre).
+  for (const el of document.querySelectorAll("[class*='modal']")) {
+    const cls = typeof el.className === 'string' ? el.className : '';
+    if (!/(^|[\\s_-])modal/i.test(cls)) continue;          // « multimodal-chart » n'en est pas un
+    if (el === document.body || el === document.documentElement || el.contains(h)) continue;
+    hide(el);
+  }
   for (const el of document.querySelectorAll("[class*='cookie'],[id*='cookie'],[class*='consent'],"
-      + "[id*='consent'],[class*='newsletter'],[class*='popup'],[class*='modal'],iframe[src*='chat'],"
+      + "[id*='consent'],[class*='newsletter'],[class*='popup'],iframe[src*='chat'],"
       + "[class*='intercom'],[class*='drift'],[id^='sp_message'],#onetrust-consent-sdk,#didomi-host,"
       + "#usercentrics-root,#CybotCookiebotDialog,.fc-consent-root,.qc-cmp2-container,#cmpbox,"
       + "[class*='paywall'],[class*='app-banner'],[class*='smartbanner']")) {
     if (el === document.body || el === document.documentElement || el.contains(h)) continue;
     hide(el);
+  }
+  // Publicités : emplacements (souvent vides) et leurs étiquettes « Advertisement ».
+  const AD = /(^|[\\s_-])(ad|ads|advert|adverts|advertisement|advertising|adslot|adunit|adwrapper|adcontainer|dfp|sponsor|sponsored|outbrain|taboola|leaderboard|billboard|mpu|skyscraper)([\\s_-]|$)/i;
+  for (const el of document.querySelectorAll('div, aside, section, ins, span, figure')) {
+    if (el.contains(h) || h.contains(el)) continue;
+    const cls = typeof el.className === 'string' ? el.className : '';
+    const key = (el.id || '') + ' ' + cls + ' ' + (el.getAttribute('aria-label') || '') + ' '
+      + (el.getAttribute('data-testid') || '') + ' ' + (el.getAttribute('data-component') || '');
+    if (el.tagName === 'INS' || AD.test(key)) hide(el);
+  }
+  for (const f of document.querySelectorAll('iframe')) {
+    const k = (f.src || '') + ' ' + (f.id || '') + ' ' + (f.name || '') + ' ' + (f.title || '');
+    if (/doubleclick|googlesyndication|adservice|amazon-adsystem|adnxs|\\bads?\\b|advert/i.test(k)) hide(f);
+  }
+  for (const el of document.querySelectorAll('div, span, p, small, label')) {
+    if (el.children.length || el.contains(h) || h.contains(el)) continue;
+    if (!/^(advertisement|advertising|ad|sponsored|sponsored content|ad feedback|publicit[ée])$/i.test((el.textContent || '').trim())) continue;
+    hide(el);
+    const box = el.parentElement;
+    if (box && !box.contains(h) && (box.innerText || '').trim().length < 4 && box.getBoundingClientRect().height < 500) hide(box);
+  }
+  // Encarts glissés dans l'article (« Read next », « Related », inscription à une lettre) : ce
+  // n'est pas l'article. Seulement de petits blocs dont le texte COMMENCE par ces mots.
+  const PROMO = /^(read next|read more|related( stories| articles| content| reading)?|recommended( for you)?|see also|more from|sign up|subscribe|don.t miss|most read|up next|watch next|trending( now)?|you (may|might) also like)\\b/i;
+  for (const el of document.querySelectorAll('div, aside, section, p, ul, a')) {
+    if (el.contains(h) || h.contains(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.height < 16 || r.height > 260 || r.width < 150) continue;
+    if (PROMO.test((el.innerText || '').trim())) hide(el);
   }
   // Menus du site (jamais le bloc qui contient le titre).
   for (const el of document.querySelectorAll('nav, [role="navigation"], [role="banner"], header, '
@@ -135,18 +197,44 @@ _PREPARE_JS = """() => {
     if (!el.contains(h) && !h.contains(el)) hide(el);
   }
   window.__xbotHeadline = h;
-  const y = h.getBoundingClientRect().top + window.scrollY;
+  const y = rect(h).top + window.scrollY;
   window.scrollTo(0, Math.max(0, y - 80));
   return true;
 }"""
 
+# Les images de la partie visible doivent être arrivées ; une image cassée (ou un
+# lecteur vidéo vide) est retirée plutôt que photographiée.
+_SETTLE_JS = """async (reach) => {
+  const near = el => { const r = el.getBoundingClientRect(); return r.bottom > -50 && r.top < reach && r.width > 40; };
+  const imgs = [...document.images].filter(near);
+  for (const img of imgs) { if (img.loading === 'lazy') img.loading = 'eager'; }
+  await Promise.all(imgs.map(img => img.complete ? null : new Promise(done => {
+    img.addEventListener('load', done, {once: true});
+    img.addEventListener('error', done, {once: true});
+    setTimeout(done, 5000);
+  })));
+  let removed = 0;
+  const h = window.__xbotHeadline;
+  for (const img of imgs) {
+    if (img.complete && img.naturalWidth > 0) continue;
+    let box = img.closest('figure') || img;
+    if (h && box.contains(h)) box = img;      // titre posé sur la photo : on ne retire que l'image
+    box.style.setProperty('display', 'none', 'important');
+    removed++;
+  }
+  try { await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 3000))]); } catch (e) {}
+  return removed;
+}"""
+
 # Cadrage : le titre en haut de l'écran, avec la petite ligne qui le précède
 # (rubrique, date) si elle existe, sans jamais trancher une ligne de texte.
-_ALIGN_JS = """() => {
-  const h = window.__xbotHeadline;
-  if (!h) return null;
-  let r = h.getBoundingClientRect();
-  let top = r.top - 22;
+_ALIGN_JS = """([margin, maxH, headEnd]) => {
+  const h = window.__xbotHeadline, rect = window.__xbotRect;
+  if (!h || !rect) return null;
+  if (window.__xbotUnfloat) window.__xbotUnfloat(false);
+  let r = rect(h);
+  const vw = document.documentElement.clientWidth;
+  let top = r.top - margin, textTop = r.top;
   for (const el of document.querySelectorAll('a, span, p, time, div, li, strong')) {
     if (el.contains(h) || h.contains(el)) continue;
     const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 1);
@@ -158,50 +246,234 @@ _ALIGN_JS = """() => {
     // un bouton ou un logo de l'en-tête du site ne l'est pas.
     const aligned = Math.abs(b.left - r.left) < 60
       || Math.abs((b.left + b.right) / 2 - (r.left + r.right) / 2) < 40;
-    if (aligned && b.bottom <= r.top + 2 && b.bottom > r.top - 72) top = Math.min(top, b.top - 14);
+    if (aligned && b.bottom <= r.top + 2 && b.bottom > r.top - 72) {
+      top = Math.min(top, b.top - 14);
+      textTop = Math.min(textTop, b.top);
+    }
   }
-  window.scrollBy(0, Math.max(top, r.top - 120));
+  // Sur beaucoup de sites mobiles, la grande image est AVANT le titre : on la garde dans le
+  // cadre (entière si elle tient, sinon sa partie basse), comme en faisant défiler.
+  let lead = null;
+  for (const el of document.querySelectorAll('img, picture, video')) {
+    if (el.contains(h) || h.contains(el)) continue;
+    const b = el.getBoundingClientRect();
+    if (b.width < 0.6 * vw || b.height < 120 || b.height > 700) continue;
+    if (b.bottom > textTop + 8 || b.bottom < textTop - 70) continue;
+    if (!lead || b.height > lead.getBoundingClientRect().height) lead = el;
+  }
+  if (lead) {
+    const b = lead.getBoundingClientRect();
+    // Le titre doit finir avant headEnd (la même limite que headline_fits, côté Python) : si
+    // l'image est trop haute, on n'en garde que le bas — à condition qu'il en reste assez
+    // pour qu'on la reconnaisse. Sinon, on cadre sur le titre, sans elle.
+    const start = Math.max(b.top, r.bottom - headEnd);
+    if (b.bottom - start >= Math.max(110, 0.4 * b.height)) top = start; else lead = null;
+  }
+  window.scrollBy(0, Math.max(top, r.top - (lead ? maxH : 120)));
+  // Un peu d'air en haut : une ligne de texte collée au bord supérieur aurait l'air coupée.
+  {
+    let first = null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.textContent.trim() || !n.parentElement) continue;
+      const cs = getComputedStyle(n.parentElement);
+      if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+      range.selectNodeContents(n);
+      for (const rc of range.getClientRects()) {
+        if (rc.width < 2 || rc.height < 6 || rc.top < 0 || rc.top > 40) continue;
+        if (first === null || rc.top < first) first = rc.top;
+      }
+    }
+    if (first !== null && first < 12) {
+      const need = 14 - first, can = Math.min(need, window.scrollY);
+      if (can > 0) window.scrollBy(0, -can);
+      // Tout en haut de la page, on ne peut pas remonter : on ajoute la marge qui manque,
+      // de la couleur du fond de l'article.
+      const lack = need - can;
+      if (lack > 0.5) {
+        const root = document.documentElement;
+        let el = document.elementFromPoint(vw / 2, 2), color = '';
+        for (; el; el = el.parentElement) {
+          const c = getComputedStyle(el).backgroundColor;
+          if (c && c !== 'transparent' && !/^rgba\\(\\s*0,\\s*0,\\s*0,\\s*0\\s*\\)$/.test(c)) { color = c; break; }
+        }
+        root.style.setProperty('padding-top', ((parseFloat(root.style.paddingTop) || 0) + lack) + 'px', 'important');
+        if (color) root.style.setProperty('background-color', color, 'important');
+      }
+    }
+  }
   // Ce qui dépasse encore par le haut (logo du site, bouton) serait tranché : on le masque.
   for (const el of document.querySelectorAll('body *')) {
-    if (el.contains(h)) continue;
+    if (el.contains(h) || (lead && (el.contains(lead) || lead.contains(el)))) continue;
     const b = el.getBoundingClientRect();
     if (b.width > 0 && b.height > 0 && b.top < -1 && b.bottom > 1 && b.bottom < 150)
       el.style.setProperty('visibility', 'hidden', 'important');
   }
-  r = h.getBoundingClientRect();
+  r = rect(h);
   const doc = document.documentElement;
   return {top: r.top, bottom: r.bottom, left: r.left, right: r.right, vw: doc.clientWidth,
-          pageWidth: doc.scrollWidth};
+          pageWidth: doc.scrollWidth, lead: !!lead,
+          scale: window.visualViewport ? window.visualViewport.scale : 1};
+}"""
+
+# Position actuelle du haut du titre (sans rien déplacer) : a-t-il bougé depuis le cadrage ?
+_HEAD_TOP_JS = """() => {
+  const h = window.__xbotHeadline, rect = window.__xbotRect;
+  return (h && rect) ? rect(h).top : null;
+}"""
+
+# Où couper en bas : le plus bas possible (jusqu'au 4:5), mais entre deux lignes de
+# texte, jamais au milieu d'une ligne, et sans laisser un liseré d'image ou un grand vide.
+_FRAME_JS = """([minH, maxH]) => {
+  const h = window.__xbotHeadline, rect = window.__xbotRect;
+  if (!h || !rect) return null;
+  if (window.__xbotUnfloat) window.__xbotUnfloat(true);      // sans rien déplacer
+  const vw = document.documentElement.clientWidth;
+  const seen = el => !el.checkVisibility || el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
+  const lines = [], blocks = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!n.textContent.trim() || !n.parentElement || !seen(n.parentElement)) continue;
+    range.selectNodeContents(n);
+    for (const r of range.getClientRects()) {
+      if (r.width < 2 || r.height < 6 || r.right <= 0 || r.left >= vw) continue;
+      if (r.bottom <= 0 || r.top >= maxH + 120) continue;
+      lines.push([r.top, r.bottom]);
+    }
+  }
+  for (const el of document.querySelectorAll('img, video, picture, canvas, iframe, svg')) {
+    if (!seen(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 120 || r.height < 70 || r.bottom <= 0 || r.top >= maxH + 600) continue;
+    blocks.push([r.top, r.bottom]);
+  }
+  // On coupe ENTRE deux lignes (2 px de marge : aucun pixel de lettre tranché)…
+  const slices = y => lines.some(([t, b]) => t - 2 < y && b + 2 > y);
+  // … une image coupée, c'est naturel quand on fait défiler, mais jamais un simple liseré.
+  const sliver = y => blocks.some(([t, b]) => t - 3 < y && b > y && (y - t) < Math.max(110, 0.3 * (b - t)));
+  const hb = rect(h).bottom;
+  const floor = Math.max(minH, Math.ceil(hb) + 16);
+  let cut = null;
+  for (let y = maxH; y >= floor; y--) { if (!slices(y) && !sliver(y)) { cut = y; break; } }
+  if (cut === null) return {cut: null, floor: floor};
+  // Pas de grande bande vide en bas : on remonte juste sous le dernier contenu.
+  const covered = blocks.some(([t, b]) => t < cut && b >= cut);
+  if (!covered) {
+    let last = hb;
+    for (const [t, b] of lines) if (b <= cut && b > last) last = b;
+    for (const [t, b] of blocks) if (b <= cut && b > last) last = b;
+    if (cut - last > 34) cut = Math.max(floor, Math.round(last + 20));
+  }
+  return {cut: cut, floor: floor};
 }"""
 
 
 def headline_fits(m: dict | None) -> str | None:
-    """Une raison si le titre mesuré ne sera pas entier et bien placé dans le
-    téléphone, None si le cadrage est bon."""
+    """Une raison si le titre mesuré ne sera pas entier et bien placé dans la
+    capture, None si le cadrage est bon."""
     try:
         top, bottom, left, right, vw = (float(m[k]) for k in ("top", "bottom", "left", "right", "vw"))
     except (KeyError, TypeError, ValueError):
         return "titre non mesurable"
     if bottom <= top or vw <= 0:
         return "titre non mesurable"
+    # Page dézoomée par le navigateur (pas de réglage mobile, ou un bloc trop large) : la
+    # capture montrerait une page de bureau en tout petit, coupée n'importe où.
+    try:
+        scale = float(m.get("scale", 1) or 1)
+    except (TypeError, ValueError):
+        scale = 1.0
+    if abs(scale - 1) > 0.01 or abs(vw - SHOT_WIDTH) > 2:
+        return "page pas faite pour un téléphone (affichée en petit)"
     if top < -2:
         return "titre coupé en haut"
-    if bottom > HEADLINE_MUST_END_BEFORE:
+    # Une image d'ouverture laisse toujours de la place sous le titre (_ALIGN_JS) ; sans
+    # elle, un très long titre peut occuper presque tout le cadre : c'est encore une capture.
+    limit = HEADLINE_MUST_END_BEFORE if m.get("lead") else HEADLINE_LATEST_END
+    if bottom > limit + 2:                          # 2 px : arrondis du navigateur
         return "titre trop long pour l'écran"
     if left < -2 or right > vw + 2:
         return "titre plus large que l'écran"
     return None
 
 
+def frame_height(frame: dict | None) -> int | None:
+    """Hauteur de la capture (px CSS) choisie par _FRAME_JS, ou None si aucun
+    endroit propre où couper n'a été trouvé."""
+    try:
+        cut = int(round(float((frame or {}).get("cut"))))
+    except (TypeError, ValueError):
+        return None
+    return cut if SHOT_MIN_HEIGHT <= cut <= SHOT_MAX_HEIGHT else None
+
+
+FLAT_ROW_TOLERANCE = 18           # écart de couleur toléré pour dire qu'une ligne de pixels est unie
+FLAT_BAND_MAX = 40                # px CSS : au-delà, une bande unie en bas est retirée
+FLAT_BAND_KEEP = 20               # px CSS gardés sous le dernier contenu
+
+
+def trim_flat_bottom(path: Path) -> bool:
+    """Retire, en bas de la capture, une grande bande unie (fond vide sous un titre
+    court, encart noir…) : on garde FLAT_BAND_KEEP px CSS sous le dernier contenu,
+    sans descendre sous SHOT_MIN_HEIGHT. True si l'image a été recoupée."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    try:
+        with Image.open(path) as src:
+            im = src.convert("RGB")
+        w, h = im.size
+        px = im.load()
+        ref = px[w // 2, h - 1]
+        step = max(1, w // 120)
+
+        def flat(y: int) -> bool:
+            return all(max(abs(a - b) for a, b in zip(px[x, y], ref)) <= FLAT_ROW_TOLERANCE
+                       for x in range(0, w, step))
+
+        band = 0
+        while band < h and flat(h - 1 - band):
+            band += 1
+        new_h = max(SHOT_MIN_HEIGHT * SHOT_SCALE, h - band + FLAT_BAND_KEEP * SHOT_SCALE)
+        if band <= FLAT_BAND_MAX * SHOT_SCALE or new_h >= h:
+            return False
+        im.crop((0, 0, w, new_h)).save(path, "JPEG", quality=JPEG_QUALITY)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.info("Bande vide non retirée (%s)", type(e).__name__)
+        return False
+
+
+# Les domaines de X n'existent pas pour le navigateur des captures : même une redirection
+# (lien cité, image, script) n'y arrive jamais (le blocage des requêtes de la page, lui,
+# ne voit que la première adresse d'une redirection).
+X_RESOLVER_RULES = ", ".join(f"MAP {pat} ~NOTFOUND" for d in (*X_DOMAINS, "ads-twitter.com")
+                             for pat in (d, f"*.{d}"))
+
+
+def launch_options() -> dict:
+    """Options de lancement de Chromium. XBOT_BROWSER_PATH / XBOT_BROWSER_PROXY ne
+    servent qu'aux environnements de test (navigateur préinstallé, proxy)."""
+    launch: dict = {"headless": True, "args": ["--disable-dev-shm-usage", "--no-first-run", "--disable-extensions",
+                                               f"--host-resolver-rules={X_RESOLVER_RULES}"]}
+    if os.getenv("XBOT_BROWSER_PATH"):
+        launch["executable_path"] = os.environ["XBOT_BROWSER_PATH"]
+    if os.getenv("XBOT_BROWSER_PROXY"):
+        launch["proxy"] = {"server": os.environ["XBOT_BROWSER_PROXY"]}
+    return launch
+
+
 def _browser_launch_options() -> tuple[dict, dict]:
-    """Options du navigateur pour la capture mobile (voir cards.launch_options
-    pour XBOT_BROWSER_PATH / XBOT_BROWSER_PROXY, réservés aux tests)."""
-    context: dict = {"viewport": {"width": cards.PHONE_PAGE_WIDTH, "height": MOBILE_VIEWPORT_HEIGHT},
-                     "device_scale_factor": MOBILE_SCALE, "is_mobile": True, "has_touch": True,
+    """(options de lancement, options de la page) pour une capture comme sur un iPhone."""
+    context: dict = {"viewport": {"width": SHOT_WIDTH, "height": SHOT_VIEWPORT_HEIGHT},
+                     "device_scale_factor": SHOT_SCALE, "is_mobile": True, "has_touch": True,
                      "user_agent": MOBILE_USER_AGENT, "locale": "en-US", "accept_downloads": False}
     if os.getenv("XBOT_BROWSER_PROXY"):
-        context["ignore_https_errors"] = True
-    return cards.launch_options(), context
+        context["ignore_https_errors"] = True       # proxy de test seulement
+    return launch_options(), context
 
 
 # Signatures de pages d'erreur / vides, toutes langues (v1). Phrases complètes,
@@ -240,13 +512,17 @@ STYLE_SUFFIX = (
 # URL
 # ---------------------------------------------------------------------------
 def host_of(url: str) -> str:
+    """Hôte d'une adresse, lu comme le lit un navigateur : « \\ » vaut « / »
+    (https://x.com\\@site.com ouvre x.com), lettres pleine chasse et %2E ramenées
+    à la normale."""
     try:
-        u = urlparse((url or "").strip())
+        u = urlparse((url or "").strip().replace("\\", "/"))
+        host = u.hostname or ""
     except ValueError:
         return ""
-    if u.scheme not in ("http", "https") or not u.netloc:
+    if u.scheme not in ("http", "https") or not host:
         return ""
-    return u.netloc.lower().rsplit("@", 1)[-1].split(":")[0].rstrip(".")
+    return unicodedata.normalize("NFKC", unquote(host)).lower().rstrip(".")
 
 
 def _host_in(host: str, domains: tuple[str, ...]) -> bool:
@@ -283,6 +559,36 @@ def final_url_ok(final_url: str, requested_url: str) -> bool:
     if is_x_url(final_url) or not host_of(final_url):
         return False
     return site_of(final_url) == site_of(requested_url) or is_allowed_url(final_url)
+
+
+def _slug_segments(segments: list[str]) -> set[str]:
+    """Les morceaux d'une adresse qui désignent UN article : un titre (12 caractères ou
+    plus) ou un numéro (6 caractères ou plus, avec des chiffres)."""
+    return {s.lower() for s in segments if len(s) >= 12 or (len(s) >= 6 and any(c.isdigit() for c in s))}
+
+
+def same_article(final_url: str, requested_url: str) -> bool:
+    """Le lien mène-t-il encore à l'article ? Non s'il renvoie vers l'accueil ou une page de
+    rubrique (le chemin demandé, raccourci, ou une rubrique au nom long comme
+    « /ai-artificial-intelligence » sur le même site). Sur le même site, l'adresse finale
+    doit garder le numéro ou le titre de l'adresse demandée ; d'un site à l'autre (lien
+    de flux, raccourcisseur), une adresse qui a l'air d'un article passe."""
+    req = [s for s in urlparse(requested_url or "").path.split("/") if s]
+    fin = [s for s in urlparse(final_url or "").path.split("/") if s]
+    if not req or fin == req:
+        return True
+    if not fin or (len(fin) < len(req) and req[:len(fin)] == fin):
+        return False
+    fin_slugs = _slug_segments(fin)
+    if not fin_slugs:
+        return False
+    hf, hr = host_of(final_url), host_of(requested_url)
+    same_site = bool(hf and hr) and (hf == hr or hf.endswith("." + hr) or hr.endswith("." + hf))
+    req_slugs = _slug_segments(req)
+    if same_site and req_slugs:
+        return bool(req_slugs & fin_slugs)
+    return True
+
 
 
 def _safe_tag(tag: str) -> str:
@@ -335,9 +641,12 @@ def page_looks_broken(title: str, body: str) -> str | None:
             return f"titre d'erreur : {title[:60]!r}"
         if sig in head:
             return f"signature d'erreur en haut de page : {sig!r}"
-    for w in _ERROR_TITLE_WORDS:
-        if w in title:
-            return f"titre d'erreur : {title[:60]!r}"
+    # Un mot comme « error » ou « unavailable » ne fait une page d'erreur que dans un titre
+    # court, et en mot entier (« Counter-terrorism… », « NBA hoops… », « quantum errors »).
+    if len(title.split()) <= 6:
+        for w in _ERROR_TITLE_WORDS:
+            if re.search(r"(?<![\w])" + re.escape(w) + r"(?![\w])", title):
+                return f"titre d'erreur : {title[:60]!r}"
     return None
 
 
@@ -350,15 +659,39 @@ def visible_text(title: str, body: str, max_chars: int = VISIBLE_TEXT_CHARS) -> 
 # ---------------------------------------------------------------------------
 # Capture (Chromium headless jetable)
 # ---------------------------------------------------------------------------
+def _kill_marked_browser(marker: str) -> int:
+    """Tue le Chromium d'une capture abandonnée (repéré par son marqueur), pour qu'une
+    page bloquée (script sans fin, police qui n'arrive jamais) ne le laisse pas tourner
+    jusqu'au redémarrage du bot. Linux (/proc) ; ailleurs, rien."""
+    if not marker:
+        return 0
+    needle = f"--xbot-capture={marker}".encode()
+    killed = 0
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return 0
+    for d in entries:
+        if not d.name.isdigit():
+            continue
+        try:
+            if needle in (d / "cmdline").read_bytes():
+                os.kill(int(d.name), signal.SIGKILL)
+                killed += 1
+        except (OSError, ValueError):
+            continue
+    return killed
+
+
 class _Cancelled(Exception):
     pass
 
 
 def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Path, str] | None:
     """Charge `url` comme sur un téléphone dans un Chromium headless neuf (aucune
-    session), vérifie la page, ferme les bandeaux, cadre sur le titre et capture
-    le haut de l'écran. (chemin JPEG, texte visible) ou None. Tourne dans le thread
-    de travail de `capture_with_timeout`."""
+    session), vérifie la page, ferme les bandeaux, cadre sur le titre et
+    photographie l'écran, coupé proprement en bas. (chemin JPEG, texte visible)
+    ou None. Tourne dans le thread de travail de `capture_with_timeout`."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -373,10 +706,13 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
     folder = utils.MEDIA_DIR / "shots"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    raw_path = folder / f"{tag}_{stamp}_mobile.jpg"
+    out_path = folder / f"{tag}_{stamp}.jpg"
     try:
         with sync_playwright() as pw:
             launch_opts, context_opts = _browser_launch_options()
+            marker = getattr(cancel, "marker", "")
+            if marker:
+                launch_opts["args"] = [*launch_opts.get("args", []), f"--xbot-capture={marker}"]
             browser = pw.chromium.launch(**launch_opts)
             try:
                 context = browser.new_context(**context_opts)
@@ -398,6 +734,9 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                     log.warning("Capture refusée : le lien mène sur un autre site (%s → %s)",
                                 url, host_of(final_url) or final_url[:80])
                     return None
+                if not same_article(final_url, url):
+                    log.warning("Capture refusée : le lien ne mène plus à l'article (%s → %s)", url, final_url[:100])
+                    return None
                 check()
                 try:
                     page.wait_for_load_state("networkidle", timeout=12000)
@@ -406,6 +745,12 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                 time.sleep(2.0)
                 check()
                 broken = page_looks_broken(*_title_and_body(page))
+                for _ in range(4):   # page encore vide (serveur lent, contenu qui arrive après) : on patiente
+                    if not (broken or "").startswith("page quasi vide"):
+                        break
+                    time.sleep(2.0)
+                    check()
+                    broken = page_looks_broken(*_title_and_body(page))
                 if broken:
                     log.warning("Capture refusée : %s — %s", broken, url)
                     return None
@@ -415,6 +760,7 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                         if btn.is_visible():
                             btn.click(timeout=2000)
                             time.sleep(0.5)
+                            break        # un seul clic : le reste est masqué par _PREPARE_JS
                     except Exception:  # noqa: BLE001
                         continue
                 # (Les bandeaux restants sont masqués par _PREPARE_JS, sans jamais toucher à
@@ -427,51 +773,80 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                 if broken:
                     log.warning("Capture refusée (après bandeaux) : %s — %s", broken, url)
                     return None
-                if not final_url_ok(page.url or url, url):
-                    log.warning("Capture refusée : la page a changé de site (%s)", url)
+                if not final_url_ok(page.url or url, url) or not same_article(page.url or url, url):
+                    log.warning("Capture refusée : la page a changé (%s → %s)", url, (page.url or "")[:100])
                     return None
                 text = visible_text(title, body)
                 # Cadrage sur le titre de l'article ; sans titre repérable ou bien placé, pas
-                # de capture (une carte dessinée prendra le relais).
+                # de capture (le post partira sans image).
                 if not page.evaluate(_PREPARE_JS):
                     log.warning("Capture refusée : aucun titre d'article repérable sur %s", url)
                     return None
                 time.sleep(0.6)
-                problem = headline_fits(page.evaluate(_ALIGN_JS))
+                check()
+                try:   # images de l'écran arrivées, images cassées retirées
+                    page.evaluate(_SETTLE_JS, SHOT_VIEWPORT_HEIGHT + 200)
+                except Exception:  # noqa: BLE001
+                    pass
+                # Cadrage en plusieurs temps : la page bouge encore pendant que les images de
+                # l'écran arrivent. On recadre jusqu'à ce que le titre ne bouge plus.
+                measure = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT, HEADLINE_MUST_END_BEFORE])
+                for _ in range(4):
+                    if not measure:
+                        break
+                    time.sleep(0.7)
+                    check()
+                    try:
+                        page.evaluate(_SETTLE_JS, SHOT_MAX_HEIGHT + 60)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    now_top = page.evaluate(_HEAD_TOP_JS)       # où est le titre, sans recadrer
+                    if now_top is not None and abs(float(now_top) - float(measure.get("top", 0))) < 2:
+                        break
+                    measure = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT,
+                                                        HEADLINE_MUST_END_BEFORE])
+                problem = headline_fits(measure)
                 if problem:
                     log.warning("Capture refusée : %s sur %s", problem, url)
                     return None
-                time.sleep(1.5)  # images chargées à l'arrivée dans l'écran
+                height = frame_height(page.evaluate(_FRAME_JS, [SHOT_MIN_HEIGHT, SHOT_MAX_HEIGHT]))
+                if height is None:
+                    log.warning("Capture refusée : aucun endroit propre où couper le bas sur %s", url)
+                    return None
                 check()
-                page.screenshot(path=str(raw_path), type="jpeg", quality=90,
-                                clip={"x": 0, "y": 0, "width": cards.PHONE_PAGE_WIDTH,
-                                      "height": cards.PHONE_PAGE_VISIBLE_HEIGHT})
+                page.screenshot(path=str(out_path), type="jpeg", quality=JPEG_QUALITY,
+                                clip={"x": 0, "y": 0, "width": SHOT_WIDTH, "height": height})
             finally:
                 try:
                     browser.close()
                 except Exception:  # noqa: BLE001
                     pass
     except _Cancelled:
-        _safe_unlink(raw_path)
+        _safe_unlink(out_path)
         return None
     except Exception as e:  # noqa: BLE001
         log.warning("Capture échouée (%s) : %s", url, str(e).splitlines()[0][:200] if str(e) else type(e).__name__)
-        _safe_unlink(raw_path)
+        _safe_unlink(out_path)
         return None
 
-    if not raw_path.is_file():
+    if not out_path.is_file():
         return None
+    trimmed = trim_flat_bottom(out_path)
     _cleanup_old(folder, SHOTS_KEEP)
-    log.info("Capture mobile OK : %s → %s", url, raw_path.name)
-    return raw_path, text
+    log.info("Capture OK : %s → %s (%d px de haut%s)", url, out_path.name, height * SHOT_SCALE,
+             ", bande vide retirée en bas" if trimmed else "")
+    return out_path, text
 
 
 def capture_with_timeout(url: str, tag: str = "post",
                          timeout_s: float = CAPTURE_TIMEOUT_S) -> tuple[Path, str] | None:
-    """Capture dans un thread de travail, abandonnée après `timeout_s` (le
-    thread ferme alors son navigateur dès qu'il reprend la main)."""
+    """Capture dans un thread de travail, abandonnée après `timeout_s` : le navigateur
+    est alors tué (une page bloquée ne lui rendrait jamais la main) et le thread se
+    termine de lui-même."""
     result: dict[str, tuple[Path, str] | None] = {}
     cancel = threading.Event()
+    # Marqueur posé sur la ligne de commande du navigateur, pour le retrouver et le tuer.
+    cancel.marker = f"{os.getpid()}-{os.urandom(6).hex()}"
 
     def work() -> None:
         try:
@@ -490,7 +865,9 @@ def capture_with_timeout(url: str, tag: str = "post",
         worker.join(timeout_s)
     if worker.is_alive():
         cancel.set()
-        log.warning("Capture abandonnée : plus de %.0f s pour %s", timeout_s, url)
+        killed = _kill_marked_browser(cancel.marker)
+        log.warning("Capture abandonnée : plus de %.0f s pour %s%s", timeout_s, url,
+                    " (navigateur arrêté)" if killed else "")
         return None
     return result.get("value")
 
@@ -550,103 +927,8 @@ def generate_ai_image(settings, prompt: str, tag: str = "post") -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Cartes (bot/cards.py)
+# Captures d'écran : quelles pages, et le contrôle par Claude
 # ---------------------------------------------------------------------------
-BADGES = {"tip": "Everyday AI", "news": "AI news, made simple", "reactive": "AI news, made simple",
-          "thread": "Everyday AI", "gm": "Good morning"}
-THREAD_BADGES = {"tutorial": "Step by step", "timely": "AI news, made simple", "weekly": "This week in AI"}
-
-
-def _next_card_number(writer, key: str) -> int:
-    """Compteur gardé dans l'état du bot (palette qui tourne, numéro de série des astuces)."""
-    state = getattr(writer, "state", None)
-    data = getattr(state, "data", None)
-    if not isinstance(data, dict):
-        return 0
-    counters = data.get("cards")
-    if not isinstance(counters, dict):
-        counters = data["cards"] = {}
-    counters[key] = int(counters.get(key) or 0) + 1
-    try:
-        state.flush()
-    except Exception:  # noqa: BLE001
-        pass
-    return counters[key]
-
-
-def card_badge(draft, writer) -> str:
-    """Petite étiquette en haut de la carte. Les astuces sont numérotées : une
-    série qu'on reconnaît et qu'on a envie de suivre."""
-    kind = str(getattr(draft, "kind", "") or "")
-    if kind == "thread":
-        return THREAD_BADGES.get(str(getattr(draft, "angle", "") or ""), BADGES["thread"])
-    badge = BADGES.get(kind, "AI, made simple")
-    # Une carte d'actu sur un créneau « astuce » (ou l'inverse) garde l'étiquette de son contenu.
-    if kind == "tip" and getattr(draft, "sources", None):
-        return BADGES["news"]
-    if kind == "news" and not getattr(draft, "sources", None):
-        badge = BADGES["tip"]
-    if badge == BADGES["tip"]:
-        number = _next_card_number(writer, "tips")
-        if number > 0:
-            badge += f" · No. {number}"
-    return badge
-
-
-def _fallback_card(card: dict) -> dict | None:
-    """Carte dessinée à la place d'une capture ratée (mêmes titre et lignes)."""
-    lines = [x for x in (card.get("lines") or []) if str(x).strip()]
-    if not str(card.get("title") or "").strip():
-        return None
-    return dict(card, type="list" if len(lines) >= 2 else "fact", lines=lines)
-
-
-def _card_visual(settings, draft, writer, tag: str) -> tuple[str | None, str | None]:
-    card = dict(getattr(draft, "card", None) or {})
-    if card.get("type") not in cards.CARD_TYPES:
-        return None, None
-    handle = str(getattr(settings, "handle", "") or getattr(settings, "x_handle", "") or "").lstrip("@")
-    theme = cards.theme_for(_next_card_number(writer, "seq"))
-    folder = utils.MEDIA_DIR / "cards"
-    out_path = folder / f"{tag}_{time.strftime('%Y%m%d-%H%M%S')}.png"
-    badge = card_badge(draft, writer)
-
-    if card["type"] == "phone":
-        visual = getattr(draft, "visual", None)
-        target = str(getattr(visual, "target", "") or "").strip()
-        shot = None
-        if target and getattr(settings, "screenshots_enabled", False) and _capturable(draft, target):
-            shot = capture_with_timeout(target, tag)
-        if shot:
-            raw_path, _text = shot
-            # Claude REGARDE la capture ; sans relecteur, elle n'est jamais utilisée à l'aveugle.
-            clean, issue = False, "aucun contrôle visuel possible"
-            check = getattr(writer, "screenshot_is_clean", None)
-            if callable(check):
-                try:
-                    clean, issue = check(raw_path)
-                except Exception as e:  # noqa: BLE001
-                    clean, issue = False, f"vérification impossible ({type(e).__name__})"
-            if clean and cards.render(card, out_path, theme=theme, badge=badge, handle=handle,
-                                      shot_path=raw_path, source=host_of(target).removeprefix("www.")):
-                _safe_unlink(raw_path)
-                _cleanup_old(folder, CARDS_KEEP)
-                log.info("Visuel « smartphone » prêt : %s (%s)", out_path.name, target[:100])
-                return str(out_path), "phone"
-            log.info("Capture écartée (%s) : carte dessinée à la place", issue or "rendu impossible")
-            _safe_unlink(raw_path)
-        fallback = _fallback_card(card)
-        if fallback is None:
-            return None, None
-        card = fallback
-
-    if cards.render(card, out_path, theme=theme, badge=badge, handle=handle):
-        _cleanup_old(folder, CARDS_KEEP)
-        log.info("Carte prête : %s (%s, palette %s)", out_path.name, card["type"], theme)
-        return str(out_path), "card"
-    return None, None
-
-
 def _capturable(draft, target: str) -> bool:
     """Page d'une actu citée par le post, ou site de la liste ; jamais X."""
     if is_x_url(target) or urlparse(target).scheme not in ("http", "https"):
@@ -656,11 +938,123 @@ def _capturable(draft, target: str) -> bool:
     return target.rstrip("/").lower() in cited or is_allowed_url(target)
 
 
+def shot_candidates(draft) -> list[str]:
+    """Pages à essayer, dans l'ordre : celle que Claude a désignée, puis celles des
+    autres actus citées (même histoire, autre site). Jamais X, jamais deux fois la même."""
+    visual = getattr(draft, "visual", None)
+    wanted = [str(getattr(visual, "target", "") or "").strip()]
+    wanted += [str(getattr(src, "url", "") or "").strip() for src in (getattr(draft, "sources", None) or [])]
+    out: list[str] = []
+    seen: set[str] = set()
+    for url in wanted:
+        key = url.rstrip("/").lower()
+        if not url or key in seen or not _capturable(draft, url):
+            continue
+        seen.add(key)
+        out.append(url)
+    return out[:MAX_PAGES_TRIED]
+
+
+_COMMON_WORDS = frozenset("""
+    about after again also back been before being below best between both came come could does done
+    down each even ever every first from gets give goes going good have here into just know last like
+    made make many more most much must need never next only other over says should some still such
+    than that their them then there these they this those through under until very want week were what
+    when where which while will with would year years your you're it's that's here's
+""".split())
+
+
+def title_on_page(title: str, page_text: str) -> bool:
+    """La page capturée parle-t-elle bien de l'actu citée ? Au moins la moitié des mots
+    « qui comptent » du titre de l'actu doivent se retrouver dans le texte de la page
+    (son titre et son début). Garde-fou contre une redirection, un direct, une page
+    « à lire aussi » ; sans titre ou sans texte, on ne conclut rien."""
+    words = {w for w in re.findall(r"[a-z0-9]+", (title or "").lower())
+             if len(w) >= 4 and w not in _COMMON_WORDS}
+    seen = set(re.findall(r"[a-z0-9]+", (page_text or "").lower()))
+    if len(words) < 3 or not seen:
+        return True
+    return len(words & seen) * 2 >= len(words)
+
+
+def _shot_visual(settings, draft, writer, tag: str) -> tuple[str | None, str | None]:
+    if not getattr(settings, "screenshots_enabled", False):
+        log.info("Capture ignorée : SCREENSHOTS_ENABLED=false")
+        return None, None
+    check = getattr(writer, "screenshot_is_clean", None)
+    titles = {str(getattr(src, "url", "") or "").rstrip("/").lower(): str(getattr(src, "title", "") or "")
+              for src in (getattr(draft, "sources", None) or [])}
+    texts = getattr(draft, "texts", None) or [""]
+    first_text = str(texts[0] or "") if isinstance(texts, list) and texts else ""
+    for n, url in enumerate(shot_candidates(draft), start=1):
+        shot = capture_with_timeout(url, f"{tag}-{n}" if n > 1 else tag)
+        if not shot:
+            continue
+        path, text = shot
+        if not title_on_page(titles.get(url.rstrip("/").lower(), ""), text):
+            log.info("Capture écartée (la page ne semble pas être celle de l'actu citée) : %s", url[:100])
+            _safe_unlink(path)
+            continue
+        # Claude REGARDE la capture ; sans relecteur, elle n'est jamais utilisée à l'aveugle.
+        clean, issue = False, "aucun contrôle visuel possible"
+        if callable(check):
+            try:
+                clean, issue = check(path, headline=titles.get(url.rstrip("/").lower(), ""),
+                                     post=first_text)
+            except Exception as e:  # noqa: BLE001
+                clean, issue = False, f"vérification impossible ({type(e).__name__})"
+        if clean:
+            log.info("Capture prête : %s (%s)", Path(path).name, url[:100])
+            return str(path), "shot"
+        log.info("Capture écartée (%s) : %s", issue or "pas assez propre", url[:100])
+        _safe_unlink(path)
+    return None, None
+
+
+def self_test() -> tuple[bool, str]:
+    """Le serveur sait-il faire une capture ? Une page d'essai locale (aucun réseau)
+    est chargée comme sur un téléphone et photographiée (commande `--check`)."""
+    import tempfile
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False, "Playwright n'est pas installé"
+    html = ("<!doctype html><meta name='viewport' content='width=device-width'><article>"
+            "<h1>Screenshot check</h1><p>" + "A line of text. " * 40 + "</p></article>")
+    result: dict = {}
+
+    def work() -> None:
+        try:
+            with tempfile.TemporaryDirectory(prefix="xbot-shot-") as tmp, sync_playwright() as pw:
+                launch_opts, context_opts = _browser_launch_options()
+                browser = pw.chromium.launch(**launch_opts)
+                try:
+                    page = browser.new_context(**context_opts).new_page()
+                    page.set_content(html, wait_until="load", timeout=20000)
+                    out = Path(tmp) / "check.jpg"
+                    page.screenshot(path=str(out), type="jpeg", quality=JPEG_QUALITY,
+                                    clip={"x": 0, "y": 0, "width": SHOT_WIDTH, "height": SHOT_MIN_HEIGHT})
+                    result["ok"] = out.is_file() and out.stat().st_size > 2000
+                finally:
+                    browser.close()
+        except Exception as e:  # noqa: BLE001
+            result["why"] = str(e).splitlines()[0][:160] if str(e) else type(e).__name__
+
+    worker = threading.Thread(target=work, daemon=True, name="shot-check")
+    worker.start()
+    worker.join(60)
+    if worker.is_alive():
+        return False, "le navigateur ne répond pas (plus de 60 s)"
+    if result.get("ok"):
+        return True, ""
+    return False, result.get("why") or "le navigateur n'a pas pu faire la capture d'essai"
+
+
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
 def prepare(settings, draft, writer, tag: str = "post") -> tuple[str | None, str | None]:
-    """(chemin de l'image, "card" | "phone" | "ai") ou (None, None). Ne lève jamais."""
+    """(chemin de l'image, "shot" | "ai") ou (None, None). Ne lève jamais."""
     try:
         return _prepare(settings, draft, writer, _safe_tag(tag))
     except Exception as e:  # noqa: BLE001
@@ -672,15 +1066,13 @@ def _prepare(settings, draft, writer, tag: str) -> tuple[str | None, str | None]
     if getattr(draft, "poll", None):
         log.info("Visuel ignoré : X n'accepte pas d'image sur un sondage")
         return None, None
-    if getattr(draft, "card", None):
-        path, kind = _card_visual(settings, draft, writer, tag)
-        if path:
-            return path, kind
     visual = getattr(draft, "visual", None)
     if visual is None:
         return None, None
     kind = str(getattr(visual, "kind", "") or "").strip().lower()
     target = str(getattr(visual, "target", "") or "").strip()
+    if kind == "shot":
+        return _shot_visual(settings, draft, writer, tag)
     if kind == "ai" and target:
         if not (getattr(settings, "image_ai_enabled", False) and getattr(settings, "openai_api_key", "")):
             log.info("Photo IA ignorée : IMAGE_AI_ENABLED=false ou OPENAI_API_KEY absente")
