@@ -249,6 +249,18 @@ def test_daily_report_shows_thread_on_thread_day(an, clock):
     txt = an.daily_report()
     assert "Récap du mardi 20/10" in txt
     assert "15:00 thread" in txt
+    # Comme le planificateur : pas d'autre post (hors gm) à moins de 3 h du thread.
+    assert "• 13:30" not in txt and "• 08:00" in txt and "• 18:00 actu" in txt
+
+
+def test_daily_report_shows_skipped_and_pending_slots(an, settings, state, clock):
+    now = clock(8, 30)
+    today = now.strftime("%Y-%m-%d")
+    tip, news = [s for s in settings.post_slots if s.kind in ("tip", "news")]
+    state.mark_slot(today, tip.key, "skipped")
+    state.mark_slot(today, news.key, "pending")
+    txt = an.daily_report()
+    assert "⏭️ sauté (rien d'assez solide)" in txt and "✍️ rédaction en cours" in txt
 
 
 def test_daily_report_statuses(an, settings, state, clock):

@@ -1194,3 +1194,83 @@ def test_auto_mode_drafts_close_to_publication(settings, state, budget, parts, c
     assert bot.plan_slots() == 0
     clock(12, 50)
     assert bot.plan_slots() == 1
+
+
+# ---------------------------------------------------------------------------
+# Claude qui tombe PENDANT la rédaction ; 🔄 d'un post à chaud ; /plan en mode auto
+# ---------------------------------------------------------------------------
+class _FlakyLLM:
+    """Claude répond, puis tombe pendant la rédaction (crédit épuisé), puis revient."""
+
+    def __init__(self) -> None:
+        self.down = False
+
+    def paused(self) -> bool:
+        return self.down
+
+    @property
+    def account_problem(self):
+        return "plus de crédit" if self.down else None
+
+
+def test_claude_down_during_drafting_keeps_the_slot_for_later(settings, state, budget, parts, clock):
+    llm = _FlakyLLM()
+    real = parts["writer"].draft_post
+
+    def drafting_kills_claude(kind, news, notes, perf):
+        llm.down = True                                  # le crédit s'épuise pendant l'appel
+        return None
+
+    parts["writer"].draft_post = drafting_kills_claude
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = llm
+    clock(16, 30)                                        # actu de 18:00 à rédiger
+    bot.plan_slots()
+    assert parts["approvals"].created == [] and parts["approvals"].notes == []   # pas de « rien d'assez fort »
+    assert not (state.data.get("slots_done") or {}).get(utils.today_str())        # pas « sauté »
+    parts["writer"].draft_post = real                    # Claude revient
+    llm.down = False
+    clock(16, 50)
+    assert bot.plan_slots() == 1
+    assert len(parts["approvals"].created) == 1
+
+
+def test_breaking_desk_waits_while_claude_is_down(settings, state, budget, parts, clock):
+    bot = make_bot(settings, state, budget, parts)
+    llm = _FlakyLLM()
+    llm.down = True
+    bot.llm = llm
+    clock(16, 0)
+    assert bot.maybe_reactive() == 0
+    assert parts["writer"].names() == []
+    assert state.count("reactive_checks") == 0 and not state.data.get("breaking_seen")
+
+
+def test_regenerate_breaking_news_never_offers_insider_items(settings, state, budget, parts, clock):
+    insider = NewsItem(id="dev1", title="OpenAI opens its new API to developers and enterprises", summary="",
+                       url="https://openai.com/dev", source="OpenAI",
+                       published=utils.now_local() - timedelta(hours=1), official=True)
+    everyday = NewsItem(id="pub1", title="ChatGPT voice mode is now free for everyone", summary="",
+                        url="https://openai.com/voice", source="OpenAI",
+                        published=utils.now_local() - timedelta(hours=1), official=True)
+    parts["news"].items = [insider, everyday]
+    seen = {}
+    real = parts["writer"].draft_reactive
+
+    def spy(news, notes, perf):
+        seen["ids"] = [it.id for it in news]
+        return real(news, notes, perf)
+
+    parts["writer"].draft_reactive = spy
+    bot = make_bot(settings, state, budget, parts)
+    clock(16, 0)
+    bot.regenerate({"id": "r1", "kind": "reactive"})
+    assert seen["ids"] == ["pub1"]
+
+
+def test_plan_tells_the_truth_in_auto_mode(settings, state, budget, parts, clock):
+    clock(10, 0)
+    settings.approval_mode = "auto"
+    assert "Mode automatique : chaque post part à son heure" in make_bot(settings, state, budget, parts).plan_text()
+    settings.approval_mode = "telegram"
+    assert "sans ta réponse, rien n'est publié" in make_bot(settings, state, budget, parts).plan_text()

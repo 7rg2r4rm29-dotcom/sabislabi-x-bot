@@ -138,6 +138,12 @@ class StateStore:
         self.data["slots_done"].setdefault(date, {})[slot_key] = item_id
         self.flush()
 
+    def unmark_slot(self, date: str, slot_key: str) -> None:
+        """Le créneau redevient « à rédiger » (Claude est tombé pendant sa rédaction)."""
+        day = self.data["slots_done"].get(date) or {}
+        if day.pop(slot_key, None) is not None:
+            self.flush()
+
     # ---- Posts publiés ------------------------------------------------
     def add_published(self, tweet_id: str, kind: str, text: str, item_id: str | None = None,
                       slot_key: str | None = None) -> None:

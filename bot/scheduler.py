@@ -202,6 +202,8 @@ class Bot:
         if kind not in POST_KINDS + ("thread", "reactive"):
             return None
         news = self._news(kind, use_x=False)
+        if kind == "reactive":       # comme maybe_reactive : jamais les annonces pour initiés
+            news = [it for it in news if self._appeal(it) >= 1.0]
         # Le Writer ne doit pas refuser la nouvelle version parce qu'elle ressemble…
         # à la version qu'elle remplace.
         self.writer.regen_item_id = item.get("id")
@@ -397,6 +399,14 @@ class Bot:
         out.sort(key=lambda p: p[0])
         return out
 
+    def _claude_down(self) -> bool:
+        """Claude ne répond pas en ce moment (coupe-circuit ouvert, crédit ou clé refusés)."""
+        try:
+            paused = getattr(self.llm, "paused", None)
+            return bool((callable(paused) and paused()) or getattr(self.llm, "account_problem", None))
+        except Exception:  # noqa: BLE001
+            return False
+
     def plan_slots(self) -> int:
         """Rédige le prochain créneau dont l'heure de rédaction est venue.
         Au plus UNE rédaction par tour. Retourne 1 si une rédaction a eu lieu."""
@@ -439,6 +449,13 @@ class Bot:
                     break
                 draft = None
                 log.warning("Créneau %s : pas de brouillon (essai %d/2)", slot.key, attempt)
+            if draft is None and self._claude_down():
+                # Claude est tombé PENDANT la rédaction (crédit épuisé, panne) : rien à
+                # voir avec l'actu. Le créneau n'est pas sauté : il sera rédigé dès que
+                # Claude répond, tant que sa fenêtre est ouverte.
+                self.state.unmark_slot(date, slot.key)
+                log.warning("Créneau %s : Claude indisponible pendant la rédaction, on réessaiera", slot.key)
+                return None
             if draft is None:
                 if kind == "thread":
                     self.state.mark_slot(date, slot.key, SLOT_SKIPPED)
@@ -647,6 +664,8 @@ class Bot:
                 return 0
             if self._recent_reactive(now, s.reactive_min_gap_min):
                 return 0
+        if self._claude_down():
+            return 0                 # ni vérification comptée, ni actu marquée « déjà vue »
         self.state.set_last_run("reactive")
         news = self._news("reactive")
         if not news:
@@ -864,8 +883,11 @@ class Bot:
         elif reactive:
             line += f", {len(reactive)} en cours"
         lines.append(line)
-        lines.append(f"Brouillons proposés à l'avance (gm la veille au soir) ; sans ta réponse, rien "
-                     f"n'est publié ({s.approval_grace_minutes} min de délai après l'heure prévue).")
+        if s.approval_mode == "auto":
+            lines.append("Mode automatique : chaque post part à son heure, sans validation.")
+        else:
+            lines.append(f"Brouillons proposés à l'avance (gm la veille au soir) ; sans ta réponse, rien "
+                         f"n'est publié ({s.approval_grace_minutes} min de délai après l'heure prévue).")
         return "\n".join(lines)
 
     def budget_text(self) -> str:

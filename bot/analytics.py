@@ -477,15 +477,27 @@ class Analytics:
                          f"📡 radar : {radar_y} suggestion(s)")
 
         # --- Aujourd'hui ---------------------------------------------------
-        slots = list(self.settings.post_slots or []) + [
-            s for s in (self.settings.thread_slots or []) if s.weekday == now.weekday()]
+        from .scheduler import SLOT_FAILED, SLOT_PENDING, SLOT_SKIPPED, THREAD_CLEAR_MIN
+
+        threads = [s for s in (self.settings.thread_slots or []) if s.weekday == now.weekday()]
+
+        def _minutes(t) -> int:
+            return t.hour * 60 + t.minute
+
+        # Comme le planificateur : un jour de thread, pas d'autre post (hors gm) près de lui.
+        slots = [s for s in (self.settings.post_slots or [])
+                 if s.kind == "gm" or all(abs(_minutes(s.at) - _minutes(t.at)) >= THREAD_CLEAR_MIN for t in threads)]
+        slots += threads
         slots.sort(key=lambda s: s.at)
+        markers = {SLOT_PENDING: "✍️ rédaction en cours", SLOT_SKIPPED: "⏭️ sauté (rien d'assez solide)",
+                   SLOT_FAILED: "⚠️ échec de la rédaction"}
         lines.append("")
         lines.append("<b>Aujourd'hui</b> :" if slots else "<b>Aujourd'hui</b> : aucun créneau prévu")
         for slot in slots:
             item_id = self.state.slot_item_id(today_s, slot.key)
-            it = self.state.item(item_id) if item_id else None
-            lines.append(f"• {slot.at:%H:%M} {esc(KIND_FR.get(slot.kind, slot.kind))} — {self._status_fr(it)}")
+            it = self.state.item(item_id) if item_id and item_id not in markers else None
+            status = markers.get(item_id) if item_id in markers else self._status_fr(it)
+            lines.append(f"• {slot.at:%H:%M} {esc(KIND_FR.get(slot.kind, slot.kind))} — {status}")
         awaiting = self.state.items(statuses=("awaiting",))
         radar_open = self.state.items(kinds=("radar",), statuses=("suggested",))
         if awaiting:
