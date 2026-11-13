@@ -101,6 +101,7 @@ class StubApprovals:
         self.state = state
         self.created: list[dict] = []
         self.notes: list[str] = []
+        self.silent: list[bool] = []
         self.polls = 0
         self.expires = 0
 
@@ -123,6 +124,7 @@ class StubApprovals:
 
     def notify(self, text, silent=False):
         self.notes.append(text)
+        self.silent.append(silent)
         return 1
 
     def refresh_card(self, item):
@@ -174,8 +176,16 @@ class StubAnalytics:
         return "📊 Bilan"
 
 
-CARD = {"type": "prompt", "title": "Dinner from a *fridge photo*",
-        "lines": ["Here is a photo of my fridge. What can I cook tonight?"], "note": ""}
+SHOT_URL = "https://www.theverge.com/2026/10/15/robot-folds-laundry"
+
+
+def _shot_draft(kind: str = "tip", text: str = "A robot just folded a whole basket of laundry, alone.",
+                **kw) -> Draft:
+    """Brouillon tel que le Writer le rend : une actu citée, et sa page à capturer."""
+    src = NewsItem(id="s1", title="A home robot folds laundry on its own", summary="", url=SHOT_URL,
+                   source="The Verge", published=utils.now_local() - timedelta(hours=2))
+    kw.setdefault("visual", Visual("shot", SHOT_URL))
+    return Draft(kind=kind, texts=[text], sources=[src], reason="le robot", hook="IT CAN DO WHAT?", **kw)
 
 
 class VisualRecorder:
@@ -350,41 +360,44 @@ class TestPlanSlots:
         assert any("rédaction impossible" in n for n in parts["approvals"].notes)
         assert bot.plan_slots() == 0
 
-    def test_card_is_drawn_and_attached(self, settings, state, budget, parts, clock):
-        """Chaque post part avec sa carte : le brouillon la porte, le planificateur la fait dessiner."""
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm with a card"], card=dict(CARD))]
-        parts["visual"].result = ("/tmp/card.png", "card")
+    def test_screenshot_is_taken_and_attached(self, settings, state, budget, parts, clock):
+        """Le brouillon désigne la page de l'actu citée ; le planificateur en fait prendre la capture."""
+        parts["writer"].queues["post"] = [_shot_draft()]
+        parts["visual"].result = ("/tmp/shot.jpg", "shot")
         bot = make_bot(settings, state, budget, parts)
-        clock(21, 0)
-        bot.plan_slots()
+        clock(11, 0)                                       # tip de 13:30 : rédigé dès 11:00
+        assert bot.plan_slots() == 1
         item = parts["approvals"].created[0]
-        assert item["image_path"] == "/tmp/card.png"
-        assert item["image_kind"] == "card"
-        assert parts["visual"].calls == [("gm", "gm_2026-10-16")]
+        assert item["kind"] == "tip"
+        assert item["image_path"] == "/tmp/shot.jpg" and item["image_kind"] == "shot"
+        assert parts["visual"].calls == [("tip", "tip_2026-10-15")]
 
-    def test_phone_card_is_prepared_too(self, settings, state, budget, parts, clock):
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm with the page"], card=dict(CARD, type="phone"),
-                                                visual=Visual("phone", "https://openai.com/x"))]
-        parts["visual"].result = ("/tmp/phone.png", "phone")
+    def test_ai_photo_is_attached_too(self, settings, state, budget, parts, clock):
+        parts["writer"].queues["post"] = [_shot_draft(visual=Visual("ai", "a robot folding a shirt"))]
+        parts["visual"].result = ("/tmp/ai.png", "ai")
         bot = make_bot(settings, state, budget, parts)
-        clock(21, 0)
+        clock(11, 0)
         bot.plan_slots()
-        assert parts["approvals"].created[0]["image_kind"] == "phone"
+        assert parts["approvals"].created[0]["image_kind"] == "ai"
 
-    def test_no_card_no_image(self, settings, state, budget, parts, clock):
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm, text only"])]
-        parts["visual"].result = ("/tmp/card.png", "card")
+    def test_no_visual_no_image(self, settings, state, budget, parts, clock):
+        """Pas de page désignée (actu sur X, captures coupées…) : le post part en texte seul,
+        sans même lancer le navigateur."""
+        parts["writer"].queues["post"] = [_shot_draft(visual=None)]
+        parts["visual"].result = ("/tmp/shot.jpg", "shot")
         bot = make_bot(settings, state, budget, parts)
-        clock(21, 0)
+        clock(11, 0)
         bot.plan_slots()
-        assert parts["visual"].calls == [] and parts["approvals"].created[0]["image_path"] is None
+        assert parts["visual"].calls == []
+        item = parts["approvals"].created[0]
+        assert item["image_path"] is None and item["image_kind"] is None
 
     def test_no_visual_for_poll(self, settings, state, budget, parts, clock):
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm poll"], poll={"options": ["a", "b"]},
-                                                card=dict(CARD))]
-        parts["visual"].result = ("/tmp/img.png", "card")
+        parts["writer"].queues["post"] = [_shot_draft(text="Would you let a robot fold your clothes?",
+                                                      poll={"options": ["Yes", "No"]})]
+        parts["visual"].result = ("/tmp/shot.jpg", "shot")
         bot = make_bot(settings, state, budget, parts)
-        clock(21, 0)
+        clock(11, 0)
         bot.plan_slots()
         assert parts["visual"].calls == []
         assert parts["approvals"].created[0]["image_path"] is None
@@ -392,11 +405,64 @@ class TestPlanSlots:
     def test_visual_crash_never_blocks_the_post(self, settings, state, budget, parts, clock):
         def crash(*a):
             raise RuntimeError("chromium")
-        parts["writer"].queues["post"] = [Draft(kind="gm", texts=["gm"], card=dict(CARD))]
+        parts["writer"].queues["post"] = [_shot_draft()]
         bot = make_bot(settings, state, budget, parts, visual=crash)
-        clock(21, 0)
-        bot.plan_slots()
-        assert parts["approvals"].created[0]["image_path"] is None
+        clock(11, 0)
+        assert bot.plan_slots() == 1
+        item = parts["approvals"].created[0]
+        assert item["image_path"] is None and item["image_kind"] is None
+        assert state.slot_item_id("2026-10-15", "tip-1330") == item["id"]
+
+    @pytest.mark.parametrize("bad", [None, "/tmp/shot.jpg", ("/tmp/shot.jpg",), ("/tmp/a.jpg", "shot", "x"),
+                                     ["/tmp/shot.jpg", "shot"], (None, "shot"), ("", "shot")])
+    def test_bad_visual_return_never_blocks_the_post(self, settings, state, budget, parts, clock, bad):
+        parts["writer"].queues["post"] = [_shot_draft()]
+        bot = make_bot(settings, state, budget, parts, visual=VisualRecorder(bad))
+        clock(11, 0)
+        assert bot.plan_slots() == 1
+        item = parts["approvals"].created[0]
+        assert item["texts"] == ["A robot just folded a whole basket of laundry, alone."]
+        assert item["image_path"] is None and item["image_kind"] is None
+
+    def test_visual_helper(self, settings, state, budget, parts, clock):
+        bot = make_bot(settings, state, budget, parts)
+        parts["visual"].result = ("/tmp/shot.jpg", "shot")
+        assert bot._visual(_shot_draft(), "t") == ("/tmp/shot.jpg", "shot")
+        assert bot._visual(_shot_draft(visual=None), "t") == (None, None)
+        assert bot._visual(_shot_draft(poll={"options": ["a", "b"]}), "t") == (None, None)
+        assert bot._visual(object(), "t") == (None, None)            # objet sans champ visual
+        assert parts["visual"].calls == [("tip", "t")]
+
+    @pytest.mark.parametrize("kind,mode", [("tip", "telegram"), ("news", "telegram"), ("tip", "auto"),
+                                           ("news", "auto"), ("gm", "auto")])
+    def test_slot_skipped_when_nothing_is_drafted(self, settings, state, budget, parts, clock, kind, mode):
+        """Pas de texte bouche-trou : sans histoire assez forte, le créneau est sauté."""
+        settings.approval_mode = mode
+        settings.post_slots = parse_post_slots(f"{kind}@13:30")
+        settings.thread_slots = []
+        parts["writer"].default_post = False
+        bot = make_bot(settings, state, budget, parts)
+        clock(13, 0)
+        assert bot.plan_slots() == 1
+        assert parts["writer"].names() == ["draft_post", "draft_post"]    # deux essais, jamais de secours
+        assert parts["approvals"].created == []
+        assert state.slot_item_id("2026-10-15", f"{kind}-1330") == SLOT_SKIPPED
+        assert len(parts["approvals"].notes) == 1 and "créneau sauté" in parts["approvals"].notes[0]
+        assert parts["approvals"].silent == [True]
+        clock(13, 10)
+        assert bot.plan_slots() == 0                                      # pas de nouvel essai
+
+    def test_only_gm_keeps_its_fallback_and_only_with_telegram(self, settings, state, budget, parts, clock):
+        settings.post_slots = parse_post_slots("gm@13:30")
+        settings.thread_slots = []
+        parts["writer"].default_post = False
+        bot = make_bot(settings, state, budget, parts)
+        clock(13, 0)
+        assert bot.plan_slots() == 1
+        assert parts["writer"].names() == ["draft_post", "draft_post", "fallback_post"]
+        item = parts["approvals"].created[0]
+        assert item["meta"]["from_fallback"] is True and item["image_path"] is None
+        assert parts["visual"].calls == []                                 # le texte de secours n'a pas d'image
 
     def test_slot_late_evening_survives_midnight(self, settings, state, budget, parts, clock):
         settings.post_slots = parse_post_slots("news@23:30")
@@ -502,6 +568,181 @@ class TestReactive:
         clock(23, 40)
         assert bot.maybe_reactive(force=True) == 1
         assert bot.maybe_reactive(force=True) == 0   # plafond 1/jour
+
+
+# ---------------------------------------------------------------------------
+# Actus lues pour chaque type de post (fenêtre + sélection)
+# ---------------------------------------------------------------------------
+class WindowNews(StubNews):
+    """Note la fenêtre demandée (None = pas précisée : l'actu fraîche par défaut du NewsHub)
+    et la sélection demandée à top_for."""
+
+    def __init__(self, items=None, fail_collect=False, fail_pick=False) -> None:
+        super().__init__(items)
+        self.fail_collect, self.fail_pick = fail_collect, fail_pick
+        self.picks: list[tuple[str, int]] = []
+
+    def collect(self, max_age_hours=None, use_x: bool = True):
+        self.calls.append({"max_age_hours": max_age_hours, "use_x": use_x})
+        if self.fail_collect:
+            raise RuntimeError("réseau")
+        return list(self.items)
+
+    def top_for(self, kind, items, n):
+        self.picks.append((kind, n))
+        if self.fail_pick:
+            raise RuntimeError("tri")
+        return list(items)[:1]
+
+
+class TestNewsWindows:
+    def test_constants(self):
+        from bot import writer
+        assert sched.FUTURE_NEWS_HOURS == 96
+        assert sched.NEWS_PER_POST == sched.NEWS_PER_THREAD == writer.MAX_ITEMS_PICK == 120
+        assert sched.WEEKLY_RECAP_WEEKDAYS == writer.WEEKLY_RECAP_WEEKDAYS == (4, 5, 6)
+
+    @pytest.mark.parametrize("kind,day,hours,picker", [
+        ("tip", 15, 96, "tip"),            # « le futur arrive » : 4 jours d'actu, fraîcheur lente
+        ("tip", 16, 96, "tip"),            # … même en fin de semaine
+        ("news", 15, None, "news"),        # l'histoire du jour : l'actu fraîche
+        ("reactive", 15, None, "reactive"),
+        ("gm", 15, None, "gm"),
+        ("thread", 15, 96, "thread"),      # jeudi
+        ("thread", 20, 96, "thread"),      # mardi
+        ("thread", 16, 168, "weekly"),     # vendredi : la semaine en revue, classée par intérêt seul
+        ("thread", 17, 168, "weekly"),     # samedi
+        ("thread", 18, 168, "weekly"),     # dimanche
+    ])
+    def test_window_and_selection_per_kind(self, settings, state, budget, parts, clock, kind, day, hours,
+                                           picker):
+        clock(10, 0, day=day)
+        news = WindowNews()
+        bot = make_bot(settings, state, budget, parts, news=news)
+        got = bot._news(kind)
+        assert news.calls == [{"max_age_hours": hours, "use_x": True}]
+        assert news.picks == [(picker, 120)]
+        assert got == news.items[:1]
+
+    def test_slot_drafting_uses_the_window_of_its_kind(self, settings, state, budget, parts, clock):
+        news = WindowNews()
+        bot = make_bot(settings, state, budget, parts, news=news)
+        clock(11, 0)                                        # tip de 13:30
+        bot.plan_slots()
+        assert news.calls == [{"max_age_hours": 96, "use_x": True}] and news.picks == [("tip", 120)]
+        assert parts["writer"].calls[0][:3] == ("draft_post", "tip", 1)
+
+    def test_regenerate_reads_the_same_window_without_paid_x_reads(self, settings, state, budget, parts,
+                                                                    clock):
+        news = WindowNews()
+        bot = make_bot(settings, state, budget, parts, news=news)
+        clock(10, 0, day=18)                                # dimanche
+        bot.regenerate({"id": "t1", "kind": "thread"})
+        assert news.calls == [{"max_age_hours": 168, "use_x": False}] and news.picks == [("weekly", 120)]
+
+    def test_selection_failure_keeps_the_whole_list(self, settings, state, budget, parts, clock):
+        news = WindowNews(fail_pick=True)
+        bot = make_bot(settings, state, budget, parts, news=news)
+        assert bot._news("news") == news.items
+
+    def test_collection_failure_gives_no_news(self, settings, state, budget, parts, clock):
+        news = WindowNews(fail_collect=True)
+        bot = make_bot(settings, state, budget, parts, news=news)
+        assert bot._news("tip") == [] and news.picks == []
+
+
+# ---------------------------------------------------------------------------
+# « Ça vient de tomber » : le déclencheur (avant même de demander à Claude)
+# ---------------------------------------------------------------------------
+def _fresh(iid: str, title: str, *, hours: float = 1.0, official: bool = False, engagement: int = 0,
+           summary: str = "", published=True) -> NewsItem:
+    return NewsItem(id=iid, title=title, summary=summary, url=f"https://news.example.com/{iid or 'x'}",
+                    source="Example", official=official, engagement=engagement,
+                    published=(utils.now_local() - timedelta(hours=hours)) if published else None)
+
+
+class TestBreakingTrigger:
+    def test_appeal_is_the_audience_factor(self, clock):
+        assert Bot._appeal(_fresh("w", "A humanoid robot folds laundry")) == pytest.approx(1.6)
+        assert Bot._appeal(_fresh("i", "OpenAI launches a new API for developers")) == pytest.approx(0.45)
+        assert Bot._appeal(_fresh("n", "Something happened today")) == 1.0
+        assert Bot._appeal(_fresh("d", "Big headphones deal: 40% off")) < 1.0     # bon plan
+
+    def test_appeal_is_neutral_when_it_cannot_be_computed(self, monkeypatch, clock):
+        from bot import sources
+
+        def boom(item):
+            raise ValueError("bad item")
+        monkeypatch.setattr(sources, "audience_factor", boom)
+        assert Bot._appeal(_fresh("w", "A humanoid robot folds laundry")) == 1.0
+
+    def test_candidates(self, settings, state, budget, parts, clock):
+        now = clock(16, 0)
+        threshold = sched.BREAKING_MIN_ENGAGEMENT
+        items = [
+            _fresh("official", "Something happened today", official=True),            # annonce officielle
+            _fresh("engaged", "Something else happened", engagement=threshold),       # qui décolle
+            _fresh("wow", "A humanoid robot folds laundry"),                          # qui intrigue tout le monde
+            _fresh("plain", "Something happened again", engagement=threshold - 1),    # rien de tout ça
+            _fresh("insider", "OpenAI launches a new API for developers", official=True,
+                   engagement=10 * threshold),                                        # pour initiés : jamais
+            _fresh("insider2", "Something happened", summary="Big news for developers and enterprises.",
+                   official=True),                                                    # initiés (résumé)
+            _fresh("old", "A humanoid robot runs a marathon", hours=13, official=True),   # > 12 h
+            _fresh("undated", "A robot dog opens doors", published=False, official=True),
+            _fresh("", "A robot without an id", official=True),
+            _fresh("seen", "A robot dog dances", official=True),                     # déjà examinée
+        ]
+        state.data["breaking_seen"] = ["seen"]
+        bot = make_bot(settings, state, budget, parts)
+        assert bot._new_breaking_candidates(items, now) == ["official", "engaged", "wow"]
+
+    def test_editor_only_sees_stories_that_speak_to_everyone(self, settings, state, budget, parts, clock):
+        """Les annonces pour développeurs, entreprises ou investisseurs ne sont même pas
+        montrées à la rédaction en chef du réactif."""
+        parts["writer"].default_reactive = False
+        parts["news"].items = [_fresh("wow", "A humanoid robot folds laundry"),
+                               _fresh("insider", "OpenAI launches a new API for developers", official=True),
+                               _fresh("plain", "Something happened today")]
+        seen: list[list[str]] = []
+        real = parts["writer"].draft_reactive
+        parts["writer"].draft_reactive = lambda news, notes, perf: (
+            seen.append([n.id for n in news]) or real(news, notes, perf))
+        bot = make_bot(settings, state, budget, parts)
+        clock(16, 0)
+        assert bot.maybe_reactive() == 0
+        assert seen == [["wow", "plain"]]
+        assert state.data["breaking_seen"] == ["wow"] and state.count("reactive_checks") == 1
+
+    def test_nothing_new_and_hot_means_no_call_to_claude(self, settings, state, budget, parts, clock):
+        parts["writer"].default_reactive = True
+        parts["news"].items = [_fresh("plain", "Something happened today"),
+                               _fresh("insider", "New API for developers", official=True)]
+        bot = make_bot(settings, state, budget, parts)
+        clock(16, 0)
+        assert bot.maybe_reactive() == 0
+        assert parts["writer"].calls == [] and state.count("reactive_checks") == 0
+
+    def test_checks_with_claude_are_capped_per_day(self, settings, state, budget, parts, clock):
+        assert sched.REACTIVE_MAX_CHECKS_PER_DAY == 6
+        settings.post_slots, settings.thread_slots = [], []
+        settings.reactive_check_every_min = 0
+        parts["writer"].default_reactive = False                 # Claude dit « non » à chaque fois
+        bot = make_bot(settings, state, budget, parts)
+        clock(16, 0)
+        for i in range(sched.REACTIVE_MAX_CHECKS_PER_DAY + 3):
+            parts["news"].items = [_fresh(f"n{i}", "Something happened today", official=True)]
+            assert bot.maybe_reactive() == 0
+        assert parts["writer"].names().count("draft_reactive") == sched.REACTIVE_MAX_CHECKS_PER_DAY
+        assert state.count("reactive_checks") == sched.REACTIVE_MAX_CHECKS_PER_DAY
+        # --once reactive passe outre ce plafond-là (jamais celui des posts publiés)
+        bot.maybe_reactive(force=True)
+        assert parts["writer"].names().count("draft_reactive") == sched.REACTIVE_MAX_CHECKS_PER_DAY + 1
+        # Le lendemain, le compteur repart de zéro.
+        clock(16, 0, day=16)
+        parts["news"].items = [_fresh("tomorrow", "Something happened today", official=True)]
+        bot.maybe_reactive()
+        assert parts["writer"].names().count("draft_reactive") == sched.REACTIVE_MAX_CHECKS_PER_DAY + 2
 
 
 # ---------------------------------------------------------------------------
@@ -669,22 +910,34 @@ class TestHooks:
         assert all(c["use_x"] is False for c in parts["news"].calls)
         assert bot.regenerate({"kind": "radar"}) is None
 
-    def test_regenerate_draws_the_new_card(self, settings, state, budget, parts, clock):
-        """🔄 : le texte change, donc la carte aussi (Approvals remplace l'image de l'item)."""
-        parts["writer"].queues["post"] = [Draft(kind="tip", texts=["new version"], card=dict(CARD)),
-                                          Draft(kind="tip", texts=["a poll now"], card=dict(CARD),
-                                                poll={"options": ["a", "b"]}),
+    def test_regenerate_takes_a_new_screenshot(self, settings, state, budget, parts, clock):
+        """🔄 : le texte change, donc la capture aussi — celle de la page de l'actu du NOUVEAU
+        texte (Approvals remplace l'image de l'item)."""
+        parts["writer"].queues["post"] = [_shot_draft(text="New version."),
+                                          _shot_draft(text="A poll now?", poll={"options": ["a", "b"]}),
+                                          _shot_draft(text="No page to show.", visual=None),
                                           None]
-        parts["visual"].result = ("/tmp/new_card.png", "card")
+        parts["visual"].result = ("/tmp/new_shot.jpg", "shot")
         bot = make_bot(settings, state, budget, parts)
         clock(10, 0)
         d = bot.regenerate({"id": "abc", "kind": "tip", "regen_count": 2})
-        assert (d.image_path, d.image_kind) == ("/tmp/new_card.png", "card")
+        assert (d.image_path, d.image_kind) == ("/tmp/new_shot.jpg", "shot")
         assert parts["visual"].calls == [("tip", "tip_2026-10-15_v2")]
         poll = bot.regenerate({"id": "abc", "kind": "tip"})
         assert (poll.image_path, poll.image_kind) == (None, None)        # un sondage n'a pas d'image
+        text_only = bot.regenerate({"id": "abc", "kind": "tip"})
+        assert (text_only.image_path, text_only.image_kind) == (None, None)   # l'ancienne capture ne reste pas
         assert bot.regenerate({"id": "abc", "kind": "tip"}) is None
         assert len(parts["visual"].calls) == 1
+
+    def test_regenerate_survives_a_visual_crash(self, settings, state, budget, parts, clock):
+        def crash(*a):
+            raise RuntimeError("chromium")
+        parts["writer"].queues["post"] = [_shot_draft(text="New version.")]
+        bot = make_bot(settings, state, budget, parts, visual=crash)
+        clock(10, 0)
+        d = bot.regenerate({"id": "abc", "kind": "tip"})
+        assert d.texts == ["New version."] and (d.image_path, d.image_kind) == (None, None)
 
     def test_regen_comment_and_radar_pass_meta(self, settings, state, budget, parts):
         bot = make_bot(settings, state, budget, parts)
@@ -890,7 +1143,7 @@ def test_auto_mode_never_publishes_canned_text(settings, state, budget, parts, c
     settings.approval_mode = "auto"
     parts["writer"].default_post = False          # Claude ne propose rien de publiable
     bot = make_bot(settings, state, budget, parts)
-    clock(12, 50)                                  # astuce de 13:30 : rédigée 45 min avant en mode auto
+    clock(12, 50)                                  # « le futur arrive » de 13:30 : rédigé 45 min avant en mode auto
     bot.plan_slots()
     assert parts["approvals"].created == []
     assert ("fallback_post", "tip") not in parts["writer"].calls

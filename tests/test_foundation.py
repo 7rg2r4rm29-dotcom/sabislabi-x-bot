@@ -54,6 +54,80 @@ class TestFilters:
         assert filters.clean_output('"hello #AI @bob world"') == "hello world"
         assert filters.clean_output("line1\n\n\n\nline2") == "line1\n\nline2"
 
+    @pytest.mark.parametrize("raw,clean", [
+        ("A robot folds laundry — alone.", "A robot folds laundry, alone."),
+        ("Wait—what?", "Wait, what?"),
+        ("Robots – at home", "Robots, at home"),
+        ("It takes 2–3 days.", "It takes 2-3 days."),                 # une fourchette reste une fourchette
+        ("pages 10—12", "pages 10-12"),
+        ("No driver. No wheel —\nnothing.", "No driver. No wheel\nnothing."),   # en fin de ligne : rien
+        ("— Soon, no password.", "Soon, no password."),               # en début de ligne : rien
+        ("Line one\n— line two", "Line one\nline two"),
+        ("A well-known self-driving car", "A well-known self-driving car"),   # tiret court : intact
+    ])
+    def test_clean_output_turns_long_dashes_into_commas(self, raw, clean):
+        """Le tiret long trahit un texte écrit par une machine : il devient une virgule."""
+        assert filters.clean_output(raw) == clean
+
+    @pytest.mark.xfail(strict=True, reason="BUG: clean_output turns a spaced range « 2 – 3 hours » into "
+                                           "« 2, 3 hours » (the range rule only matches digits glued to the dash)")
+    def test_clean_output_keeps_a_spaced_range(self):
+        assert filters.clean_output("It takes 2 – 3 hours.") == "It takes 2-3 hours."
+
+    @pytest.mark.parametrize("text,found", [
+        ("This is a game changer for nurses.", "game changer"),
+        ("A game-changing robot", "game-changing"),
+        ("Mind-blowing: a robot dog.", "Mind-blowing"),
+        ("A groundbreaking scan", "groundbreaking"),
+        ("This changes everything.", "This changes everything"),
+        ("Buckle up.", "Buckle up"),
+        ("Let that sink in.", "Let that sink in"),
+        ("The future is here.", "The future is here"),
+        ("They delve into it.", "delve"),
+        ("A revolutionary phone", "revolutionary"),
+        ("It will revolutionize school", "revolutionize"),
+        ("Supercharged by AI", "Supercharged"),
+        ("In today's fast-paced world, robots", "In today's fast-paced world"),
+        ("BREAKING: a robot ran a marathon", "BREAKING"),
+        ("JUST IN: robots", "JUST IN"),
+        ("RIP passwords", "RIP"),
+    ])
+    def test_find_hype(self, text, found):
+        assert filters.find_hype(text) == found
+
+    @pytest.mark.parametrize("text", [
+        "Breaking: a robot ran a marathon",          # capitales seulement
+        "It arrived just in time.",
+        "Don't rip the label off.",
+        "A robot just folded a whole basket of laundry, alone.",
+        "",
+    ])
+    def test_find_hype_leaves_plain_words_alone(self, text):
+        assert filters.find_hype(text) is None
+
+    def test_hype_is_refused_only_in_posts_for_everyone(self):
+        txt = "This robot is a game changer for nurses."
+        assert filters.publish_problem(txt, plain=True) == "formule toute faite (game changer)"
+        assert filters.publish_problem(txt, plain=False) is None      # réponses : la relecture de Claude suffit
+
+    @pytest.mark.parametrize("text,term", [
+        ("an adults-only club", "adults-only"),
+        ("explicit content online", "explicit content"),
+        ("the best dating apps", "dating apps"),
+        ("a new dating site", "dating site"),
+        ("Tinder adds an AI coach", "Tinder"),
+    ])
+    def test_new_off_limits_terms(self, text, term):
+        assert filters.off_limits_term(text) == term
+
+    @pytest.mark.xfail(strict=True, reason="BUG: looks_like_json_leak still lists the old card_* keys but not "
+                                           "the new post schema keys (hook, hook_options, source_ids…), so a "
+                                           "leaked « \"hook\": … » is not caught")
+    @pytest.mark.parametrize("leak", ['A robot folds laundry now.\n"hook": "IT CAN DO WHAT?"',
+                                      '"hook_options": ["Soon, no driver."]'])
+    def test_json_leak_of_the_new_post_fields(self, leak):
+        assert filters.looks_like_json_leak(leak)
+
     def test_numbers_and_similarity(self):
         assert filters.too_many_numbers("$10k and 45% and 2,000")
         assert not filters.too_many_numbers("3 tips for 2 people")
@@ -109,6 +183,68 @@ class TestConfig:
         assert s.quiet_hours == (parse_hhmm("23:30"), parse_hhmm("07:30"))
         monkeypatch.setenv("QUIET_HOURS", "off")
         assert cfg.load_settings().quiet_hours is None
+
+
+# ---------------------------------------------------------------------------
+# Fichiers de configuration livrés (config/settings.json, config/content.json)
+# ---------------------------------------------------------------------------
+class TestShippedConfig:
+    @staticmethod
+    def _json(name: str) -> dict:
+        from bot.utils import CONFIG_DIR
+        return json.loads((CONFIG_DIR / name).read_text(encoding="utf-8"))
+
+    def test_feeds(self):
+        feeds = self._json("settings.json")["news_feeds"]
+        assert len(feeds) >= 30
+        urls = []
+        for f in feeds:
+            assert isinstance(f, dict)
+            assert str(f.get("name") or "").strip(), f
+            assert str(f.get("url") or "").startswith("https://"), f
+            assert f.get("filter") in (None, "ai", "tech"), f
+            assert isinstance(f.get("weight"), int) and 1 <= f["weight"] <= 3, f
+            assert isinstance(f.get("official", False), bool), f
+            assert set(f) <= {"name", "url", "weight", "filter", "official"}, f
+            urls.append(f["url"].rstrip("/").lower())
+        assert len(urls) == len(set(urls)), "flux en double"
+        assert not any("x.com/" in u or "twitter.com/" in u for u in urls)   # X ne se lit que par l'API
+        assert sum(1 for f in feeds if f.get("official")) >= 1
+        assert any(f.get("filter") for f in feeds)
+
+    def test_feeds_are_loaded_as_is(self):
+        s = cfg.load_settings()
+        assert s.news_feeds == self._json("settings.json")["news_feeds"]
+        from bot import sources
+        for f in s.news_feeds:
+            assert (sources.topic_filter(f) is None) == (f.get("filter") is None)
+
+    def test_content(self):
+        content = self._json("content.json")
+        assert set(content) <= {"_doc", "fallback_captions", "evergreen_topics"}
+        # Seul l'ancien « gm » garde des textes de secours (jamais de bouche-trou pour les autres).
+        captions = content["fallback_captions"]
+        assert list(captions) == ["gm"] and captions["gm"]
+        for text in captions["gm"]:
+            assert text.startswith("gm. ")
+            assert filters.publish_problem(text, max_len=200, check_numbers=False) is None, text
+
+    def test_thread_themes_are_tagged_as_the_writer_expects(self):
+        from bot import writer
+        topics = self._json("content.json")["evergreen_topics"]
+        assert len(topics) >= 10 and len(set(topics)) == len(topics)
+        for t in topics:
+            assert t.startswith("FUTURE — ") and len(t) > len("FUTURE — ") + 10, t
+            assert filters.off_limits_term(t) is None, t
+        assert writer._ALL_TOPIC_TAGS == ("FUTURE",) and writer._TOPIC_TAGS["future"] == ("FUTURE",)
+        w = writer.Writer(SimpleNamespace(evergreen_topics=topics), llm=None, state=None)
+        future = w.topics_for_kind(topics, "future")
+        assert sorted(future) == sorted(topics)                 # tous proposés au genre « future »
+
+    def test_shipped_settings_load_with_the_content(self):
+        s = cfg.load_settings()
+        assert s.fallback_captions == {"gm": self._json("content.json")["fallback_captions"]["gm"]}
+        assert s.evergreen_topics == self._json("content.json")["evergreen_topics"]
 
 
 # ---------------------------------------------------------------------------

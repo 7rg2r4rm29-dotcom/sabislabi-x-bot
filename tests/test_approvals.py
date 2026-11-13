@@ -5,7 +5,8 @@ from datetime import time as dtime, timedelta
 
 import pytest
 
-from bot.approvals import MAX_REGEN, Approvals, check_human_text, split_thread
+from bot.approvals import IMAGE_KINDS_FR, KIND_LABELS, MAX_REGEN, THREAD_GENRES_FR, Approvals, check_human_text, \
+    split_thread
 from bot.models import Draft, NewsItem
 from bot.publisher import Publisher
 from bot.state import StateStore
@@ -71,7 +72,7 @@ def test_create_post_item_card(app, state, fake_tg, clock):
     assert state.item(item["id"])["tg_message_id"] == fake_tg.sent[-1]["id"]
 
     card = fake_tg.sent[-1]["text"]
-    assert "💡 <b>L'IA au quotidien</b>" in card
+    assert "🔮 <b>Le futur arrive</b>" in card
     assert "prévu à 14:00" in card
     assert "Ask Claude to explain its answer like you're 12" in card
     assert "Pourquoi : Une astuce concrète" in card
@@ -90,52 +91,105 @@ def test_create_post_item_card(app, state, fake_tg, clock):
 
 def test_card_labels_thread_poll_image_fallback(app, fake_tg, tmp_path, clock):
     clock(9, 0)
-    th = make_post(app, kind="thread", texts=["Hook tweet", "Second tweet", "Third tweet"], angle="tutorial")
+    th = make_post(app, kind="thread", texts=["Hook tweet", "Second tweet", "Third tweet"], angle="future")
     card = fake_tg.sent[-1]["text"]
-    assert "🧵 <b>Thread (pas à pas)</b>" in card
+    assert "🧵 <b>Thread (bientôt, plus besoin de…)</b>" in card
     assert "<b>1/</b> Hook tweet" in card and "<b>3/</b> Third tweet" in card
     assert "📲 Publier moi-même" not in labels(fake_tg.sent[-1]["buttons"])
     assert th["kind"] == "thread"
 
-    make_post(app, kind="news", texts=["Which one do you use?"],
-              poll={"options": ["Claude", "ChatGPT"], "duration_minutes": 1440})
+    make_post(app, kind="news", texts=["Which one would you trust?"],
+              poll={"options": ["A robot", "A human"], "duration_minutes": 1440})
     card = fake_tg.sent[-1]["text"]
-    assert "📰 <b>Actu IA en mots simples</b>" in card
-    assert "📊 Sondage (24 h) : Claude · ChatGPT" in card
+    assert "📰 <b>L'histoire du jour</b>" in card
+    assert "📊 Sondage (24 h) : A robot · A human" in card
     assert "📲 Publier moi-même" not in labels(fake_tg.sent[-1]["buttons"])
 
-    img = tmp_path / "card.png"
-    img.write_bytes(b"\x89PNG fake")
-    d = Draft(kind="gm", texts=["gm. one small thing to try today"], reason="gm",
-              card={"type": "prompt", "title": "Dinner from a *fridge photo*", "lines": ["x"], "note": ""})
-    item = app.create_post_item(d, slot_key="gm-0830", slot_date="2026-10-16", publish_at=at(8, 30, day=16),
-                                expires_at=at(10, 30, day=16), image_path=str(img), image_kind="card")
+    make_post(app, kind="reactive", texts=["A robot just ran a full marathon."])
+    assert "⚡ <b>Ça vient de tomber</b>" in fake_tg.sent[-1]["text"]
+
+    img = tmp_path / "shot.jpg"
+    img.write_bytes(b"\xff\xd8\xff fake jpeg")
+    d = Draft(kind="news", texts=["A robot just folded a whole basket of laundry, alone."], reason="le robot")
+    item = app.create_post_item(d, slot_key="news-1900", slot_date="2026-10-16", publish_at=at(19, day=16),
+                                expires_at=at(21, day=16), image_path=str(img), image_kind="shot")
     assert fake_tg.photos and fake_tg.photos[-1]["path"] == str(img)
-    assert "carte jointe à ce post" in fake_tg.photos[-1]["caption"]
+    assert fake_tg.photos[-1]["caption"] == "📰 L'histoire du jour — capture d'écran jointe à ce post"
     assert fake_tg.photos[-1]["id"] < item["tg_message_id"]  # la photo arrive avant la carte
     card = fake_tg.sent[-1]["text"]
-    assert "☀️ <b>GM</b>" in card and "prévu demain à 08:30" in card
-    assert "🖼️ Carte jointe (image au-dessus)" in card
-    assert "📲 Publier moi-même" not in labels(fake_tg.sent[-1]["buttons"])
-    assert item["image_path"] == str(img) and item["image_kind"] == "card"
-    assert item["meta"]["card"] == {"type": "prompt", "title": "Dinner from a fridge photo"}
+    assert "prévu demain à 19:00" in card
+    assert "📱 Capture d'écran jointe : la page de l'actu, comme sur un téléphone (au-dessus)" in card
+    assert item["image_path"] == str(img) and item["image_kind"] == "shot"
+    assert "card" not in item["meta"]                                  # plus de carte dessinée
 
-    phone = app.create_post_item(
-        Draft(kind="news", texts=["ChatGPT can now talk to you. For free."], reason="voix gratuite",
-              card={"type": "phone", "title": "Voice is *free*", "lines": [], "note": ""}),
-        slot_key="news-1900", slot_date="2026-10-16", publish_at=at(19, day=16), expires_at=at(21, day=16),
-        image_path=str(img), image_kind="phone")
-    assert "page de l'actu dans un smartphone jointe" in fake_tg.photos[-1]["caption"]
-    assert "📱 Image jointe : la page de l'actu, vue dans un smartphone" in fake_tg.sent[-1]["text"]
-    assert phone["meta"]["card"]["type"] == "phone"
+    ai = app.create_post_item(Draft(kind="tip", texts=["Soon, robots could cook dinner."], reason="ia"),
+                              slot_key="tip-1430", slot_date="2026-10-16", publish_at=at(14, 30, day=16),
+                              expires_at=at(16, 30, day=16), image_path=str(img), image_kind="ai")
+    assert fake_tg.photos[-1]["caption"] == "🔮 Le futur arrive — image IA jointe à ce post"
+    assert "🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)" in fake_tg.sent[-1]["text"]
+    assert ai["image_kind"] == "ai"
 
-    no_image = make_post(app, card={"type": "list", "title": "Lost card", "lines": ["a", "b"], "note": ""})
-    assert "card" not in no_image["meta"]                    # carte non dessinée : rien n'est noté
+    # Item d'avant novembre 2026 (ancienne « carte » dessinée) : une image, sans plus de détail.
+    old = make_post(app, kind="gm", texts=["gm. one small thing to try today"], publish=(8, 30))
+    app.state.update_item(old["id"], image_path=str(img), image_kind="card")
+    app.refresh_card(app.state.item(old["id"]))
+    assert "🖼️ Image jointe (au-dessus)" in fake_tg.edits[-1]["text"]
+    assert "Capture" not in fake_tg.edits[-1]["text"]
 
-    make_post(app, kind="reactive", texts=["fallback text here"], from_fallback=True)
+    # Sondage + image : X n'accepte pas les deux.
+    both = app.create_post_item(Draft(kind="tip", texts=["Would you let a robot fold your clothes?"],
+                                      poll={"options": ["Yes", "No"], "duration_minutes": 1440}),
+                                slot_key="tip-1431", slot_date="2026-10-16", publish_at=at(14, 31, day=16),
+                                expires_at=at(16, 30, day=16), image_path=str(img), image_kind="shot")
+    assert "⚠️ Sondage + image" in fake_tg.sent[-1]["text"] and both["poll"]
+
+
+def test_labels_and_image_kinds():
+    assert KIND_LABELS["tip"] == ("🔮", "Le futur arrive")
+    assert KIND_LABELS["news"] == ("📰", "L'histoire du jour")
+    assert KIND_LABELS["reactive"] == ("⚡", "Ça vient de tomber")
+    assert IMAGE_KINDS_FR == {"shot": "capture d'écran", "ai": "image IA"}
+    assert THREAD_GENRES_FR["timely"] == "l'histoire que personne ne réalise"
+    assert THREAD_GENRES_FR["weekly"] == "cette semaine, le futur s'est rapproché"
+    # Les genres d'avant novembre 2026 gardent leur nom (items encore en mémoire).
+    assert THREAD_GENRES_FR["tutorial"] == "pas à pas"
+    from bot.writer import THREAD_ANGLE_KINDS
+    assert set(THREAD_ANGLE_KINDS) <= set(THREAD_GENRES_FR)
+
+
+def test_hook_is_kept_with_the_item(app, state, clock):
+    """La forme d'accroche du post est notée avec l'item : les stats apprennent laquelle marche."""
+    item = make_post(app, hook="THE NUMBER")
+    assert item["meta"]["hook"] == "THE NUMBER"
+    assert make_post(app)["meta"]["hook"] == ""                                     # pas de forme notée
+    from types import SimpleNamespace
+    legacy = app.create_post_item(SimpleNamespace(kind="tip", texts=[TIP], reason="", angle="", sources=[],
+                                                  used_notes=[], from_fallback=False, poll=None),
+                                  slot_key=None, slot_date=None, publish_at=at(14), expires_at=at(16))
+    assert legacy["meta"]["hook"] == ""                                             # brouillon sans champ hook
+
+
+def test_regen_replaces_the_hook(app, state, fake_tg, clock):
+    from types import SimpleNamespace
+    item = make_post(app, hook="THE NUMBER")
+    app.hooks["regenerate"] = lambda it: Draft(kind="tip", texts=["Version 2: a robot ran a marathon."],
+                                               reason="v2", hook="THE MYSTERY")
+    click(fake_tg, app, f"regen:{item['id']}", item)
+    assert state.item(item["id"])["meta"]["hook"] == "THE MYSTERY"
+    # Une nouvelle version sans forme notée n'hérite pas de celle de l'ancienne.
+    app.hooks["regenerate"] = lambda it: SimpleNamespace(
+        texts=["Version 3: a robot cooked dinner."], poll=None, reason="v3", angle="", sources=[], used_notes=[],
+        from_fallback=False)
+    click(fake_tg, app, f"regen:{item['id']}", item)
+    assert state.item(item["id"])["meta"]["hook"] == ""
+
+
+def test_fallback_text_is_flagged(app, fake_tg, clock):
+    item = make_post(app, kind="gm", texts=["gm. what's the first chore you'd hand to a robot at home?"],
+                     from_fallback=True)
     card = fake_tg.sent[-1]["text"]
-    assert "⚡ <b>Actu du moment</b>" in card
-    assert "🧯 Texte de secours" in card
+    assert "☀️ <b>GM</b>" in card and "🧯 Texte de secours" in card
+    assert item["meta"]["from_fallback"] is True and "card" not in item["meta"]
 
 
 def test_late_draft_says_publish_now(app, fake_tg, clock):
@@ -263,41 +317,43 @@ def test_regen_replaces_texts_and_is_limited(app, fake_tg, clock):
 
 
 def test_regen_swaps_the_image_with_the_text(app, state, fake_tg, tmp_path):
-    """La carte porte un texte qui va avec le post : nouvelle version, nouvelle image."""
+    """La capture montre la page de l'actu du post : nouvelle version, nouvelle capture."""
     from types import SimpleNamespace
-    old, new = tmp_path / "old.png", tmp_path / "new.png"
-    old.write_bytes(b"\x89PNG old")
-    new.write_bytes(b"\x89PNG new")
-    d = Draft(kind="tip", texts=[TIP], reason="v0", card={"type": "prompt", "title": "Old *card*", "lines": ["x"]})
+    old, new = tmp_path / "old.jpg", tmp_path / "new.jpg"
+    old.write_bytes(b"\xff\xd8\xff old")
+    new.write_bytes(b"\xff\xd8\xff new")
+    d = Draft(kind="tip", texts=[TIP], reason="v0")
     item = app.create_post_item(d, slot_key="tip-1400", slot_date="2026-10-15", publish_at=at(14),
-                                expires_at=at(16), image_path=str(old), image_kind="card")
+                                expires_at=at(16), image_path=str(old), image_kind="shot")
+    state.item(item["id"])["meta"]["card"] = {"type": "prompt", "title": "Old card"}   # item d'avant novembre
     photos_before = len(fake_tg.photos)
 
     app.hooks["regenerate"] = lambda it: Draft(
-        kind="tip", texts=["Version 2: take a photo of the letter and ask what it means."], reason="v2",
-        card={"type": "list", "title": "New *card*", "lines": ["a", "b"]}, image_path=str(new), image_kind="card")
+        kind="tip", texts=["Version 2: a robot just folded a whole basket of laundry."], reason="v2",
+        image_path=str(new), image_kind="shot")
     click(fake_tg, app, f"regen:{item['id']}", item)
     saved = state.item(item["id"])
-    assert saved["image_path"] == str(new) and saved["image_kind"] == "card"
-    assert saved["meta"]["card"] == {"type": "list", "title": "New card"}
+    assert saved["image_path"] == str(new) and saved["image_kind"] == "shot"
+    assert "card" not in saved["meta"]                       # l'ancienne carte dessinée n'a plus de sens
     assert len(fake_tg.photos) == photos_before + 1 and fake_tg.photos[-1]["path"] == str(new)
-    assert "nouvelle carte" in fake_tg.photos[-1]["caption"]
+    assert fake_tg.photos[-1]["caption"] == "🔮 Le futur arrive — nouvelle capture d'écran (nouvelle version)"
+    assert "📱 Capture d'écran jointe" in fake_tg.edits[-1]["text"]
 
     # Ancien format de résultat (sans champ image) : l'image en place n'est pas touchée.
     app.hooks["regenerate"] = lambda it: SimpleNamespace(
-        texts=["Version 3: ask it to quiz you until you get every answer right."], poll=None, reason="v3",
+        texts=["Version 3: a robot cooked dinner for a family of four."], poll=None, reason="v3",
         angle="", sources=[], used_notes=[], from_fallback=False)
     click(fake_tg, app, f"regen:{item['id']}", item)
     assert state.item(item["id"])["image_path"] == str(new)
 
-    # Nouvelle version sans image (sondage, rendu impossible) : l'ancienne carte ne reste pas.
+    # Nouvelle version sans image (sondage, capture refusée) : l'ancienne capture ne reste pas.
     app.hooks["regenerate"] = lambda it: Draft(
-        kind="tip", texts=["Version 4: which one do you use for your emails?"], reason="v4",
-        poll={"options": ["ChatGPT", "Claude"], "duration_minutes": 1440})
+        kind="tip", texts=["Version 4: would you let a robot fold your clothes?"], reason="v4",
+        poll={"options": ["Yes", "No"], "duration_minutes": 1440})
     click(fake_tg, app, f"regen:{item['id']}", item)
     saved = state.item(item["id"])
-    assert saved["image_path"] is None and saved["image_kind"] is None and "card" not in saved["meta"]
-    assert "Carte jointe" not in fake_tg.edits[-1]["text"]
+    assert saved["image_path"] is None and saved["image_kind"] is None
+    assert "Capture d'écran jointe" not in fake_tg.edits[-1]["text"]
     assert len(fake_tg.photos) == photos_before + 1
 
 
@@ -590,7 +646,7 @@ def test_missing_card_is_resent_with_backoff(app, fake_tg, monkeypatch, clock):
     clock(10, 6)
     app.poll()
     assert item["tg_message_id"] == fake_tg.sent[-1]["id"]
-    assert "L'IA au quotidien" in fake_tg.sent[-1]["text"]
+    assert "Le futur arrive" in fake_tg.sent[-1]["text"]
 
 
 # ---------------------------------------------------------------------------

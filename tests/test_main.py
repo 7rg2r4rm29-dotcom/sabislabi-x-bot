@@ -134,9 +134,9 @@ def secret_settings(settings):
 
 @pytest.fixture(autouse=True)
 def _no_real_browser(monkeypatch):
-    """--check dessine une vraie carte d'essai : ici, on ne lance pas de navigateur."""
-    from bot import cards
-    monkeypatch.setattr(cards, "self_test", lambda: (True, ""))
+    """--check fait une vraie capture d'essai (visuals.self_test) : ici, aucun navigateur."""
+    from bot import visuals
+    monkeypatch.setattr(visuals, "self_test", lambda: (True, ""))
 
 
 def _check(settings, **kw):
@@ -184,16 +184,31 @@ class TestCheck:
         code, out, _ = _check(secret_settings, llm=FakeLLM({}))
         assert code == 1 and "Claude" in out
 
-    def test_images_are_really_drawn(self, secret_settings):
+    def test_screenshot_browser_works(self, secret_settings):
         code, out, _ = _check(secret_settings)
-        assert code == 0 and "✅ Images : les cartes se dessinent correctement" in out
+        assert code == 0 and "✅ Images : le navigateur des captures d'écran fonctionne" in out
+        assert "carte" not in out.lower()                       # plus de cartes dessinées
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok"
+
+    def test_check_really_tries_the_screenshot_browser(self, secret_settings, monkeypatch):
+        """Par défaut, --check lance la capture d'essai de bot/visuals.py (plus bot/cards.py)."""
+        from bot import visuals
+        calls: list[int] = []
+        monkeypatch.setattr(visuals, "self_test",
+                            lambda: calls.append(1) or (False, "Playwright n'est pas installé"))
+        code, out, _ = _check(secret_settings)
+        assert calls == [1]
+        assert code == 0
+        assert ("⚠️ Images : le navigateur des captures d'écran ne marche pas (Playwright n'est pas installé)"
+                in out)
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
 
     def test_images_impossible_is_a_warning_not_a_failure(self, secret_settings):
         """Sans navigateur, le bot publie quand même (sans image) : on prévient, on ne bloque pas."""
         code, out, _ = _check(secret_settings, images=lambda: (False, "Executable doesn't exist"))
         assert code == 0
-        assert "⚠️ Images : impossible de dessiner les cartes (Executable doesn't exist)" in out
+        assert "⚠️ Images : le navigateur des captures d'écran ne marche pas (Executable doesn't exist)" in out
+        assert "partiraient SANS image" in out
         assert "playwright install chromium" in out and "tout est OK" in out
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
 
@@ -303,6 +318,18 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert "gm 08:00" in txt and "mar. 15:00" in txt and "dim. 18:00" in txt
 
+    def test_config_summary_speaks_of_screenshots(self, settings):
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "Images : capture d'écran de l'article oui" in txt and "photos IA non" in txt
+        assert "carte" not in txt
+        settings.screenshots_enabled = False
+        assert "Images : capture d'écran de l'article non" in "\n".join(bmain.config_summary(settings))
+
+    def test_post_labels_follow_the_new_line(self):
+        assert bmain.KIND_FR["tip"] == "le futur arrive"
+        assert bmain.KIND_FR["news"] == "l'histoire du jour"
+        assert bmain.KIND_FR["reactive"] == "ça vient de tomber"
+
 
 
 def test_report_shows_recent_posts_without_secrets(tmp_path, capsys):
@@ -330,14 +357,15 @@ def test_report_shows_recent_posts_without_secrets(tmp_path, capsys):
     assert m.main(["--report", "--state", str(sp)]) == 0
 
 
-def test_report_shows_numbers_cards_and_followers(tmp_path, clock):
+def test_report_shows_numbers_screenshots_and_followers(tmp_path, clock):
     """Ce que les posts ont vraiment donné : c'est ce qui permet de corriger le tir."""
     from bot import main as m
     clock(10, 0, day=30)
     state = {"version": 2, "items": {
         "a": {"id": "a", "kind": "tip", "status": "published", "created_at": "2026-10-28T14:00:00+01:00",
-              "texts": ["That letter makes no sense? Take a photo of it."], "image_kind": "card",
-              "meta": {"reason": "courrier", "card": {"type": "prompt", "title": "Understand any letter"}}},
+              "texts": ["A robot just folded a whole basket of laundry, alone."], "image_kind": "shot",
+              "meta": {"reason": "le robot", "hook": "IT CAN DO WHAT?"}},
+        # Item d'avant novembre 2026 : sa vieille « carte » n'est plus affichée nulle part.
         "b": {"id": "b", "kind": "news", "status": "published", "created_at": "2026-10-29T19:00:00+01:00",
               "texts": ["ChatGPT can now talk to you. For free."], "image_kind": "phone",
               "meta": {"card": {"type": "phone", "title": "Voice is free"}}},
@@ -355,7 +383,8 @@ def test_report_shows_numbers_cards_and_followers(tmp_path, clock):
     sp = tmp_path / "state.json"
     sp.write_text(json.dumps(state))
     out = m.report(sp, tmp_path / "missing.log")
-    assert "tip [published] (image card)" in out and "carte : [prompt] Understand any letter" in out
+    assert "tip [published] (image shot)" in out and "raison : le robot" in out
+    assert "carte :" not in out and "Voice is free" not in out
     assert "chiffres : 812 vues · 9 j'aime · 2 réponse(s) · 2 repartage(s) · 14 signet(s)" in out
     assert out.count("chiffres :") == 2 and "chiffres : pas encore relevés" in out   # rien pour le post programmé
     assert "30 derniers jours : 1 posts mesurés, 812 vues en moyenne, 27 interactions au total" in out
@@ -364,52 +393,76 @@ def test_report_shows_numbers_cards_and_followers(tmp_path, clock):
 
 
 # ---------------------------------------------------------------------------
-# --preview : de vrais posts avec leur image, sans rien publier
+# --preview : de vrais posts avec leur capture d'écran, sans rien publier
 # ---------------------------------------------------------------------------
 class PreviewWriter:
     def __init__(self, drafts: dict) -> None:
         self.drafts = drafts
         self.calls: list[tuple] = []
+        self.seen: list[list] = []          # les actus données à chaque rédaction
 
     def draft_post(self, kind, news, notes, perf):
         self.calls.append((kind, len(news), tuple(notes)))
+        self.seen.append(list(news))
         return self.drafts.get(kind)
 
     def draft_thread(self, news, notes, perf):
         self.calls.append(("thread", len(news), tuple(notes)))
+        self.seen.append(list(news))
         return self.drafts.get("thread")
 
     def draft_reactive(self, news, notes, perf):
         self.calls.append(("reactive", len(news), tuple(notes)))
+        self.seen.append(list(news))
         return self.drafts.get("reactive")
 
 
 class PreviewNews:
+    """`max_age_hours=None` : fenêtre pas précisée (celle par défaut du NewsHub, l'actu fraîche)."""
+
     def __init__(self, items=None, fail=False) -> None:
         self.items = items or []
         self.fail = fail
         self.calls: list[dict] = []
 
-    def collect(self, max_age_hours: float = 36, use_x: bool = True):
-        self.calls.append({"use_x": use_x})
+    def collect(self, max_age_hours=None, use_x: bool = True):
+        self.calls.append({"max_age_hours": max_age_hours, "use_x": use_x})
         if self.fail:
             raise RuntimeError("network down")
         return list(self.items)
 
 
-class TestPreview:
-    CARD = {"type": "prompt", "title": "Dinner from a *fridge photo*",
-            "lines": ["Here is a photo of my fridge. What can I cook tonight?"], "note": "Free versions too."}
+class PickingNews(PreviewNews):
+    """Avec top_for, comme le vrai NewsHub : on note le type de sélection demandé."""
 
+    def __init__(self, items=None, fail=False) -> None:
+        super().__init__(items, fail)
+        self.picks: list[tuple[str, int]] = []
+
+    def top_for(self, kind, items, n):
+        self.picks.append((kind, n))
+        return list(items)[:n]
+
+
+SHOT_URL = "https://www.theverge.com/2026/10/15/robot-laundry"
+
+
+def _story(i: int, title: str) -> "NewsItem":
+    from bot.models import NewsItem
+    return NewsItem(id=f"s{i}", title=title, summary="", url=f"https://news.example.com/{i}", source="Example",
+                    published=utils.now_local() - timedelta(hours=2), official=True)
+
+
+class TestPreview:
     def _run(self, settings, tmp_path, drafts, kinds="tip,news", **kw):
         lines: list[str] = []
-        img = tmp_path / "card.png"
-        img.write_bytes(b"\x89PNG fake")
+        img = tmp_path / "shot.jpg"
+        img.write_bytes(b"\xff\xd8\xff fake jpeg")
         visuals_seen: list[tuple] = []
 
         def fake_visual(s, draft, writer, tag):
             visuals_seen.append((draft.kind, tag))
-            return (str(img), "card") if getattr(draft, "card", None) else (None, None)
+            return (str(img), "shot") if getattr(draft, "visual", None) else (None, None)
         tg = kw.pop("telegram", FakeTelegram())
         writer = PreviewWriter(drafts)
         news = kw.pop("news", PreviewNews(["n1", "n2"]))
@@ -418,40 +471,80 @@ class TestPreview:
                                  prepare_visual=fake_visual, out=lines.append)
         return code, "\n".join(lines), tg, writer, news, visuals_seen
 
-    def test_drafts_are_shown_and_sent_but_nothing_is_published(self, settings, tmp_path):
-        from bot.models import Draft
+    def test_drafts_are_shown_and_sent_but_nothing_is_published(self, settings, tmp_path, clock):
+        from bot.models import Draft, Visual
         from bot.state import StateStore
         real = tmp_path / "state" / "state.json"
         store = StateStore(real)
         store.add_note("I tested voice mode while cooking")
-        store.remember_text("tip", "an older tip")
+        store.remember_text("tip", "an older post")
         before = real.read_text()
-        drafts = {"tip": Draft(kind="tip", texts=["You open the fridge and have no idea what to cook."],
-                               card=dict(self.CARD), reason="le frigo"),
-                  "news": Draft(kind="news", texts=["Which one do you use?"],
-                                poll={"options": ["ChatGPT", "Claude"], "duration_minutes": 1440})}
+        drafts = {"tip": Draft(kind="tip", texts=["A robot just folded a whole basket of laundry, alone."],
+                               visual=Visual("shot", SHOT_URL), reason="le robot", hook="IT CAN DO WHAT?"),
+                  "news": Draft(kind="news", texts=["Which one would you trust?"],
+                                poll={"options": ["A robot", "A human"], "duration_minutes": 1440})}
         code, out, tg, writer, news, visuals_seen = self._run(settings, tmp_path, drafts)
         assert code == 0
         assert "RIEN n'est publié" in out and "Aperçu terminé : 2/2 post(s) envoyé(s) sur Telegram" in out
-        assert "You open the fridge" in out and "[carte prompt] Dinner from a fridge photo" in out
-        assert "• Here is a photo of my fridge" in out and "(Free versions too.)" in out
-        assert "[sondage] ChatGPT · Claude" in out and "pourquoi : le frigo" in out
-        assert out.count("image : aucune") == 1 and "card.png (card)" in out
-        assert news.calls == [{"use_x": False}]                       # jamais de lecture payante de X
+        assert "--- le futur arrive ---" in out and "--- l'histoire du jour ---" in out
+        assert "A robot just folded" in out and "pourquoi : le robot" in out
+        assert "[sondage] A robot · A human" in out
+        assert f"capture : {tmp_path / 'shot.jpg'} (shot)" in out
+        assert out.count("capture : aucune (le post partirait sans image)") == 1     # le sondage
+        assert "carte" not in out                                      # plus de cartes dessinées
+        assert all(c["use_x"] is False for c in news.calls)            # jamais de lecture payante de X
         assert writer.calls[0] == ("tip", 2, ("I tested voice mode while cooking",))
         assert visuals_seen == [("tip", "apercu_tip"), ("news", "apercu_news")]
         assert len(tg.photos) == 1 and "APERÇU" in tg.photos[0]["caption"]
+        assert tg.photos[0]["path"] == str(tmp_path / "shot.jpg")
         assert len(tg.sent) == 2 and all("rien n'est publié" in m["text"] for m in tg.sent)
-        assert "📊 ChatGPT · Claude" in tg.sent[1]["text"]
+        assert "📊 A robot · A human" in tg.sent[1]["text"]
         assert real.read_text() == before                              # l'état du bot en service n'a pas bougé
 
-    def test_thread_and_breaking_news(self, settings, tmp_path):
-        from bot.models import Draft
-        drafts = {"thread": Draft(kind="thread", texts=["Hook tweet", "Second tweet"], card=dict(self.CARD))}
+    def test_reads_the_same_news_windows_as_the_live_bot(self, settings, tmp_path, clock):
+        """Comme le bot en service : 4 jours d'actu pour « le futur arrive » et les threads,
+        l'actu fraîche pour l'histoire du jour et le réactif, et la même sélection (top_for)."""
+        from bot.scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD
+        clock(10, 0, day=15)                                           # jeudi : thread « normal »
+        news = PickingNews(["n1", "n2", "n3"])
+        code, _out, _tg, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="tip,news,thread,reactive",
+                                                    news=news)
+        assert code == 1                                               # rien de rédigé ici
+        assert news.calls == [{"max_age_hours": None, "use_x": False},                 # l'actu fraîche
+                              {"max_age_hours": FUTURE_NEWS_HOURS, "use_x": False},    # tip
+                              {"max_age_hours": FUTURE_NEWS_HOURS, "use_x": False}]    # thread
+        assert news.picks == [("tip", NEWS_PER_POST), ("news", NEWS_PER_POST),
+                              ("thread", NEWS_PER_THREAD), ("reactive", NEWS_PER_POST)]
+        assert [c[0] for c in writer.calls] == ["tip", "news", "thread", "reactive"]
+
+    @pytest.mark.parametrize("day", [16, 17, 18])                     # vendredi, samedi, dimanche
+    def test_end_of_week_thread_reads_seven_days_ranked_by_appeal(self, settings, tmp_path, clock, day):
+        clock(10, 0, day=day)
+        news = PickingNews(["n1", "n2"])
+        self._run(settings, tmp_path, {}, kinds="thread", news=news)
+        assert news.calls[-1] == {"max_age_hours": 168, "use_x": False}
+        assert news.picks == [("weekly", 120)]
+
+    def test_thread_and_breaking_news(self, settings, tmp_path, clock):
+        from bot.models import Draft, Visual
+        drafts = {"thread": Draft(kind="thread", texts=["Hook tweet", "Second tweet"],
+                                  visual=Visual("shot", SHOT_URL))}
         code, out, tg, writer, _news, _ = self._run(settings, tmp_path, drafts, kinds="thread, reactive")
         assert code == 0 and "1/ Hook tweet" in out and "2/ Second tweet" in out
-        assert "ne mérite un post grand public" in out and "Aperçu terminé : 1/2" in out
+        assert "--- ça vient de tomber : rien, dans l'actu fraîche, ne mérite un post à chaud" in out
+        assert "Aperçu terminé : 1/2" in out
         assert [c[0] for c in writer.calls] == ["thread", "reactive"]
+
+    @pytest.mark.xfail(strict=True, reason="BUG: --preview reactive gives the writer insider items "
+                                           "(appeal < 1) that the live breaking-news desk filters out "
+                                           "(scheduler.maybe_reactive), so the preview can show a post the "
+                                           "bot would never write")
+    def test_breaking_news_preview_offers_the_editor_what_the_live_bot_does(self, settings, tmp_path, clock):
+        insider = _story(1, "OpenAI launches a new API for developers")
+        everyday = _story(2, "A humanoid robot folds laundry in a real home")
+        _c, _o, _t, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="reactive",
+                                               news=PreviewNews([insider, everyday]))
+        assert [it.id for it in writer.seen[0]] == ["s2"]
 
     def test_nothing_drafted_is_a_failure(self, settings, tmp_path):
         code, out, tg, _w, _n, _ = self._run(settings, tmp_path, {})
@@ -459,11 +552,12 @@ class TestPreview:
 
     def test_works_without_news_state_or_telegram(self, settings, tmp_path):
         from bot.models import Draft
-        drafts = {"tip": Draft(kind="tip", texts=["A tip."], card=dict(self.CARD))}
+        drafts = {"tip": Draft(kind="tip", texts=["A tip."])}
         code, out, _tg, writer, _n, _ = self._run(settings, tmp_path, drafts, kinds="tip",
                                                  news=PreviewNews(fail=True), telegram=None,
                                                  state_path=tmp_path / "nowhere" / "state.json")
         assert code == 0 and "0 actus lues" in out and writer.calls == [("tip", 0, ())]
+        assert "capture : aucune (le post partirait sans image)" in out
         assert not (tmp_path / "nowhere").exists()
 
     def test_kinds_parsing(self, settings, tmp_path):

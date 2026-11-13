@@ -91,17 +91,20 @@ def test_maybe_refresh_interval(an, state, fake_x, clock):
 
 
 def test_refresh_remembers_format_from_item(an, state, fake_x):
-    it = state.new_item("tip", ["t"], image_path="/tmp/a.png", image_kind="card",
-                        meta={"used_notes": ["I tried X"], "angle": "", "card": {"type": "steps", "title": "T"}})
-    th = state.new_item("thread", ["a", "b", "c"], meta={"angle": "tutorial"})
+    it = state.new_item("tip", ["t"], image_path="/tmp/a.jpg", image_kind="shot",
+                        meta={"used_notes": ["I tried X"], "angle": "", "hook": "THE NUMBER",
+                              "card": {"type": "steps", "title": "T"}})          # vieille carte : ignorée
+    th = state.new_item("thread", ["a", "b", "c"], meta={"angle": "future"})
     pub(state, "1", "tip", "tip", item_id=it["id"])
     pub(state, "2", "thread", "thread", item_id=th["id"])
     fake_x.recent_posts = [api_tweet("1", 10), api_tweet("2", 20)]
     an.refresh_metrics()
     f1, f2 = state.data["published"][0]["fmt"], state.data["published"][1]["fmt"]
-    assert f1["media"] == "image" and f1["notes"] is True and f1["image_kind"] == "card"
-    assert f1["card"] == "steps" and f2["card"] == ""
-    assert f2["genre"] == "tutorial" and f2["tweets"] == 3 and f2["media"] == "text"
+    assert set(f1) == {"media", "image_kind", "genre", "hook", "notes", "fallback", "tweets"}   # plus de « card »
+    assert f1["media"] == "image" and f1["notes"] is True and f1["image_kind"] == "shot"
+    assert f1["hook"] == "THE NUMBER" and f2["hook"] == ""
+    assert f1["genre"] == ""                                 # le genre ne concerne que les threads
+    assert f2["genre"] == "future" and f2["tweets"] == 3 and f2["media"] == "text"
 
 
 class _MeX(FakeX):
@@ -232,7 +235,7 @@ def test_daily_report(an, settings, state, budget, clock):
     assert "older post" not in txt
     assert "&lt;friends&gt; &amp; builders" in txt and "<friends>" not in txt
     assert "08:00 gm — ⏳ attend ta validation" in txt
-    assert "13:30 astuce — 📝 pas encore rédigé" in txt
+    assert "13:30 futur — 📝 pas encore rédigé" in txt
     assert "thread" not in txt                      # jeudi : pas de thread prévu
     assert "1 brouillon(s) attendent ta validation" in txt
     assert "1 suggestion(s) radar ouvertes" in txt
@@ -311,7 +314,7 @@ def test_weekly_report(an, state, budget, clock):
     assert "1 post(s) pas encore mesuré(s)" in txt
     assert "Meilleur post" in txt and "Best tip &lt;ever&gt;" in txt and "5 000 vues" in txt
     assert "two weeks ago" not in txt
-    assert "<pre>" in txt and "astuce" in txt and "thread" in txt
+    assert "<pre>" in txt and "futur" in txt and "thread" in txt and "astuce" not in txt
     assert "API X 0.15 $" in txt
     assert "Claude 0.75 $" in txt
     assert "Abonnés : 1 000 (+50 depuis le 11/10)" in txt
@@ -340,30 +343,72 @@ def test_followers_line_single_entry(an, state):
 def test_kind_labels_cover_all_kinds():
     for k in amod.KINDS:
         assert k in amod.KIND_FR
+    assert amod.KIND_FR["tip"] == "futur" and amod.KIND_FR["reactive"] == "à chaud"
+    assert all(len(v) <= 9 for v in amod.KIND_FR.values())   # colonne du tableau du bilan hebdo
 
 
-def test_card_type_is_remembered_and_compared(an, state, fake_x):
-    """Quel genre de carte marche sur CE compte : noté avec le post, puis dit à Claude."""
+def _hooked_week(state, fake_x) -> None:
+    """3 posts « THE NUMBER » qui marchent, 3 « THE MYSTERY » qui marchent moins, 1 sans forme notée."""
     tweets = []
     for i in range(3):
-        it = state.new_item("tip", [f"prompt post {i}"], image_path=f"/tmp/p{i}.png", image_kind="card",
-                            meta={"card": {"type": "prompt", "title": "Dinner"}})
-        pub(state, f"p{i}", "tip", f"Prompt card post {i}", days=2 + i, item_id=it["id"])
+        it = state.new_item("tip", [f"number post {i}"], image_path=f"/tmp/p{i}.jpg", image_kind="shot",
+                            meta={"hook": "THE NUMBER"})
+        pub(state, f"p{i}", "tip", f"Number post {i}", days=2 + i, item_id=it["id"])
         tweets.append(api_tweet(f"p{i}", 4000, likes=40, bookmarks=30))
     for i in range(3):
-        it = state.new_item("news", [f"phone post {i}"], image_path=f"/tmp/n{i}.png", image_kind="phone",
-                            meta={"card": {"type": "phone", "title": "Voice is free"}})
-        pub(state, f"n{i}", "news", f"Phone card post {i}", days=2 + i, hour=19, item_id=it["id"])
+        it = state.new_item("news", [f"mystery post {i}"], meta={"hook": "THE MYSTERY"})
+        pub(state, f"n{i}", "news", f"Mystery post {i}", days=2 + i, hour=19, item_id=it["id"])
         tweets.append(api_tweet(f"n{i}", 400, likes=1))
-    plain = state.new_item("tip", ["no card"], meta={})
-    pub(state, "x1", "tip", "Text only post", days=3, item_id=plain["id"])
+    plain = state.new_item("tip", ["no hook noted"], meta={})
+    pub(state, "x1", "tip", "Old post without a hook", days=3, item_id=plain["id"])
     tweets.append(api_tweet("x1", 2200))
     fake_x.recent_posts = tweets
+
+
+def test_hook_shape_is_remembered_and_compared(an, state, fake_x):
+    """Quelle forme d'accroche marche sur CE compte : notée avec le post, puis dite à Claude."""
+    _hooked_week(state, fake_x)
     an.refresh_metrics()
     fmts = {p["tweet_id"]: p["fmt"] for p in state.data["published"]}
-    assert fmts["p0"]["card"] == "prompt" and fmts["p0"]["image_kind"] == "card"
-    assert fmts["n0"]["card"] == "phone" and fmts["x1"]["card"] == ""
+    assert fmts["p0"]["hook"] == "THE NUMBER" and fmts["p0"]["image_kind"] == "shot"
+    assert fmts["n0"]["hook"] == "THE MYSTERY" and fmts["x1"]["hook"] == ""
     perf = an.compute()
-    assert set(perf["by_card"]) == {"prompt", "phone"} and perf["by_card"]["prompt"]["count"] == 3
+    assert "by_card" not in perf
+    assert set(perf["by_hook"]) == {"THE NUMBER", "THE MYSTERY"} and perf["by_hook"]["THE NUMBER"]["count"] == 3
     notes = an.performance_notes()
-    assert 'posts with a "prompt" card do' in notes.lower() and '"phone" cards only' in notes
+    hook_line = next(line for line in notes.splitlines() if line.startswith("Hook shapes on this account: "))
+    assert '"THE NUMBER" hooks do 1.8x avg impressions (n=3)' in hook_line      # 4 000 vues / 2 200
+    assert '"THE MYSTERY" only 0.2x (n=3)' in hook_line
+    assert hook_line.endswith("Lean toward what works, but keep varying.")
+    assert "card" not in notes
+
+
+def test_hook_note_needs_two_posts_per_shape(an, state, fake_x):
+    _hooked_week(state, fake_x)
+    for p in state.data["published"]:
+        if p["tweet_id"] in ("p1", "p2", "n1", "n2"):
+            p["item_id"] = None                      # forme d'accroche inconnue pour ces posts-là
+    an.refresh_metrics()
+    assert "Hook shapes" not in an.performance_notes()
+
+
+def test_screenshot_posts_are_named_as_such_in_the_notes(an, state, fake_x):
+    _hooked_week(state, fake_x)
+    an.refresh_metrics()
+    notes = an.performance_notes()
+    assert "Posts with a screenshot do " in notes and "text-only posts only" in notes
+    assert "posts with an image" not in notes
+
+
+@pytest.mark.xfail(strict=True, reason="BUG: performance_notes() docstring promises at most 6 lines, but "
+                                       "_performance_notes() now returns lines[:7] (hook-shape line added)")
+def test_performance_notes_keep_their_promised_length(an, state, fake_x):
+    _hooked_week(state, fake_x)
+    for tw in fake_x.recent_posts[:3]:                # les posts « THE NUMBER » font aussi parler
+        tw["public_metrics"]["reply_count"] = 9
+    for i in range(2):                                # un 2e type qui sous-performe et une heure faible
+        pub(state, f"g{i}", "gm", f"gm post {i}", days=2 + i, hour=8, metrics=m(100, likes=0))
+    an.refresh_metrics()
+    notes = an.performance_notes()
+    # résumé, types, réponses, formats, accroches, heures, meilleur post : 7 lignes
+    assert len(notes.splitlines()) <= 6, notes

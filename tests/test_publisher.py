@@ -262,7 +262,7 @@ def test_thread_published(pub, state, fake_x, tmp_path):
     img = tmp_path / "img.png"
     img.write_bytes(b"x")
     item = approved(state, kind="thread", texts=[HOOK, "Step one.", "Step two."], image_path=str(img),
-                    image_kind="screenshot", meta={"angle": "tutorial", "used_notes": []},
+                    image_kind="shot", meta={"angle": "timely", "used_notes": []},
                     slot_key="thread-tue-1500")
     assert pub.publish_due() == 1
     assert item["status"] == "published"
@@ -272,18 +272,18 @@ def test_thread_published(pub, state, fake_x, tmp_path):
     last = state.data["published"][-1]
     assert last["kind"] == "thread" and last["text"] == HOOK and last["tweet_id"] == "1001"
     assert state.recent_texts("thread") == [HOOK]
-    assert state.data["thread_recent_kinds"][-1] == "tutorial"
+    assert state.data["thread_recent_kinds"][-1] == "timely"
     assert item["id"] in state.data["thread_kinds_seen"]
     assert state.count("published_thread") == 1
 
 
 def test_thread_kind_not_double_counted_by_writer(pub, settings, state, fake_llm):
     writer_mod = pytest.importorskip("bot.writer")
-    state.data["thread_recent_kinds"] = ["story"] * 6
-    approved(state, kind="thread", texts=[HOOK, "Two."], meta={"angle": "beginner"})
+    state.data["thread_recent_kinds"] = ["timely"] * 6
+    approved(state, kind="thread", texts=[HOOK, "Two."], meta={"angle": "future"})
     pub.publish_due()
     kinds = writer_mod.Writer(settings, fake_llm, state).recent_thread_kinds()
-    assert kinds[-1] == "beginner" and kinds.count("beginner") == 1
+    assert kinds[-1] == "future" and kinds.count("future") == 1
 
 
 def test_thread_resume_from_partial_ids(pub, state, fake_x):
@@ -413,7 +413,33 @@ def test_other_fatal_errors(pub, state, fake_x, fake_tg, kind):
     fake_x.fail_next = [XError(kind, "nope", 403)]
     pub.publish_due()
     assert item["status"] == "failed"
-    assert fake_tg.sent[-1]["text"].startswith("❌ L'astuce IA n'a pas été publiée")
+    assert fake_tg.sent[-1]["text"].startswith("❌ Le post « le futur arrive » n'a pas été publié :")
+
+
+@pytest.mark.parametrize("kind,start", [
+    ("tip", "❌ Le post « le futur arrive » n'a pas été publié :"),
+    ("news", "❌ L'histoire du jour n'a pas été publiée :"),
+    ("reactive", "❌ Le post « ça vient de tomber » n'a pas été publié :"),
+    ("thread", "❌ Le thread n'a pas été publié :"),
+    ("gm", "❌ Le GM n'a pas été publié :"),
+])
+def test_failure_message_names_the_post(pub, state, fake_x, fake_tg, kind, start):
+    approved(state, kind=kind, texts=["One.", "Two."] if kind == "thread" else None)
+    fake_x.fail_next = [XError("forbidden", "nope", 403)]
+    pub.publish_due()
+    assert fake_tg.sent[-1]["text"].startswith(start)
+
+
+@pytest.mark.xfail(strict=True, reason="BUG: publisher._expire_late (publisher.py:451) writes « validé » "
+                                       "whatever the gender: « L'histoire du jour validé pour… » (KIND_FR "
+                                       "only agrees « publié(e) »)")
+def test_late_story_of_the_day_message_agrees_in_gender(pub, state, fake_x, fake_tg, clock):
+    clock(19, 0)
+    approved(state, kind="news", texts=["Doctors can now spot some illnesses years before you feel anything."])
+    clock(23, 0)                                             # bot arrêté pendant 4 h
+    assert pub.publish_due() == 0
+    late = [m["text"] for m in fake_tg.sent if "n'a pas pu partir à temps" in m["text"]]
+    assert late and late[0].startswith("⌛ L'histoire du jour validée pour")
 
 
 def test_rate_limited_with_reset(pub, state, fake_x, fake_tg, clock):
