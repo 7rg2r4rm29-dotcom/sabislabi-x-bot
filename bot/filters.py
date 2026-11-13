@@ -47,12 +47,16 @@ def clean_output(raw: str) -> str:
     t = (raw or "").strip()
     t = re.sub(r"^(here'?s (the |a |your )?(post|reply|tweet)\s*:?\s*|(post|reply|tweet)\s*:\s*)", "", t,
                flags=re.I).strip()
-    for q in ('"', "'", "“", "”", "‘", "’", "`"):
-        if t.startswith(q) and t.endswith(q) and len(t) > 2:
-            t = t[1:-1].strip()
-    t = re.sub(r"(?<![\w&])#\w+", "", t)
+    # Guillemets qui entourent TOUT le texte (une seule paire), jamais deux citations.
+    for q_open, q_close in (('"', '"'), ("'", "'"), ("`", "`"), ("“", "”"), ("‘", "’")):
+        inner = t[1:-1]
+        if (len(t) > 2 and t.startswith(q_open) and t.endswith(q_close)
+                and q_open not in inner and q_close not in inner):
+            t = inner.strip()
+    t = re.sub(r"(?<![\w&])#(?=\w*[^\W\d_])\w+", "", t)   # #AI oui, « #1 » non (pas un hashtag)
     t = re.sub(r"(?<![\w.])@\w+", "", t)
-    t = re.sub(r"(?<=\d)[–—](?=\d)", "-", t)            # 2–3 → 2-3
+    t = re.sub(r"(?<=\d) ?[–—] ?(?=\d)", "-", t)        # 2–3, 2 – 3 → 2-3
+    t = re.sub(r"(?<![\w.])[–—](?=\d)", "-", t)         # –5°C : un signe moins
     t = re.sub(r"[ \t]*[—–][ \t]*(?=\S)", ", ", t)      # tiret long → virgule
     t = re.sub(r"[ \t]*[—–][ \t]*$", "", t, flags=re.M)  # en fin de ligne : rien
     t = re.sub(r"^, ", "", t, flags=re.M)
@@ -62,8 +66,25 @@ def clean_output(raw: str) -> str:
     return t
 
 
-def strip_thread_numbering(t: str) -> str:
-    return re.sub(r"^\s*\d+\s*[/.)]\s*\d*\s*[-–:]?\s*", "", t or "").strip()
+# « 1/ », « 2/7 », « 3. », « 4) », « 5/7: » en tête de tweet — suivis d'un espace.
+_THREAD_NUMBER_RE = re.compile(r"^\s*(\d{1,2})\s*(?:/\s*(\d{1,2})|[/.)])(?=\s|$|\s*[-–:])\s*[-–:]?\s*")
+
+
+def strip_thread_numbering(t: str, position: int | None = None) -> str:
+    """Retire la numérotation d'un tweet de thread (« 1/ », « 2/7 », « 3. », « 4) »),
+    jamais un chiffre du texte : « 2.5 million homes », « 24/7, it never sleeps » restent.
+    Une fraction (« 2/3 of people ») reste aussi : « n/m » n'est une numérotation que si
+    m ≥ n, que la suite n'est pas « of … » et, avec `position` (rang du tweet), que n
+    est ce rang."""
+    t = t or ""
+    m = _THREAD_NUMBER_RE.match(t)
+    if m:
+        n, total, rest = int(m.group(1)), m.group(2), t[m.end():]
+        fraction = total is not None and (int(total) < n or rest[:3].lower() == "of "
+                                           or (position is not None and n != position))
+        if not fraction:
+            t = rest
+    return t.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +161,7 @@ _CRYPTO_RE = re.compile("|".join([
     r"\bnfts?\b", r"\bcrypto(?!graph)\w*", r"\bbitcoin\w*", r"\bbtc\b", r"\bethereum\b", r"\beth\b",
     r"\bsolana\b", r"\bmeme ?coins?\b", r"\baltcoins?\b", r"\bshitcoins?\b", r"\bstablecoins?\b",
     r"\bweb ?3\b", r"\bdefi\b", r"\bblockchains?\b", r"\bon-?chain\b", r"\bairdrops?\b", r"\bdegens?\b",
-    r"\bwagmi\b", r"\bngmi\b", r"\bhodl\w*", r"\brug ?pulls?\b", r"\brugged\b", r"\bopensea\b",
+    r"\bwagmi\b", r"\bngmi\b", r"\bhodl\w*", r"\brug ?pulls?\b", r"\b(?:got|get|gets|been|getting) rugged\b", r"\brugged (?:us|me|them|again)\b", r"\bopensea\b",
     r"\bbinance\b", r"\bcoinbase\b", r"\bmetamask\b", r"\bdogecoin\b", r"\bsatoshi\b", r"\busdt\b",
     r"\busdc\b", r"\bjpegs\b", r"\bfloor prices?\b", r"\bseed phrase\b", r"\bfrens\b", r"\bser\b",
     r"\banon\b", r"\blfg\b", r"\brekt\b",
@@ -229,6 +250,51 @@ def hard_blocked(text: str) -> str | None:
     return None
 
 
+# Guerres et armement : jamais (actus écartées par sources, et posts refusés).
+MILITARY_RE = re.compile(r"\b(?:" + "|".join([
+    # Toujours militaire…
+    r"militar(?:y|ies|ism|ized|ised)(?![- ]grade)", r"missiles?", r"warships?", r"warplanes?", r"fighter jets?",
+    r"air force", r"pentagon", r"troops", r"soldiers?", r"battlefields?", r"munitions?", r"artiller\w+",
+    r"warfare", r"warheads?", r"warfighters?", r"war ?zones?", r"torpedo(?:es)?", r"minesweep\w*",
+    r"mine hunting", r"lockheed", r"raytheon", r"northrop", r"anduril", r"helsing", r"shield ai",
+    r"service ?members?", r"veterans? affairs", r"national guard", r"nato", r"dod", r"darpa", r"space force",
+    r"marine corps", r"marines", r"navy seals?", r"navy(?! blue)", r"bombers?", r"kamikaze",
+    r"drone strikes?", r"air ?strikes?", r"f-(?:16|22|35|47)", r"battle ?tanks?", r"rifles?", r"firearms?",
+    r"machine guns?", r"gunfire", r"weapons", r"weaponry", r"weaponi[sz](?:e|ed|ing)", r"armed (?:robots?|drones?)",
+    r"(?:department|ministry|secretary|minister) of defen[cs]e", r"(?:air|missile) defen[cs]e",
+    r"defen[cs]e (?:department|ministry|secretary|minister|contractors?|firms?|tech|startups?|"
+    r"compan(?:y|ies)|industry|giants?|contracts?|systems?|forces?|officials?|budgets?|spending)",
+    r"hypersonic (?:missiles?|weapons?|glide)",
+    # … et ce qui ne l'est que dans ce contexte (« robot army », « combat spam »,
+    # « industry veterans », « secret weapon », « Naval Ravikant » restent permis).
+    r"(?:u\.?s\.?|british|russian|chinese|ukrainian|israeli|iranian|indian|the) army(?! of)",
+    r"army (?:bases?|soldiers?|units?|officers?|chiefs?|generals?|drones?|robots?)",
+    r"combat (?:troops|aircraft|drones?|zones?|missions?|vehicles?|operations?|units?|soldiers?|robots?)",
+    r"weapons? (?:systems?|makers?|manufacturers?|tests?|programs?|of war)",
+    r"(?:nuclear|autonomous|lethal|chemical|biological) weapons?",
+    r"naval (?:ships?|bases?|forces?|warfare|vessels?|drones?|officers?)",
+]) + r")\b", re.I)
+
+
+def military_term(text: str) -> str | None:
+    m = MILITARY_RE.search(text or "")
+    return m.group(0) if m else None
+
+
+# Mots de HARD_BLOCK qui, sous notre plume, ne trahissent aucun sujet interdit (« Vote below »).
+_OWN_TEXT_OK = {"vote"}
+
+
+def blocked_topic(text: str) -> str | None:
+    """Sujet hors ligne éditoriale dans un texte du compte (mort, guerre, armée, police,
+    maladie, procès…), même quand l'actu choisie n'en parlait pas dans son titre : le
+    texte de l'article, lu en entier, peut en parler au détour d'une phrase."""
+    for term, rx in _HARD_BLOCK_RES:
+        if term not in _OWN_TEXT_OK and rx.search(text or ""):
+            return term
+    return military_term(text)
+
+
 def is_noise(text: str) -> bool:
     low = f" {(text or '').lower()} "
     return any(p in low for p in NOISE_PATTERNS)
@@ -243,8 +309,8 @@ def looks_like_json_leak(text: str) -> bool:
     t = text.strip()
     if t.startswith("{") or t.endswith("}"):
         return True
-    if re.search(r'"\s*(text|reply|post|reason|angle|image_prompt|visual_url|tweets|visual|card_type|'
-                 r'card_title|card_lines|card_note)\s*"\s*:', t):
+    if re.search(r'"\s*(text|reply|post|reason|angle|image_prompt|visual_url|tweets|visual|hook|hook_options|'
+                 r'source_ids|used_note_ids|poll_options|picks|claims)\s*"\s*:', t):
         return True
     # Clé sans guillemets : seulement tout au début (« text: "…" »). Au milieu d'une
     # phrase, « then reply: "shorter, please" » est un conseil tout à fait normal.
@@ -301,7 +367,7 @@ def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int
         return "ressemble à du JSON"
     if contains_url(text):
         return "contient un lien ou un nom de domaine (0,20 $ le post via l'API au lieu de 0,015 $)"
-    off = off_limits_term(text)
+    off = off_limits_term(text) or (blocked_topic(text) if plain else None)
     if off:
         return f"hors ligne éditoriale ({off})"
     jargon = find_jargon(text)

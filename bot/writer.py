@@ -132,6 +132,7 @@ The message may also contain OWNER'S RECENT REAL NOTES: true facts the owner sen
 OFF_LIMITS = """NEVER — if the hottest thing is one of these, pick another topic:
 - Crypto, NFTs, web3, coins, tokens, trading, "the market" in a speculative sense. Not even as a joke or a comparison. Never use crypto slang (wagmi, ser, anon, degen, rekt, bags, alpha, ngmi, lfg, frens).
 - Politics, elections, politicians, wars, terrorism, religion, crimes, deaths, disasters, tragedies, dramas and feuds.
+- Weapons, armies, the military, the police, and any war or defense use of a technology, even when the article mentions it in passing. Also serious illness, hospitals, lawsuits and arrests.
 - Anything against the account owner's Muslim faith: sexual content, porn, nudity, dating/hookup content, gambling of any kind (casinos, sports betting, lotteries, poker), alcohol, pork (also in recipe or meal examples), drugs, promoting interest-based debt (loans, credit cards, "buy now pay later"), astrology/horoscopes/tarot, profanity, mocking any religion. Not even as a joke or an example.
 - Medical, legal or financial advice (no "buy this stock")."""
 
@@ -362,7 +363,7 @@ THREAD_SYSTEM_PROMPT = """You write threads on X for an international account, i
 """ + TONE + """
 
 RULES FOR EVERY THREAD (the message gives the angle and its structure):
-- Tweet 1 is the post you would publish alone: the thing itself in plain words, the most jaw-dropping fact, and the number people will repeat (a price, a size, a date) when the source gives one. Its last line gives an honest reason to open the thread: a count ("5 more below.") or one specific thing answered further down ("It also has two strange weaknesses."). Never a teaser ("here's why", "a thread", "let me explain"), never a sentence about how big the story is.
+- Tweet 1 is the post you would publish alone: the thing itself in plain words, the most jaw-dropping fact, and the number people will repeat (a price, a size, a date) when the source gives one. Its last line gives an honest reason to open the thread: a count ("5 more below.") or one specific thing answered further down ("It also has two strange weaknesses."). Never a teaser ("here's why", "a thread", "let me explain"), never a sentence about how big the story is. The one exception: a new AI from a name everybody knows, with nothing to see. Then tweet 1 may name it and say that most people have no idea how incredible, and how unsettling, it is, as long as tweet 2 proves it at once with a concrete fact.
 - Tweet 2 is the second "wait, WHAT?" of the story — not the product's name and date.
 - One idea per tweet. Every tweet makes sense on its own, and no tweet repeats another. Cut any tweet that has no fact people would repeat.
 - As short as the story allows: 4 or 5 tweets for one object or one event; up to 7 only when there is that much to tell.
@@ -445,7 +446,7 @@ _ALL_TOPIC_TAGS = ("FUTURE",)
 JUDGE_SYSTEM_PROMPT = """You are the editor of an international X account (English) with one promise: the future is arriving faster than people think, told in plain words. Its readers are normal people — a nurse, a taxi driver, a gamer, a parent — not tech people. You are given several candidate threads, each with the headlines of the stories it is built on. Pick the ONE thread to publish.
 
 Judge on, in order of importance:
-1. Tweet 1 on its own: on X only tweet 1 reaches people who don't follow the account. Would it stop a non-tech person scrolling — the thing itself, a jaw-dropping fact, a number to repeat — and not a teaser?
+1. Tweet 1 on its own: on X only tweet 1 reaches people who don't follow the account. Would it stop a non-tech person scrolling — the thing itself, a jaw-dropping fact, a number to repeat — and not a teaser? (Allowed: a new AI from a name everybody knows, opened on how few people realize what it can do, when tweet 2 proves it at once.)
 2. Goosebumps and understanding: does the thread make a normal person feel "wait, WHAT?" and then really get it? Something they would repeat to a friend tonight.
 3. Plain words: any jargon (model, agent, API, benchmark, open-source, workflow…), any insider reference, any sentence a 14-year-old would not understand counts heavily against a candidate.
 4. True: intriguing without exaggeration. A thread that states the future as certain, turns a demo into a product, or announces doom is disqualified. So is a thread that just lists headlines.
@@ -653,6 +654,8 @@ _FEEDBACK_EN = (
     (r"^aucune source citée", "this post must rely on the numbered news items and list them in "
                               "source_ids"),
     (r"^thread trop court \((\d+)", "the thread had only {0} usable tweets: write 4 to 7"),
+    (r"^thread trop long \((\d+)", "the thread had {0} tweets: write 4 to 7, and make any count announced "
+                                    "in tweet 1 match what follows"),
     (r"^tweet (\d+) : (.*)", "tweet {0} was rejected: {1}"),
     (r"^vérification factuelle : (.*)", "a fact-checker found unsupported claims: {0}. Remove them or "
                                         "say only what the cited stories say — and rebuild the text around "
@@ -751,11 +754,21 @@ def hook_shape(raw: Any) -> str:
     return ""
 
 
-_NUMBER_RE = re.compile(r"(?<![\w.,])([$€£])?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s?(%))?")
-_ROUND_WORDS = {100: "hundred", 1000: "thousand", 1_000_000: "million", 1_000_000_000: "billion"}
-_SMALL_WORDS = {10: "ten", 11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
-                16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty", 30: "thirty",
-                40: "forty", 50: "fifty", 60: "sixty", 70: "seventy", 80: "eighty", 90: "ninety"}
+# Un chiffre du post : somme ($ € £), nombre, décimale, puis % ou un multiplicateur
+# (« 3 billion », « 300k », « $5m », « $1.2B » ; « 5m » sans devise, ce sont des mètres).
+_NUMBER_RE = re.compile(
+    r"(?<![\w.,])([$€£])?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?"
+    r"(?:\s?(%)|\s?(thousand|million|billion|trillion)\b|(k|bn|tn|m|b)\b)?", re.I)
+# Un chiffre des sources (après _plain_numbers) : même lu collé à des lettres (« RTX5090 »).
+_HAY_NUMBER_RE = re.compile(
+    r"(?<![\d.])(\d+)(\.\d+)?(?:\s?(thousand|million|billion|trillion)\b|(k|m|mn|b|bn|tn)\b)?")
+_SCALES = {"thousand": 10**3, "k": 10**3, "million": 10**6, "m": 10**6, "mn": 10**6,
+           "billion": 10**9, "b": 10**9, "bn": 10**9, "trillion": 10**12, "tn": 10**12}
+_UNIT_WORDS = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen".split())}
+_TEN_WORDS = {w: 10 * i for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), 2)}
+_NOT_FIGURES_RE = re.compile(r"\b24/7\b")
 
 
 def _plain_numbers(text: str) -> str:
@@ -763,36 +776,80 @@ def _plain_numbers(text: str) -> str:
     return re.sub(r"(?<=\d)[,\u202f\u00a0](?=\d{3}(?!\d))", "", (text or "").lower())
 
 
+def _word_values(hay: str) -> set[float]:
+    """Les nombres écrits en lettres : « twenty-five » 25, « three hundred » 300,
+    « a million » 1 000 000, « two dozen » 24. « hundreds of » n'en est pas un."""
+    values: set[float] = set()
+    toks = re.findall(r"[a-z]+", hay)
+    i = 0
+    while i < len(toks):
+        t, j, n = toks[i], i + 1, None
+        if t in _TEN_WORDS:
+            n = _TEN_WORDS[t]
+            if j < len(toks) and 0 < _UNIT_WORDS.get(toks[j], 0) < 10:
+                n, j = n + _UNIT_WORDS[toks[j]], j + 1
+        elif t in _UNIT_WORDS:
+            n = _UNIT_WORDS[t]
+        elif t in ("a", "an") and j < len(toks) and toks[j] in ("dozen", "hundred", *_SCALES):
+            n = 1
+        if n is None:
+            i += 1
+            continue
+        if j < len(toks) and toks[j] in ("dozen", "hundred"):
+            n, j = n * (12 if toks[j] == "dozen" else 100), j + 1
+        if j < len(toks) and toks[j] in ("thousand", "million", "billion", "trillion"):
+            n, j = n * _SCALES[toks[j]], j + 1
+        values.add(float(n))
+        i = j
+    return values
+
+
+def _hay_values(hay: str) -> set[float]:
+    """Toutes les valeurs que donnent les sources, en chiffres ou en lettres. « 20m » ou
+    « 300k » comptent pour les deux lectures (20 mètres ou 20 millions)."""
+    values = _word_values(hay)
+    for m in _HAY_NUMBER_RE.finditer(hay):
+        base = float(m.group(1) + (m.group(2) or ""))
+        if m.group(3):
+            values.add(base * _SCALES[m.group(3)])
+        else:
+            values.add(base)
+            if m.group(4):
+                values.add(base * _SCALES[m.group(4)])
+    return values
+
+
+def _same_value(a: float, b: float) -> bool:
+    return abs(a - b) <= 1e-9 * max(abs(a), abs(b), 1.0)
+
+
 def ungrounded_number(text: str, sources: list[NewsItem], notes: list[str] | None = None) -> str | None:
-    """Premier nombre « qui compte » du texte (au moins deux chiffres, ou une somme, un
-    pourcentage, une décimale) qu'aucune histoire citée ne donne — ou None. Un chiffre
-    inventé ne doit jamais pouvoir être publié, quoi qu'en dise le relecteur. Les petits
-    nombres (« 5 minutes », « 3 choses ») sont laissés à la relecture de Claude."""
+    """Premier chiffre « qui compte » du texte (au moins deux chiffres, ou une somme, un
+    pourcentage, une décimale, un multiplicateur comme « 3 billion ») qu'aucune histoire
+    citée ne donne — ou None. On compare des valeurs : « 3 billion », « 3bn »,
+    « 3,000,000,000 » et « three billion » sont le même chiffre ; « 100 » n'est pas
+    « three hundred ». Un chiffre inventé ne doit jamais pouvoir être publié, quoi qu'en
+    dise le relecteur. Les petits nombres (« 5 minutes », « 3 choses ») sont laissés à
+    la relecture de Claude. L'année en cours n'est admise que si la source la donne, ou
+    dit « this year »."""
     hay = _plain_numbers(" \n ".join(
         [f"{it.title} {it.summary} {it.body}" for it in sources] + [n for n in (notes or []) if n]))
+    known: set[float] | None = None
     this_year = str(now_local().year)
-    for m in _NUMBER_RE.finditer(text or ""):
+    for m in _NUMBER_RE.finditer(_NOT_FIGURES_RE.sub(" ", text or "")):
         money, whole, frac, pct = m.group(1), m.group(2).replace(",", ""), m.group(3) or "", m.group(4)
-        if len(whole) < 2 and not (money or pct or frac):
+        scale = (m.group(5) or m.group(6) or "").lower()
+        if scale in ("m", "b") and not money:
+            scale = ""                       # « 5m » : des mètres, pas des millions
+        if len(whole) < 2 and not (money or pct or frac or scale):
             continue
-        number = whole + frac
-        if number == this_year:
+        if not scale and whole + frac == this_year and "this year" in hay:
+            continue                         # « this year » dans la source = l'année en cours
+        value = float(whole + frac) * (_SCALES[scale] if scale else 1)
+        if known is None:
+            known = _hay_values(hay)
+        if any(_same_value(value, v) for v in known):
             continue
-        if re.search(r"(?<![\d.])" + re.escape(number) + r"(?!\d|\.\d)", hay):
-            continue
-        value = int(whole) if not frac else None
-        if value is not None:
-            if value in _SMALL_WORDS and re.search(r"\b" + _SMALL_WORDS[value] + r"\b", hay):
-                continue
-            if value in _ROUND_WORDS and re.search(r"\b" + _ROUND_WORDS[value] + r"\b", hay):
-                continue
-            # 300000 ↔ « 300k », 2000000 ↔ « 2m » / « 2 million »
-            if value >= 1000 and value % 1000 == 0 and re.search(
-                    r"(?<![\d.])" + str(value // 1000) + r"\s?(?:k\b|thousand)", hay):
-                continue
-            if value >= 1_000_000 and value % 1_000_000 == 0 and re.search(
-                    r"(?<![\d.])" + str(value // 1_000_000) + r"\s?(?:m\b|mn\b|million)", hay):
-                continue
         return m.group(0).strip()
     return None
 
@@ -995,12 +1052,13 @@ class Writer:
 
     def _vet(self, raw: str, *, max_len: int, sources: list[str], recent: list[str],
              thread: bool = False, gm: bool = False, check_numbers: bool = True,
-             plain: bool = False) -> tuple[str, str | None]:
+             plain: bool = False, position: int | None = None) -> tuple[str, str | None]:
         """Nettoie un texte candidat et dit pourquoi il est refusé (ou None).
-        `plain` : texte pour le grand public, aucun mot de jargon tech."""
+        `plain` : texte pour le grand public, aucun mot de jargon tech.
+        `position` : rang du tweet dans le thread (sa numérotation « 3/ » est retirée)."""
         text = clean_output(raw or "")
         if thread:
-            text = strip_thread_numbering(text)
+            text = strip_thread_numbering(text, position)
         # Des faits chiffrés (version, prix, limite) rendent un post d'actu crédible.
         problem = publish_problem(text, sources=sources or None, max_len=max_len,
                                   allow_numbers=4, check_numbers=check_numbers, plain=plain)
@@ -1081,11 +1139,18 @@ class Writer:
         return issues
 
     def recent_all(self) -> list[str]:
-        """Textes récents de TOUS les types de posts + ceux en attente ou programmés :
-        une actu de 18 h 30 ne doit pas répéter le post réactif de 14 h."""
-        texts: list[str] = []
-        for k in ("gm", "tip", "news", "reactive", "thread"):
-            texts += [t for t in self.state.recent_texts(k) if isinstance(t, str)]
+        """Textes récents de TOUS les types de posts + ceux en attente ou programmés,
+        du plus ancien au plus récent : une actu de 18 h 30 ne doit pas répéter le post
+        réactif de 14 h, et la fin de la liste (ce que voient la rédaction en chef et le
+        rédacteur) est bien ce que le compte a publié en dernier, tous types confondus."""
+        kinds = ("gm", "tip", "news", "reactive", "thread")
+        published = [p.get("text") for p in (self.state.data.get("published") or [])
+                     if isinstance(p, dict) and p.get("kind") in kinds and isinstance(p.get("text"), str)]
+        published = published[-60:]
+        # Textes retenus sans trace de publication (état ancien) : comptés comme plus anciens.
+        texts = [t for k in kinds for t in self.state.recent_texts(k)
+                 if isinstance(t, str) and t[:500] not in published]
+        texts += published
         skip = getattr(self, "regen_item_id", None)
         for it in self.state.items(kinds=("gm", "tip", "news", "reactive", "thread"),
                                    statuses=("awaiting", "approved", "publishing")):
@@ -1305,7 +1370,8 @@ class Writer:
             # une « expérience perso » inventée, ou un texte trop technique.
             if problem is None:
                 verdict, issues = self._factcheck(cand.texts, cand.sources, cand.used_notes)
-                if verdict is None and kind != "gm":
+                # Mode automatique : personne ne relit, donc jamais sans vérification.
+                if verdict is None and (kind != "gm" or getattr(self.settings, "approval_mode", "") == "auto"):
                     log.warning("Post %s : vérification factuelle indisponible, rien n'est proposé", kind)
                     return None
                 if verdict is None:
@@ -1530,15 +1596,15 @@ class Writer:
             if not strip_thread_numbering(clean_output(tw)).strip():
                 continue
             text, problem = self._vet(tw, max_len=POST_MAX, sources=source_texts, recent=[], thread=True,
-                                      plain=True)
+                                      plain=True, position=len(tweets) + 1)
             tweets.append(text)
             if problem:
                 cand.texts = tweets
                 return cand, f"tweet {n} : {problem}"
-        if len(tweets) > THREAD_MAX_TWEETS:
-            # On garde le hook… et la chute (le dernier tweet porte la conclusion).
-            tweets = tweets[:THREAD_MAX_TWEETS - 1] + [tweets[-1]]
         cand.texts = tweets
+        if len(tweets) > THREAD_MAX_TWEETS:
+            # Jamais coupé en silence : le tweet 1 annonce souvent le nombre de la suite.
+            return cand, f"thread trop long ({len(tweets)} tweets)"
         if len(tweets) < THREAD_MIN_TWEETS:
             return cand, f"thread trop court ({len(tweets)} tweets)"
         if recent and is_too_similar(tweets[0], recent, threshold=SIMILAR_RECENT):
@@ -1593,7 +1659,7 @@ class Writer:
     def _draft_reactive(self, news: list[NewsItem], notes: list[str], perf: str) -> Draft | None:
         now = now_local()
         fresh: list[NewsItem] = []
-        for it in self._usable_items(news, 100):
+        for it in self._usable_items(news, len(news or [])):
             age = _age_hours(it, now)
             if age is None or age >= REACTIVE_MAX_AGE_H:
                 continue

@@ -603,7 +603,7 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
         out(f"=== Aperçu : {len(items)} actus lues, {len(kinds)} post(s) à rédiger — RIEN n'est publié ===")
         notes = [str(n.get("text")) for n in state.active_notes() if n.get("text")]
         done = 0
-        from .scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD, WEEKLY_RECAP_WEEKDAYS
+        from .scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD, WEEKLY_RECAP_WEEKDAYS, Bot
         for kind in kinds:
             # Les mêmes actus que le bot en service : 4 jours pour « le futur arrive » et les
             # threads, 7 jours pour la semaine en revue (fin de semaine), le frais sinon.
@@ -625,6 +625,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             if kind == "thread":
                 draft = writer.draft_thread(picked, notes, "")
             elif kind == "reactive":
+                # Comme le bot en marche : jamais les annonces pour initiés (intérêt < 1).
+                picked = [it for it in picked if Bot._appeal(it) >= 1.0]
                 draft = writer.draft_reactive(picked, notes, "")
             else:
                 draft = writer.draft_post(kind, picked, notes, "")

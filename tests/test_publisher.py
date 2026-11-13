@@ -430,9 +430,6 @@ def test_failure_message_names_the_post(pub, state, fake_x, fake_tg, kind, start
     assert fake_tg.sent[-1]["text"].startswith(start)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: publisher._expire_late (publisher.py:451) writes « validé » "
-                                       "whatever the gender: « L'histoire du jour validé pour… » (KIND_FR "
-                                       "only agrees « publié(e) »)")
 def test_late_story_of_the_day_message_agrees_in_gender(pub, state, fake_x, fake_tg, clock):
     clock(19, 0)
     approved(state, kind="news", texts=["Doctors can now spot some illnesses years before you feel anything."])

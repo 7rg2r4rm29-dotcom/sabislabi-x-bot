@@ -400,8 +400,6 @@ def test_screenshot_posts_are_named_as_such_in_the_notes(an, state, fake_x):
     assert "posts with an image" not in notes
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: performance_notes() docstring promises at most 6 lines, but "
-                                       "_performance_notes() now returns lines[:7] (hook-shape line added)")
 def test_performance_notes_keep_their_promised_length(an, state, fake_x):
     _hooked_week(state, fake_x)
     for tw in fake_x.recent_posts[:3]:                # les posts « THE NUMBER » font aussi parler
@@ -410,5 +408,6 @@ def test_performance_notes_keep_their_promised_length(an, state, fake_x):
         pub(state, f"g{i}", "gm", f"gm post {i}", days=2 + i, hour=8, metrics=m(100, likes=0))
     an.refresh_metrics()
     notes = an.performance_notes()
-    # résumé, types, réponses, formats, accroches, heures, meilleur post : 7 lignes
-    assert len(notes.splitlines()) <= 6, notes
+    # résumé, types, réponses, formats, accroches, heures, meilleur post : 7 lignes au plus
+    assert len(notes.splitlines()) <= 7, notes
+    assert "≤ 7 lignes" in an.performance_notes.__doc__

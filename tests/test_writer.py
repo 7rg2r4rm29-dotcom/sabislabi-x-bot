@@ -699,7 +699,9 @@ class TestUngroundedNumber:
         ("It takes 3.5 seconds.", "in 3.5 seconds", None),
         ("It takes 3.5 seconds.", "in 35 seconds", "3.5"),
         ("Ready in 5 minutes, for 3 people.", "", None),       # petits nombres : laissés au relecteur
-        ("It comes out in 2026.", "", None),                   # l'année en cours
+        ("It comes out in 2026.", "It comes out this year.", None),   # l'année en cours, si la source le dit
+        ("It comes out in 2026.", "", "2026"),                 # … sinon c'est un chiffre comme un autre
+        ("It comes out in 2026.", "Planned for 2027.", "2026"),
         ("It comes out in 2027.", "", "2027"),
         ("300,000 robots.", "300k robots", None),
         ("2,000,000 users.", "2 million users", None),
@@ -718,11 +720,6 @@ class TestUngroundedNumber:
         src = [news(1, "A title", hay)]
         assert wmod.ungrounded_number(text, src) == expected
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ungrounded_number saute tout nombre d'un seul chiffre sans $/%/décimale, même suivi "
-        "d'un multiplicateur (« 3 billion », « 5 million ») : ces chiffres ne sont jamais comparés aux "
-        "sources, alors qu'un chiffre inventé ne doit « jamais pouvoir être publié, quoi qu'en dise "
-        "le relecteur »"))
     @pytest.mark.parametrize("text, hay", [
         ("It now has 3 billion users.", "Nobody knows how many users it has."),
         ("It already has 5 million users.", "It has 2 million users."),
@@ -730,10 +727,6 @@ class TestUngroundedNumber:
     def test_single_digit_millions_are_checked(self, text, hay):
         assert wmod.ungrounded_number(text, [news(1, "A title", hay)]) is not None
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: ungrounded_number tient 100 / 1,000 / 1,000,000 pour sourcés dès que « hundred » / "
-        "« thousand » / « million » apparaît n'importe où dans les sources (« three hundred », "
-        "« 2 million »), et 20 dès que « twenty » apparaît (« twenty-five ») : un chiffre faux passe"))
     @pytest.mark.parametrize("text, hay", [
         ("100 robots are ready.", "Three hundred robots are ready."),
         ("1,000 people tried it.", "Five thousand people tried it."),
@@ -1183,11 +1176,6 @@ class TestReactive:
         assert REACT_TEXT.splitlines()[0] in llm.calls[0]["user"]        # la rédaction en chef le voit
         assert REACT_TEXT.splitlines()[0] in llm.calls[1]["user"]        # la rédaction aussi
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "BUG: _draft_reactive coupe la liste à 100 actus AVANT d'écarter les trop vieilles "
-        "(self._usable_items(news, 100)) alors que sa propre limite est MAX_ITEMS_PICK = 120 : "
-        "le test `len(fresh) >= MAX_ITEMS_PICK` ne peut jamais être vrai, et sur les 120 titres "
-        "frais que le planificateur passe (NEWS_PER_POST), les 20 derniers ne sont jamais montrés"))
     def test_editor_sees_every_fresh_story_up_to_max_items_pick(self, settings, state):
         fresh = [news(i, f"Robot story number {i:03d}", url=f"https://site{i}.com/a", hours=1)
                  for i in range(1, wmod.MAX_ITEMS_PICK + 1)]
@@ -1386,15 +1374,34 @@ class TestThreads:
         assert "Today is Sunday October 18." in llm.calls[1]["user"]
         assert wmod.THREAD_ANGLES["weekly"] in llm.calls[1]["user"]
 
-    @pytest.mark.parametrize("n", [7, 8, 9])
-    def test_numbering_stripped_and_long_threads_cut_to_seven(self, settings, state, items, n):
+    @pytest.mark.parametrize("n", [4, 7])
+    def test_numbering_stripped(self, settings, state, items, n):
         tweets = [f"{i}/ {t}" for i, t in enumerate(thread_tweets("timely", n), start=1)]
         w, _ = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", tweets=tweets)}))
         only(w, "timely")
         d = w.draft_thread(items, [], "")
-        expected = thread_tweets("timely", n)
-        assert d.texts == expected[:6] + [expected[-1]]          # le hook… et la chute
-        assert len(d.texts) == wmod.THREAD_MAX_TWEETS == 7
+        assert d.texts == thread_tweets("timely", n)
+        assert wmod.THREAD_MAX_TWEETS == 7
+
+    @pytest.mark.parametrize("n", [8, 9])
+    def test_long_threads_are_rewritten_never_cut(self, settings, state, items, n):
+        # Couper en silence casserait « 5 more below. » du tweet 1 : on redemande.
+        tweets = [f"{i}/{n} {t}" for i, t in enumerate(thread_tweets("timely", n), start=1)]
+        w, llm = make_writer(settings, state, thread_flow({"timely": [
+            thread_resp("timely", tweets=tweets), thread_resp("timely", n=6)]}))
+        only(w, "timely")
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.texts == thread_tweets("timely", 6)
+        writes = [c for c in llm.calls if c["label"] == "thread-timely"]
+        assert len(writes) == 2
+        assert f"the thread had {n} tweets: write 4 to 7" in writes[1]["user"]
+
+    def test_long_thread_twice_is_dropped(self, settings, state, items):
+        w, llm = make_writer(settings, state, thread_flow({"timely": [
+            thread_resp("timely", n=8), thread_resp("timely", n=8)]}))
+        only(w, "timely")
+        assert w.draft_thread(items, [], "") is None
+        assert "factcheck" not in llm.labels()
 
     def test_empty_and_non_text_tweets_are_skipped(self, settings, state, items):
         tweets = ["", "  3/  ", None, 42] + thread_tweets("timely", 4)

@@ -69,8 +69,6 @@ class TestFilters:
         """Le tiret long trahit un texte écrit par une machine : il devient une virgule."""
         assert filters.clean_output(raw) == clean
 
-    @pytest.mark.xfail(strict=True, reason="BUG: clean_output turns a spaced range « 2 – 3 hours » into "
-                                           "« 2, 3 hours » (the range rule only matches digits glued to the dash)")
     def test_clean_output_keeps_a_spaced_range(self):
         assert filters.clean_output("It takes 2 – 3 hours.") == "It takes 2-3 hours."
 
@@ -120,9 +118,6 @@ class TestFilters:
     def test_new_off_limits_terms(self, text, term):
         assert filters.off_limits_term(text) == term
 
-    @pytest.mark.xfail(strict=True, reason="BUG: looks_like_json_leak still lists the old card_* keys but not "
-                                           "the new post schema keys (hook, hook_options, source_ids…), so a "
-                                           "leaked « \"hook\": … » is not caught")
     @pytest.mark.parametrize("leak", ['A robot folds laundry now.\n"hook": "IT CAN DO WHAT?"',
                                       '"hook_options": ["Soon, no driver."]'])
     def test_json_leak_of_the_new_post_fields(self, leak):

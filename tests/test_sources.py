@@ -564,8 +564,8 @@ def test_military_items_and_shopping_titles_are_blocked(settings, state):
     )
     hub, _ = hub_with(settings, state, [(press, (200, body))])
     kept = {i.url.rsplit("/", 1)[1] for i in hub.collect()}
-    assert kept == {"robot", "price"}
-    assert hub.last_stats["blocked"] == 8
+    assert kept == {"robot", "price", "handson"}         # « hands-on » : freiné (×0,3), plus bloqué
+    assert hub.last_stats["blocked"] == 7
     # La raison (dans le journal) dit pourquoi l'actu a été écartée.
     assert hub._blocked_reason(news_item("Stealth warships get new missiles")).startswith("sujet militaire : ")
     assert hub._blocked_reason(news_item("Fighter jets fly without a pilot")) == "sujet militaire : Fighter jets"
@@ -956,8 +956,11 @@ def test_top_for_falls_back_on_score_without_appeal():
     ]
     assert top_for("news", items, 4) == [items[1], items[2], items[3], items[5]]  # 3 par source max
     news = top_for("news", items, 6)
-    assert news[:5] == items[1:6]                                     # tout le frais d'abord…
-    assert news[5] is items[0]                                        # …puis complété par le reste
+    # Le frais d'abord, 3 titres par source au plus (frais ET reste compris), puis le reste.
+    assert _titles(news) == ["fresh-1", "fresh-2", "fresh-3", "fresh-b", "undated", "old-official"]
+    # Une seule source : on complète quand même, le frais d'abord.
+    only_a = [i for i in items if i.source == "A"]
+    assert _titles(top_for("news", only_a, 5)) == ["fresh-1", "fresh-2", "fresh-3", "fresh-4", "old-big"]
     reactive = top_for("reactive", items, 10)
     assert {i.title for i in reactive} == {"fresh-1", "fresh-2", "fresh-3", "fresh-4", "fresh-b"}
     assert _titles(top_for("tip", items, 3)) == ["old-big", "fresh-1", "fresh-2"]
@@ -1027,9 +1030,12 @@ def test_top_for_news_official_cap_is_shared_between_fresh_and_rest():
 # HTTP par défaut (requests simulé, aucun réseau)
 # ---------------------------------------------------------------------------
 class _FakeResp:
-    def __init__(self, chunks: list[bytes], ctype: str, status: int = 200) -> None:
+    def __init__(self, chunks: list[bytes], ctype: str, status: int = 200, location: str | None = None) -> None:
         self.status_code = status
         self.headers = {"Content-Type": ctype}
+        if location:
+            self.headers["Location"] = location
+        self.is_redirect = bool(location) and status in (301, 302, 303, 307, 308)
         self.encoding = "ISO-8859-1" if "charset=" not in ctype.lower() else ctype.split("charset=")[1]
         self._chunks = chunks
 
@@ -1049,9 +1055,9 @@ def test_default_http_get_caps_size_and_decodes(monkeypatch):
     assert _REAL_DEFAULT_HTTP_GET.__module__ == "bot.sources"      # la vraie, pas celle du conftest
     seen: dict = {}
 
-    def fake_get(url, timeout=None, headers=None, stream=False):
+    def fake_get(url, timeout=None, headers=None, stream=False, allow_redirects=True):
         seen.update(url=url, timeout=timeout, ua=(headers or {}).get("User-Agent"),
-                    accept=(headers or {}).get("Accept"), stream=stream)
+                    accept=(headers or {}).get("Accept"), stream=stream, redirects=allow_redirects)
         body = '<?xml version="1.0" encoding="ISO-8859-1"?><rss><title>Café</title></rss>'.encode("latin-1")
         return _FakeResp([body], "application/rss+xml")
 
@@ -1059,6 +1065,7 @@ def test_default_http_get_caps_size_and_decodes(monkeypatch):
     status, text = _REAL_DEFAULT_HTTP_GET("https://feed.example/rss")
     assert status == 200 and "Café" in text
     assert seen["timeout"] == 15 and seen["stream"] is True and "Mozilla" in seen["ua"]
+    assert seen["redirects"] is False                              # suivies une à une, jamais vers X
     assert seen["accept"] == sources.FEED_ACCEPT and "application/rss+xml" in seen["accept"]
     # Une page d'article se demande comme une page web.
     _REAL_DEFAULT_HTTP_GET("https://news.example/story", accept=sources.HTML_ACCEPT)
@@ -1069,9 +1076,39 @@ def test_default_http_get_caps_size_and_decodes(monkeypatch):
     status, text = _REAL_DEFAULT_HTTP_GET("https://feed.example/big")
     assert text == "a" * 60
 
-    monkeypatch.setattr(sources, "HTTP_MAX_SECONDS", -1)   # serveur qui distille : on coupe
+    monkeypatch.setattr(sources, "HTTP_MAX_SECONDS", -1)   # serveur qui distille : on coupe après ce qui est arrivé
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp([b"<rss>", b"more"], "text/xml; charset=utf-8"))
     status, text = _REAL_DEFAULT_HTTP_GET("https://feed.example/slow")
-    assert status == 200 and text == ""
+    assert status == 200 and text == "<rss>"
+
+
+def test_default_http_get_follows_redirects_but_never_to_x(monkeypatch):
+    import requests
+
+    asked: list[str] = []
+    routes = {
+        "https://short.example/a": _FakeResp([], "text/html", 302, "https://news.example/story"),
+        "https://news.example/story": _FakeResp([b"<p>story</p>"], "text/html; charset=utf-8"),
+        "https://short.example/x": _FakeResp([], "text/html", 301, "https://x.com/someone/status/1"),
+        "https://short.example/x-dot": _FakeResp([], "text/html", 302, "https://X.com./someone/status/1"),
+        "https://short.example/rel": _FakeResp([], "text/html", 302, "/story"),
+        "https://short.example/story": _FakeResp([b"<p>relative</p>"], "text/html; charset=utf-8"),
+        "https://loop.example/a": _FakeResp([], "text/html", 302, "https://loop.example/a"),
+    }
+
+    def fake_get(url, **kw):
+        asked.append(url)
+        return routes[url]
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert _REAL_DEFAULT_HTTP_GET("https://short.example/a") == (200, "<p>story</p>")
+    assert _REAL_DEFAULT_HTTP_GET("https://short.example/rel") == (200, "<p>relative</p>")
+    asked.clear()
+    assert _REAL_DEFAULT_HTTP_GET("https://short.example/x") == (0, "")
+    assert _REAL_DEFAULT_HTTP_GET("https://short.example/x-dot") == (0, "")
+    assert not any("x.com" in u.lower() for u in asked)             # X n'est jamais demandé
+    assert _REAL_DEFAULT_HTTP_GET("https://loop.example/a") == (0, "")      # boucle : abandon
+    assert sources._is_x_url("https://x.com./someone/status/1")
 
 
 def test_radar_accounts_are_not_bought_twice(settings, state):
@@ -1266,16 +1303,33 @@ def test_article_text_without_article_tag_reads_the_page_paragraphs():
     assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_3, _HAND_4, _HAND_5]
 
 
-def test_article_text_prefers_the_first_long_enough_article():
+def test_article_text_picks_the_story_not_the_cards_around_it():
     teaser = "<article class='card'><p>Short teaser for another story, too short to be the article.</p></article>"
-    outside = f"<div class='intro'><p>{_OTHER_STORY}</p></div>"          # texte propre, mais hors <article>
-    page = _page(f"{outside}{teaser}<article><p>{_HAND_1}</p><p>{_HAND_3}</p><p>{_HAND_4}</p></article>"
+    hand = f"<p>{_HAND_1}</p><p>{_HAND_3}</p><p>{_HAND_4}</p>"
+    # L'<article> qui contient le titre (<h1>) : même plus court que l'histoire d'à côté.
+    page = _page(f"<p>{_OTHER_STORY}</p>{teaser}<article><h1>Robot hand walks</h1>{hand}</article>"
                  f"<article><p>{_OTHER_STORY}</p></article>")
     assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_3, _HAND_4]
-    # Aucun <article> assez long : on lit tous les paragraphes de la page, dans l'ordre.
-    page = _page(f"<div class='intro'><p>{_HAND_1}</p></div><article><p>{_HAND_3}</p></article>"
-                 f"<p>{_HAND_4}</p>")
+    # Sans <h1> dans un <article> : le plus long entre le texte hors <article> et le
+    # premier <article> assez long — jamais l'histoire suivante parce que le premier est court.
+    page = _page(f"<div class='intro'><p>{_HAND_5}</p></div>{teaser}<article>{hand}</article>"
+                 f"<article><p>{_OTHER_STORY}</p></article>")
     assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_3, _HAND_4]
+    # L'histoire est hors <article> (« article-body ») et des cartes « à lire aussi » sont des <article>.
+    page = _page(f"<h1>Robot hand walks</h1><div class='article-body'>{hand}<p>{_HAND_5}</p></div>"
+                 f"<section><article><p>{_OTHER_STORY}</p></article></section>")
+    assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_3, _HAND_4, _HAND_5]
+    # Un court <article> glissé dans le texte (carte d'une autre histoire) n'est pas lu.
+    page = _page(f"<div class='intro'><p>{_HAND_1}</p></div><article><p>{_HAND_3}</p></article>"
+                 f"<p>{_HAND_4}</p><p>{_HAND_5}</p><p>{_HAND_2}</p>")
+    assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_4, _HAND_5, _HAND_2]
+    # Rien d'assez long nulle part : pas d'article (le rédacteur garde le résumé du flux).
+    assert sources.article_text(_page(f"<p>{_HAND_1}</p><article><p>{_HAND_3}</p></article>")) == ""
+    # « Related » glissé tout en haut de l'article ne coupe pas la lecture.
+    page = _page(f"<article><h1>Robot hand walks</h1><p>{_HAND_1}</p><h3>Related</h3>"
+                 f"<ul><li><a href='/x'>Robots fold laundry</a></li></ul><p>{_HAND_3}</p><p>{_HAND_4}</p>"
+                 f"<p>{_HAND_5}</p></article>")
+    assert sources.article_text(page).split("\n") == [_HAND_1, _HAND_3, _HAND_4, _HAND_5]
 
 
 def test_article_text_min_and_max_length():
@@ -1444,9 +1498,6 @@ def test_fetch_article_text_never_raises(result):
 # ---------------------------------------------------------------------------
 # Défauts connus (xfail strict) : à corriger dans bot/sources.py, puis retirer le marqueur
 # ---------------------------------------------------------------------------
-@pytest.mark.xfail(strict=True, reason="BUG: _SHOPPING_RE (sources.py:170, appliqué au titre l. 1084) bloque "
-                                       "tout « deal » (accord d'entreprise), « goes on sale » (lancement) et "
-                                       "« cheapest » : ce ne sont pas des bons plans")
 @pytest.mark.parametrize("title", [
     "Disney signs $1 billion deal with OpenAI to bring Mickey to Sora",
     "Apple strikes a deal with Google to put Gemini inside Siri",
@@ -1459,9 +1510,6 @@ def test_shopping_filter_misfires_on_business_and_launch_titles(settings, state,
     assert hub._blocked_reason(news_item(title)) is None
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _MILITARY_RE (sources.py:182, appliqué l. 1078) prend « combat » "
-                                       "(combattre les arnaques), « veterans » (anciens d'Apple), « army of » "
-                                       "(image) et « Naval » (prénom) pour des sujets militaires")
 @pytest.mark.parametrize("title, summary", [
     ("Google's new AI feature helps combat phone scams", ""),
     ("Meta launches new tools to combat deepfakes", ""),
@@ -1474,8 +1522,6 @@ def test_military_filter_misfires_on_everyday_words(settings, state, title, summ
     assert hub._blocked_reason(news_item(title, summary)) is None
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _WOW_RE (sources.py:149) n'accepte que l'apostrophe droite dans "
-                                       "« world's first » ; les flux écrivent « world’s first » (&#8217;)")
 def test_wow_words_accept_the_typographic_apostrophe():
     straight = sources.audience_factor(news_item("World's first AI-designed drug enters human trials"))
     curly = sources.audience_factor(news_item("World’s first AI-designed drug enters human trials"))
@@ -1483,9 +1529,6 @@ def test_wow_words_accept_the_typographic_apostrophe():
     assert curly == pytest.approx(W)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: le résumé généré pour Hacker News (« Trending on Hacker News… », "
-                                       "sources.py:825) contient « Hacker », un mot « qui intrigue » de _WOW_RE : "
-                                       "toute histoire HN au titre neutre reçoit ×1,6")
 def test_hn_generated_summary_is_not_a_wow_word():
     hits = {"hits": [{"title": "Notes from our database migration", "url": "https://openai.com/index/db-notes/",
                       "points": 150, "num_comments": 80, "created_at_i": int(NOW_UTC.timestamp()),
@@ -1495,8 +1538,6 @@ def test_hn_generated_summary_is_not_a_wow_word():
     assert sources.audience_factor(item) == pytest.approx(1.0)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _INSIDER_RE (sources.py:161-162) prend les verbes « shares » (montre) "
-                                       "et « raises » (soulève) pour des mots de bourse / levée de fonds")
 @pytest.mark.parametrize("title, expected", [
     ("Tesla shares video of its Optimus robot folding laundry", W),
     ("New study raises concerns about AI toys for kids", 1.0),
@@ -1505,9 +1546,6 @@ def test_insider_words_misfire_on_common_verbs(title, expected):
     assert sources.audience_factor(news_item(title)) == pytest.approx(expected)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _ARTICLE_NOISE_RE (sources.py:528, appliqué l. 665) écarte de "
-                                       "vrais faits courts : « Commission » (FTC, Commission européenne), "
-                                       "« subscribers » (contient « subscribe »)")
 def test_article_noise_filter_keeps_short_factual_paragraphs():
     ftc = "The Federal Trade Commission opened an investigation into the company on Tuesday."
     eu = "The European Commission fined Apple 500 million euros for blocking cheaper offers."
@@ -1519,10 +1557,6 @@ def test_article_noise_filter_keeps_short_factual_paragraphs():
     assert ftc in text and eu in text and subs in text        # … mais ses faits courts disparaissent
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _ParagraphExtractor (sources.py:593) n'ouvre pas de nouveau "
-                                       "paragraphe dans un bloc déjà ouvert : <blockquote><p>…</p><p>…</p>, "
-                                       "<li><p>…</p><p>…</p> ou des </p> omis collent les phrases "
-                                       "(« enter.Then »)")
 @pytest.mark.parametrize("quote", [
     "<blockquote><p>A future robot could send its hand into a space its body cannot enter.</p>"
     "<p>Then it could take it back afterwards.</p></blockquote>",
@@ -1538,9 +1572,6 @@ def test_article_text_does_not_glue_nested_paragraphs(quote):
     assert "cannot enter.Then" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: avec des </p> omis (HTML5 valide), _ParagraphExtractor avale "
-                                       "l'intertitre « More on… » et l'histoire suivante dans le dernier "
-                                       "paragraphe : un autre article se retrouve dans le texte lu par Claude")
 def test_article_text_omitted_p_end_tags_still_stop_at_read_next():
     page = _page(f"<article><p>{_HAND_1}<p>{_HAND_3}<p>{_HAND_4}<h2>More on robots</h2>"
                  f"<p>{_OTHER_STORY}</article>")
@@ -1549,10 +1580,6 @@ def test_article_text_omitted_p_end_tags_still_stop_at_read_next():
     assert "laundry" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _NOISE_BLOCK_RE (sources.py:539, appliqué l. 583) lit chaque "
-                                       "morceau des classes : le conteneur d'un article WordPress "
-                                       "(<div class=\"post … tag-robots\">) est pris pour un bloc « tags » et tout "
-                                       "le texte est ignoré")
 def test_article_text_reads_a_wordpress_post_div():
     body = f"<h1>Hand</h1><p>{_HAND_1}</p><p>{_HAND_3}</p><p>{_HAND_4}</p>"
     untagged = _page(f'<div id="post-123" class="post-123 post type-post status-publish hentry">{body}</div>')
@@ -1562,9 +1589,6 @@ def test_article_text_reads_a_wordpress_post_div():
     assert sources.article_text(page).startswith(_HAND_1)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: top_for('news') (sources.py:974) recompte le plafond par source "
-                                       "à zéro pour « le reste » : une source peut avoir 2× max(3, n // 8) "
-                                       "titres alors que d'autres sources sont écartées")
 def test_top_for_news_caps_each_source_across_fresh_and_rest():
     fresh = [_story(f"s-fresh-{k}", "S", 2, appeal=1.0) for k in range(3)]
     rest = [_story(f"s-old-{k}", "S", 30, appeal=20.0) for k in range(3)]
@@ -1576,18 +1600,15 @@ def test_top_for_news_caps_each_source_across_fresh_and_rest():
     assert sum(i.source == "W" for i in picked) == 3
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: la docstring de top_for promet pour « reactive » « le plus récent "
-                                       "d'abord » (l. 946), le code (l. 966) trie par score (fraîcheur × poids × "
-                                       "engagement × public)")
-def test_top_for_reactive_most_recent_first():
+def test_top_for_reactive_ranks_by_score_freshness_included():
+    # Docstring : « classé par score (fraîcheur comprise) » — une actu fraîche mais très
+    # forte peut passer devant une actu plus récente et plus faible.
     older_heavy = _story("older-heavy", "A", 8, appeal=3.0)
     newest = _story("newest", "B", 1, appeal=1.0)
-    assert _titles(top_for("reactive", [older_heavy, newest], 5)) == ["newest", "older-heavy"]
+    assert _titles(top_for("reactive", [older_heavy, newest], 5)) == ["older-heavy", "newest"]
+    assert "classé par score (fraîcheur comprise)" in top_for.__doc__
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _BOILERPLATE_RES (sources.py:222-224) coupe de vraies phrases : "
-                                       "« keep reading » / « read more » en fin de phrase, et tout le résumé "
-                                       "à partir d'un « The post … » antérieur à la mention WordPress")
 @pytest.mark.parametrize("raw, expected", [
     ("Kids who use AI tutors keep reading longer.", "Kids who use AI tutors keep reading longer."),
     ("The study is out today; you can read more about it in Nature.",
@@ -1600,9 +1621,6 @@ def test_summary_boilerplate_keeps_real_sentences(raw, expected):
     assert sources.clean_summary(raw) == expected
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: _TECH_TOPIC_RE (sources.py:123) laisse passer des sujets sans "
-                                       "rapport (« Mars » le chanteur, « Lunar New Year », « Texas Tech », "
-                                       "« breast implants ») dans les flux filtrés « tech »")
 @pytest.mark.parametrize("text", [
     "Bruno Mars announces a world tour",
     "Lunar New Year celebrations begin across Asia",

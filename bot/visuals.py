@@ -30,10 +30,12 @@ import base64
 import logging
 import os
 import re
+import signal
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+import unicodedata
+from urllib.parse import unquote, urlparse
 
 from . import utils
 from .filters import off_limits_term
@@ -92,15 +94,15 @@ ALLOWED_DOMAINS = (
 X_DOMAINS = ("x.com", "twitter.com", "t.co", "twimg.com")
 _X_REQUEST_RE = re.compile(r"^[a-z]+://([^/?#]*\.)?(x\.com|twitter\.com|t\.co|twimg\.com)(:\d+)?([/?#]|$)", re.I)
 
-# Bandeaux à fermer, toutes langues confondues
+# Bandeaux à fermer, toutes langues confondues. Le texte du bouton doit être EXACTEMENT
+# l'un de ceux-ci (:has-text cherche un morceau, sans les majuscules : « OK » trouvait
+# « Cookie settings », « Bookmark », « Share on Facebook », et « Close » « Closed captions »).
 _DISMISS_SELECTORS = (
-    'button:has-text("Accept all")', 'button:has-text("Accept All")',
-    'button:has-text("Accept")', 'button:has-text("I agree")',
-    'button:has-text("Tout accepter")', 'button:has-text("Accepter")',
-    'button:has-text("Got it")', 'button:has-text("OK")',
-    'button:has-text("Close")', 'button[aria-label="Close"]',
-    'button[aria-label="Dismiss"]', '[data-testid="close-button"]',
     '#onetrust-accept-btn-handler', '.cc-btn.cc-dismiss',
+    'button:text-matches("^(accept all|accept all cookies|accept|accept cookies|allow all|allow all cookies|'
+    'i agree|agree|agree and close|got it|ok|okay|tout accepter|accepter|accepter et fermer|j.accepte)$", "i")',
+    'button:text-matches("^(close|dismiss|no thanks|no, thanks|not now|×|✕)$", "i")',
+    'button[aria-label="Close"]', 'button[aria-label="Dismiss"]', '[data-testid="close-button"]',
 )
 
 # Nettoyage de la page : on masque ce qui « flotte » (menus fixes, bandeaux
@@ -133,15 +135,27 @@ _PREPARE_JS = """() => {
     el.style.setProperty('overflow', 'visible', 'important');
     if (getComputedStyle(el).position === 'fixed') el.style.setProperty('position', 'static', 'important');
   }
-  for (const el of document.querySelectorAll('body *')) {
-    const cs = getComputedStyle(el);
-    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-    if (el.contains(h)) el.style.setProperty('position', 'static', 'important');  // on le « décolle »
-    else hide(el);
-  }
+  // Ce qui flotte (menus fixes, bandeaux collants). Refait au cadrage et à la coupe :
+  // certains sites ne « collent » leur barre qu'une fois la page défilée.
+  const unfloat = window.__xbotUnfloat = keepLayout => {
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      if (el.contains(h)) el.style.setProperty('position', 'static', 'important');  // on le « décolle »
+      else if (keepLayout && cs.position === 'sticky') el.style.setProperty('visibility', 'hidden', 'important');
+      else hide(el);
+    }
+  };
+  unfloat(false);
   // Bandeaux cookies, pop-ups, newsletters, chats (jamais la page ni le bloc du titre).
+  for (const el of document.querySelectorAll("[class*='modal']")) {
+    const cls = typeof el.className === 'string' ? el.className : '';
+    if (!/(^|[\\s_-])modal/i.test(cls)) continue;          // « multimodal-chart » n'en est pas un
+    if (el === document.body || el === document.documentElement || el.contains(h)) continue;
+    hide(el);
+  }
   for (const el of document.querySelectorAll("[class*='cookie'],[id*='cookie'],[class*='consent'],"
-      + "[id*='consent'],[class*='newsletter'],[class*='popup'],[class*='modal'],iframe[src*='chat'],"
+      + "[id*='consent'],[class*='newsletter'],[class*='popup'],iframe[src*='chat'],"
       + "[class*='intercom'],[class*='drift'],[id^='sp_message'],#onetrust-consent-sdk,#didomi-host,"
       + "#usercentrics-root,#CybotCookiebotDialog,.fc-consent-root,.qc-cmp2-container,#cmpbox,"
       + "[class*='paywall'],[class*='app-banner'],[class*='smartbanner']")) {
@@ -149,7 +163,7 @@ _PREPARE_JS = """() => {
     hide(el);
   }
   // Publicités : emplacements (souvent vides) et leurs étiquettes « Advertisement ».
-  const AD = /(^|[\\s_-])(ad|ads|advert|adverts|advertisement|advertising|adslot|adunit|adwrapper|adcontainer|dfp|gpt|sponsor|sponsored|outbrain|taboola|leaderboard|billboard|mpu|skyscraper)([\\s_-]|$)/i;
+  const AD = /(^|[\\s_-])(ad|ads|advert|adverts|advertisement|advertising|adslot|adunit|adwrapper|adcontainer|dfp|sponsor|sponsored|outbrain|taboola|leaderboard|billboard|mpu|skyscraper)([\\s_-]|$)/i;
   for (const el of document.querySelectorAll('div, aside, section, ins, span, figure')) {
     if (el.contains(h) || h.contains(el)) continue;
     const cls = typeof el.className === 'string' ? el.className : '';
@@ -162,7 +176,7 @@ _PREPARE_JS = """() => {
     if (/doubleclick|googlesyndication|adservice|amazon-adsystem|adnxs|\\bads?\\b|advert/i.test(k)) hide(f);
   }
   for (const el of document.querySelectorAll('div, span, p, small, label')) {
-    if (el.children.length || el.contains(h)) continue;
+    if (el.children.length || el.contains(h) || h.contains(el)) continue;
     if (!/^(advertisement|advertising|ad|sponsored|sponsored content|ad feedback|publicit[ée])$/i.test((el.textContent || '').trim())) continue;
     hide(el);
     const box = el.parentElement;
@@ -194,19 +208,21 @@ _SETTLE_JS = """async (reach) => {
   const near = el => { const r = el.getBoundingClientRect(); return r.bottom > -50 && r.top < reach && r.width > 40; };
   const imgs = [...document.images].filter(near);
   for (const img of imgs) { if (img.loading === 'lazy') img.loading = 'eager'; }
-  await Promise.all(imgs.map(img => (img.complete && img.naturalWidth > 0) ? null : new Promise(done => {
+  await Promise.all(imgs.map(img => img.complete ? null : new Promise(done => {
     img.addEventListener('load', done, {once: true});
     img.addEventListener('error', done, {once: true});
     setTimeout(done, 5000);
   })));
   let removed = 0;
+  const h = window.__xbotHeadline;
   for (const img of imgs) {
     if (img.complete && img.naturalWidth > 0) continue;
-    const box = img.closest('figure') || img;
+    let box = img.closest('figure') || img;
+    if (h && box.contains(h)) box = img;      // titre posé sur la photo : on ne retire que l'image
     box.style.setProperty('display', 'none', 'important');
     removed++;
   }
-  try { await document.fonts.ready; } catch (e) {}
+  try { await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 3000))]); } catch (e) {}
   return removed;
 }"""
 
@@ -215,9 +231,10 @@ _SETTLE_JS = """async (reach) => {
 _ALIGN_JS = """([margin, maxH, headEnd]) => {
   const h = window.__xbotHeadline, rect = window.__xbotRect;
   if (!h || !rect) return null;
+  if (window.__xbotUnfloat) window.__xbotUnfloat(false);
   let r = rect(h);
   const vw = document.documentElement.clientWidth;
-  let top = r.top - margin;
+  let top = r.top - margin, textTop = r.top;
   for (const el of document.querySelectorAll('a, span, p, time, div, li, strong')) {
     if (el.contains(h) || h.contains(el)) continue;
     const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim().length > 1);
@@ -229,7 +246,10 @@ _ALIGN_JS = """([margin, maxH, headEnd]) => {
     // un bouton ou un logo de l'en-tête du site ne l'est pas.
     const aligned = Math.abs(b.left - r.left) < 60
       || Math.abs((b.left + b.right) / 2 - (r.left + r.right) / 2) < 40;
-    if (aligned && b.bottom <= r.top + 2 && b.bottom > r.top - 72) top = Math.min(top, b.top - 14);
+    if (aligned && b.bottom <= r.top + 2 && b.bottom > r.top - 72) {
+      top = Math.min(top, b.top - 14);
+      textTop = Math.min(textTop, b.top);
+    }
   }
   // Sur beaucoup de sites mobiles, la grande image est AVANT le titre : on la garde dans le
   // cadre (entière si elle tient, sinon sa partie basse), comme en faisant défiler.
@@ -238,7 +258,7 @@ _ALIGN_JS = """([margin, maxH, headEnd]) => {
     if (el.contains(h) || h.contains(el)) continue;
     const b = el.getBoundingClientRect();
     if (b.width < 0.6 * vw || b.height < 120 || b.height > 700) continue;
-    if (b.bottom > top + 8 || b.bottom < top - 70) continue;
+    if (b.bottom > textTop + 8 || b.bottom < textTop - 70) continue;
     if (!lead || b.height > lead.getBoundingClientRect().height) lead = el;
   }
   if (lead) {
@@ -293,7 +313,14 @@ _ALIGN_JS = """([margin, maxH, headEnd]) => {
   r = rect(h);
   const doc = document.documentElement;
   return {top: r.top, bottom: r.bottom, left: r.left, right: r.right, vw: doc.clientWidth,
-          pageWidth: doc.scrollWidth, lead: !!lead};
+          pageWidth: doc.scrollWidth, lead: !!lead,
+          scale: window.visualViewport ? window.visualViewport.scale : 1};
+}"""
+
+# Position actuelle du haut du titre (sans rien déplacer) : a-t-il bougé depuis le cadrage ?
+_HEAD_TOP_JS = """() => {
+  const h = window.__xbotHeadline, rect = window.__xbotRect;
+  return (h && rect) ? rect(h).top : null;
 }"""
 
 # Où couper en bas : le plus bas possible (jusqu'au 4:5), mais entre deux lignes de
@@ -301,6 +328,7 @@ _ALIGN_JS = """([margin, maxH, headEnd]) => {
 _FRAME_JS = """([minH, maxH]) => {
   const h = window.__xbotHeadline, rect = window.__xbotRect;
   if (!h || !rect) return null;
+  if (window.__xbotUnfloat) window.__xbotUnfloat(true);      // sans rien déplacer
   const vw = document.documentElement.clientWidth;
   const seen = el => !el.checkVisibility || el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
   const lines = [], blocks = [];
@@ -351,6 +379,14 @@ def headline_fits(m: dict | None) -> str | None:
         return "titre non mesurable"
     if bottom <= top or vw <= 0:
         return "titre non mesurable"
+    # Page dézoomée par le navigateur (pas de réglage mobile, ou un bloc trop large) : la
+    # capture montrerait une page de bureau en tout petit, coupée n'importe où.
+    try:
+        scale = float(m.get("scale", 1) or 1)
+    except (TypeError, ValueError):
+        scale = 1.0
+    if abs(scale - 1) > 0.01 or abs(vw - SHOT_WIDTH) > 2:
+        return "page pas faite pour un téléphone (affichée en petit)"
     if top < -2:
         return "titre coupé en haut"
     # Une image d'ouverture laisse toujours de la place sous le titre (_ALIGN_JS) ; sans
@@ -411,10 +447,18 @@ def trim_flat_bottom(path: Path) -> bool:
         return False
 
 
+# Les domaines de X n'existent pas pour le navigateur des captures : même une redirection
+# (lien cité, image, script) n'y arrive jamais (le blocage des requêtes de la page, lui,
+# ne voit que la première adresse d'une redirection).
+X_RESOLVER_RULES = ", ".join(f"MAP {pat} ~NOTFOUND" for d in (*X_DOMAINS, "ads-twitter.com")
+                             for pat in (d, f"*.{d}"))
+
+
 def launch_options() -> dict:
     """Options de lancement de Chromium. XBOT_BROWSER_PATH / XBOT_BROWSER_PROXY ne
     servent qu'aux environnements de test (navigateur préinstallé, proxy)."""
-    launch: dict = {"headless": True, "args": ["--disable-dev-shm-usage", "--no-first-run", "--disable-extensions"]}
+    launch: dict = {"headless": True, "args": ["--disable-dev-shm-usage", "--no-first-run", "--disable-extensions",
+                                               f"--host-resolver-rules={X_RESOLVER_RULES}"]}
     if os.getenv("XBOT_BROWSER_PATH"):
         launch["executable_path"] = os.environ["XBOT_BROWSER_PATH"]
     if os.getenv("XBOT_BROWSER_PROXY"):
@@ -468,13 +512,17 @@ STYLE_SUFFIX = (
 # URL
 # ---------------------------------------------------------------------------
 def host_of(url: str) -> str:
+    """Hôte d'une adresse, lu comme le lit un navigateur : « \\ » vaut « / »
+    (https://x.com\\@site.com ouvre x.com), lettres pleine chasse et %2E ramenées
+    à la normale."""
     try:
-        u = urlparse((url or "").strip())
+        u = urlparse((url or "").strip().replace("\\", "/"))
+        host = u.hostname or ""
     except ValueError:
         return ""
-    if u.scheme not in ("http", "https") or not u.netloc:
+    if u.scheme not in ("http", "https") or not host:
         return ""
-    return u.netloc.lower().rsplit("@", 1)[-1].split(":")[0].rstrip(".")
+    return unicodedata.normalize("NFKC", unquote(host)).lower().rstrip(".")
 
 
 def _host_in(host: str, domains: tuple[str, ...]) -> bool:
@@ -513,16 +561,33 @@ def final_url_ok(final_url: str, requested_url: str) -> bool:
     return site_of(final_url) == site_of(requested_url) or is_allowed_url(final_url)
 
 
+def _slug_segments(segments: list[str]) -> set[str]:
+    """Les morceaux d'une adresse qui désignent UN article : un titre (12 caractères ou
+    plus) ou un numéro (6 caractères ou plus, avec des chiffres)."""
+    return {s.lower() for s in segments if len(s) >= 12 or (len(s) >= 6 and any(c.isdigit() for c in s))}
+
+
 def same_article(final_url: str, requested_url: str) -> bool:
     """Le lien mène-t-il encore à l'article ? Non s'il renvoie vers l'accueil ou une page de
-    rubrique (le chemin demandé, raccourci) ; une adresse qui a l'air d'un article passe."""
+    rubrique (le chemin demandé, raccourci, ou une rubrique au nom long comme
+    « /ai-artificial-intelligence » sur le même site). Sur le même site, l'adresse finale
+    doit garder le numéro ou le titre de l'adresse demandée ; d'un site à l'autre (lien
+    de flux, raccourcisseur), une adresse qui a l'air d'un article passe."""
     req = [s for s in urlparse(requested_url or "").path.split("/") if s]
     fin = [s for s in urlparse(final_url or "").path.split("/") if s]
     if not req or fin == req:
         return True
     if not fin or (len(fin) < len(req) and req[:len(fin)] == fin):
         return False
-    return any(len(s) >= 12 or (len(s) >= 6 and any(c.isdigit() for c in s)) for s in fin)
+    fin_slugs = _slug_segments(fin)
+    if not fin_slugs:
+        return False
+    hf, hr = host_of(final_url), host_of(requested_url)
+    same_site = bool(hf and hr) and (hf == hr or hf.endswith("." + hr) or hr.endswith("." + hf))
+    req_slugs = _slug_segments(req)
+    if same_site and req_slugs:
+        return bool(req_slugs & fin_slugs)
+    return True
 
 
 
@@ -576,9 +641,12 @@ def page_looks_broken(title: str, body: str) -> str | None:
             return f"titre d'erreur : {title[:60]!r}"
         if sig in head:
             return f"signature d'erreur en haut de page : {sig!r}"
-    for w in _ERROR_TITLE_WORDS:
-        if w in title:
-            return f"titre d'erreur : {title[:60]!r}"
+    # Un mot comme « error » ou « unavailable » ne fait une page d'erreur que dans un titre
+    # court, et en mot entier (« Counter-terrorism… », « NBA hoops… », « quantum errors »).
+    if len(title.split()) <= 6:
+        for w in _ERROR_TITLE_WORDS:
+            if re.search(r"(?<![\w])" + re.escape(w) + r"(?![\w])", title):
+                return f"titre d'erreur : {title[:60]!r}"
     return None
 
 
@@ -591,6 +659,30 @@ def visible_text(title: str, body: str, max_chars: int = VISIBLE_TEXT_CHARS) -> 
 # ---------------------------------------------------------------------------
 # Capture (Chromium headless jetable)
 # ---------------------------------------------------------------------------
+def _kill_marked_browser(marker: str) -> int:
+    """Tue le Chromium d'une capture abandonnée (repéré par son marqueur), pour qu'une
+    page bloquée (script sans fin, police qui n'arrive jamais) ne le laisse pas tourner
+    jusqu'au redémarrage du bot. Linux (/proc) ; ailleurs, rien."""
+    if not marker:
+        return 0
+    needle = f"--xbot-capture={marker}".encode()
+    killed = 0
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return 0
+    for d in entries:
+        if not d.name.isdigit():
+            continue
+        try:
+            if needle in (d / "cmdline").read_bytes():
+                os.kill(int(d.name), signal.SIGKILL)
+                killed += 1
+        except (OSError, ValueError):
+            continue
+    return killed
+
+
 class _Cancelled(Exception):
     pass
 
@@ -618,6 +710,9 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
     try:
         with sync_playwright() as pw:
             launch_opts, context_opts = _browser_launch_options()
+            marker = getattr(cancel, "marker", "")
+            if marker:
+                launch_opts["args"] = [*launch_opts.get("args", []), f"--xbot-capture={marker}"]
             browser = pw.chromium.launch(**launch_opts)
             try:
                 context = browser.new_context(**context_opts)
@@ -665,6 +760,7 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                         if btn.is_visible():
                             btn.click(timeout=2000)
                             time.sleep(0.5)
+                            break        # un seul clic : le reste est masqué par _PREPARE_JS
                     except Exception:  # noqa: BLE001
                         continue
                 # (Les bandeaux restants sont masqués par _PREPARE_JS, sans jamais toucher à
@@ -694,20 +790,21 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
                     pass
                 # Cadrage en plusieurs temps : la page bouge encore pendant que les images de
                 # l'écran arrivent. On recadre jusqu'à ce que le titre ne bouge plus.
-                measure = None
+                measure = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT, HEADLINE_MUST_END_BEFORE])
                 for _ in range(4):
-                    measure = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT, HEADLINE_MUST_END_BEFORE])
+                    if not measure:
+                        break
                     time.sleep(0.7)
                     check()
                     try:
                         page.evaluate(_SETTLE_JS, SHOT_MAX_HEIGHT + 60)
                     except Exception:  # noqa: BLE001
                         pass
-                    after = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT, HEADLINE_MUST_END_BEFORE])
-                    moved = abs(float((after or {}).get("top", 0)) - float((measure or {}).get("top", 0)))
-                    measure = after
-                    if moved < 2:
+                    now_top = page.evaluate(_HEAD_TOP_JS)       # où est le titre, sans recadrer
+                    if now_top is not None and abs(float(now_top) - float(measure.get("top", 0))) < 2:
                         break
+                    measure = page.evaluate(_ALIGN_JS, [SHOT_TOP_MARGIN, SHOT_MAX_HEIGHT,
+                                                        HEADLINE_MUST_END_BEFORE])
                 problem = headline_fits(measure)
                 if problem:
                     log.warning("Capture refusée : %s sur %s", problem, url)
@@ -743,10 +840,13 @@ def _capture_in_browser(url: str, tag: str, cancel: threading.Event) -> tuple[Pa
 
 def capture_with_timeout(url: str, tag: str = "post",
                          timeout_s: float = CAPTURE_TIMEOUT_S) -> tuple[Path, str] | None:
-    """Capture dans un thread de travail, abandonnée après `timeout_s` (le
-    thread ferme alors son navigateur dès qu'il reprend la main)."""
+    """Capture dans un thread de travail, abandonnée après `timeout_s` : le navigateur
+    est alors tué (une page bloquée ne lui rendrait jamais la main) et le thread se
+    termine de lui-même."""
     result: dict[str, tuple[Path, str] | None] = {}
     cancel = threading.Event()
+    # Marqueur posé sur la ligne de commande du navigateur, pour le retrouver et le tuer.
+    cancel.marker = f"{os.getpid()}-{os.urandom(6).hex()}"
 
     def work() -> None:
         try:
@@ -765,7 +865,9 @@ def capture_with_timeout(url: str, tag: str = "post",
         worker.join(timeout_s)
     if worker.is_alive():
         cancel.set()
-        log.warning("Capture abandonnée : plus de %.0f s pour %s", timeout_s, url)
+        killed = _kill_marked_browser(cancel.marker)
+        log.warning("Capture abandonnée : plus de %.0f s pour %s%s", timeout_s, url,
+                    " (navigateur arrêté)" if killed else "")
         return None
     return result.get("value")
 
@@ -853,12 +955,22 @@ def shot_candidates(draft) -> list[str]:
     return out[:MAX_PAGES_TRIED]
 
 
+_COMMON_WORDS = frozenset("""
+    about after again also back been before being below best between both came come could does done
+    down each even ever every first from gets give goes going good have here into just know last like
+    made make many more most much must need never next only other over says should some still such
+    than that their them then there these they this those through under until very want week were what
+    when where which while will with would year years your you're it's that's here's
+""".split())
+
+
 def title_on_page(title: str, page_text: str) -> bool:
     """La page capturée parle-t-elle bien de l'actu citée ? Au moins la moitié des mots
     « qui comptent » du titre de l'actu doivent se retrouver dans le texte de la page
     (son titre et son début). Garde-fou contre une redirection, un direct, une page
     « à lire aussi » ; sans titre ou sans texte, on ne conclut rien."""
-    words = {w for w in re.findall(r"[a-z0-9]+", (title or "").lower()) if len(w) >= 4}
+    words = {w for w in re.findall(r"[a-z0-9]+", (title or "").lower())
+             if len(w) >= 4 and w not in _COMMON_WORDS}
     seen = set(re.findall(r"[a-z0-9]+", (page_text or "").lower()))
     if len(words) < 3 or not seen:
         return True

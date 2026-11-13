@@ -259,7 +259,7 @@ class _FakeLocator:
 
 class _FakePage:
     _SCRIPTS = {visuals._PREPARE_JS: "prepare", visuals._SETTLE_JS: "settle",
-                visuals._ALIGN_JS: "align", visuals._FRAME_JS: "frame"}
+                visuals._ALIGN_JS: "align", visuals._FRAME_JS: "frame", visuals._HEAD_TOP_JS: "headtop"}
 
     def __init__(self, world: FakeWorld) -> None:
         self.w = world
@@ -295,6 +295,9 @@ class _FakePage:
             return 0
         if name == "align":
             return _next(self.w.aligns)
+        if name == "headtop":          # où est le titre maintenant : là où le prochain cadrage le mettra
+            nxt = self.w.aligns[0]
+            return None if nxt is None else nxt.get("top")
         if name == "frame":
             return self.w.frame
         return _next(self.w.bodies)
@@ -516,10 +519,6 @@ class TestUrls:
     def test_not_x(self, url):
         assert not visuals.is_x_url(url)
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: host_of lit l'hôte avec urllib, Chromium autrement : pour ces adresses le navigateur va "
-        "sur x.com (\\ avant @, lettres pleine chasse, point encodé) mais is_x_url dit non (et "
-        "is_allowed_url dit oui pour la première). Seul le blocage des requêtes X dans la page rattrape."))
     @pytest.mark.parametrize("url", ["https://x.com\\@theverge.com/OpenAI/status/1",
                                      "https://ｘ.com/OpenAI/status/1",
                                      "https://x%2Ecom/OpenAI/status/1"])
@@ -612,9 +611,6 @@ class TestPageChecks:
         assert len(LONG_BODY * 2) > 600
         assert visuals.page_looks_broken("A new way to browse", body) is None
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: page_looks_broken cherche les mots courts (« error », « oops »…) comme sous-chaînes du "
-        "titre : « terrorism », « hoops » font prendre un vrai article pour une page d'erreur."))
     @pytest.mark.parametrize("title", ["Counter-terrorism agencies turn to AI to read the signals",
                                        "NBA hoops: the AI scout that sees every play"])
     def test_error_words_inside_other_words(self, title):
@@ -644,9 +640,6 @@ class TestPageChecks:
         assert visuals.title_on_page(TITLES[PAGE], "")
         assert visuals.title_on_page("", "anything")
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: title_on_page compte les mots-outils (your, this, will, have, next…) comme des mots « qui "
-        "comptent » : une page sans rapport passe le garde-fou dès que le titre en contient beaucoup."))
     def test_title_on_page_is_not_fooled_by_common_words(self):
         title = "Why your next phone will have this new Qualcomm chip inside"
         unrelated = "Most read: what your kids will have for lunch next week, and this summer's best beaches."
@@ -943,10 +936,20 @@ class TestCaptureInBrowser:
         assert self.capture("https://feeds.feedburner.com/techcrunch/abc123") is not None
 
     def test_consent_banners_are_clicked_away(self, fake_browser):
-        fake_browser.visible = {'button:has-text("Accept all")', "#onetrust-accept-btn-handler"}
+        accept = visuals._DISMISS_SELECTORS[2]
+        fake_browser.visible = {accept, "#onetrust-accept-btn-handler"}
         assert self.capture() is not None
-        assert fake_browser.clicked == ['button:has-text("Accept all")', "#onetrust-accept-btn-handler"]
+        assert fake_browser.clicked == ["#onetrust-accept-btn-handler"]     # un seul clic
         assert fake_browser.steps.index("prepare") > fake_browser.steps.index("goto")
+
+    def test_accept_button_found_by_its_exact_text(self, fake_browser):
+        accept = visuals._DISMISS_SELECTORS[2]
+        assert accept.startswith("button:text-matches(") and '"^(' in accept and ')$", "i")' in accept
+        fake_browser.visible = {accept}
+        assert self.capture() is not None and fake_browser.clicked == [accept]
+
+    def test_no_selector_looks_for_a_piece_of_text(self):
+        assert not any(":has-text(" in sel for sel in visuals._DISMISS_SELECTORS)
 
     def test_flaky_banner_lookups_are_ignored(self, fake_browser):
         fake_browser.fail["locator"] = RuntimeError("element is not attached to the DOM")
@@ -979,15 +982,19 @@ class TestCaptureInBrowser:
         assert "prepare" not in fake_browser.steps and fake_browser.closed == 1
 
     def test_reframes_when_the_lead_image_shows_up(self, fake_browser):
-        """L'image d'ouverture arrive pendant l'attente : le cadrage change, on recadre."""
+        """L'image d'ouverture arrive pendant l'attente : le titre a bougé, on recadre."""
         fake_browser.aligns = [dict(GOOD_MEASURE), dict(LEAD_MEASURE), dict(LEAD_MEASURE)]
         assert self.capture() is not None
-        assert fake_browser.count("align") == 4
+        assert fake_browser.count("align") == 2 and fake_browser.count("headtop") == 2
+
+    def test_a_still_page_is_framed_once(self, fake_browser):
+        assert self.capture() is not None
+        assert fake_browser.count("align") == 1 and fake_browser.count("headtop") == 1
 
     def test_at_most_four_framing_passes(self, fake_browser):
         fake_browser.aligns = [dict(GOOD_MEASURE) if i % 2 == 0 else dict(LEAD_MEASURE) for i in range(9)]
         assert self.capture() is not None
-        assert fake_browser.count("align") == 8
+        assert fake_browser.count("align") == 5                # le cadrage, puis 4 recadrages au plus
 
     def test_framing_with_a_lead_image_uses_the_stricter_limit(self, fake_browser):
         fake_browser.aligns = [dict(LEAD_MEASURE, bottom=visuals.HEADLINE_MUST_END_BEFORE + 10)]
@@ -1009,7 +1016,7 @@ class TestCaptureInBrowser:
         "error_page": (lambda w: setattr(w, "title", "404 Not Found | The Verge"), "prepare"),
         "wall_after_banners": (lambda w: setattr(w, "bodies", [ARTICLE_BODY, "Subscribe to continue reading. " * 5]),
                                "prepare"),
-        "moved_after_banners": (lambda w: (w.visible.add('button:has-text("Accept all")'),
+        "moved_after_banners": (lambda w: (w.visible.add(visuals._DISMISS_SELECTORS[2]),
                                            setattr(w, "url_after_click", "https://www.theverge.com/")), "prepare"),
         "no_headline": (lambda w: setattr(w, "prepared", False), "settle"),
         "headline_lost": (lambda w: setattr(w, "aligns", [None]), "frame"),
@@ -1465,20 +1472,12 @@ class TestRealBrowser:
     def test_self_test(self):
         assert visuals.self_test() == (True, "")
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: _ALIGN_JS cherche l'image d'ouverture d'après le haut du CADRE (déjà 22 px au-dessus du "
-        "titre, 14 px au-dessus de la rubrique) : une image collée au titre (écart < 14 px) n'est pas "
-        "gardée ; son bas est masqué et laisse une bande blanche."))
     def test_lead_image_right_above_the_headline_is_kept(self, real_page):
         lead = (f"<figure style='margin:0'><img src=\"{LEAD_SVG}\" width='390' height='260' "
                 "style='width:100%;display:block'></figure>")
         measure, _ = frame_page(real_page, article_html(lead=lead, kicker=""))
         assert measure["lead"] is True
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: _DISMISS_SELECTORS : Playwright :has-text() est une recherche de sous-chaîne sans casse ; "
-        "'button:has-text(\"OK\")' clique « Cookie settings » (ou « Facebook », « Bookmark »…) avant le vrai "
-        "bouton OK : ici la page part sur les réglages cookies et la capture est perdue."))
     def test_cookie_settings_button_is_not_taken_for_ok(self, local_site, quick_waits):
         banner = ("<div id='banner' style='position:fixed;bottom:0;left:0;right:0;height:150px;background:#eee'>"
                   "We use cookies. <button onclick=\"location.href='/privacy/cookie-settings'\">Cookie settings"
@@ -1489,9 +1488,6 @@ class TestRealBrowser:
         res = visuals.capture_with_timeout(local_site.base + "/2026/10/15/robots-fold-laundry", "t", timeout_s=60)
         assert res is not None
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: _PREPARE_JS : « gpt » fait partie des mots de publicité ; une figure de l'article sur GPT "
-        "(aria-label, id ou classe « gpt-… ») est masquée comme une pub."))
     def test_article_figure_about_gpt_is_not_taken_for_an_ad(self, real_page):
         figure = (f"<figure aria-label='GPT-5 benchmark chart' style='margin:0'><img src=\"{LEAD_SVG}\" "
                   "width='390' height='260' style='width:100%'></figure>")
@@ -1500,9 +1496,6 @@ class TestRealBrowser:
         assert real_page.evaluate(visuals._PREPARE_JS) is True
         assert real_page.evaluate("() => getComputedStyle(document.querySelector('figure')).display") != "none"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: _PREPARE_JS masque les étiquettes « Advertising »/« Sponsored »/« Ad » sans exclure ce qui est "
-        "DANS le titre (h.contains(el) manque) : un mot du titre peut disparaître de la capture."))
     def test_words_of_the_headline_are_never_hidden(self, real_page):
         real_page.set_content(article_html(headline="Google rethinks <span>advertising</span> for the age of AI",
                                            title="Google rethinks advertising for the age of AI"),
@@ -1511,9 +1504,6 @@ class TestRealBrowser:
         assert real_page.evaluate("() => document.querySelector('h1').innerText") == \
             "Google rethinks advertising for the age of AI"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-        "BUG: _SETTLE_JS masque la <figure> d'une image cassée ou trop lente sans vérifier qu'elle ne "
-        "contient pas le titre : titre en surimpression sur la photo → titre masqué, capture refusée."))
     def test_broken_hero_image_does_not_hide_the_headline(self, real_page):
         html = article_html(kicker="", headline="").replace("<h1></h1>", "").replace(
             "<article>", "<article><figure class='hero' style='margin:0'><img src='data:image/png;base64,AAAA' "

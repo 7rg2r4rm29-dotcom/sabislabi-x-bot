@@ -447,7 +447,7 @@ class PickingNews(PreviewNews):
 SHOT_URL = "https://www.theverge.com/2026/10/15/robot-laundry"
 
 
-def _story(i: int, title: str) -> "NewsItem":
+def _story(i: int, title: str):
     from bot.models import NewsItem
     return NewsItem(id=f"s{i}", title=title, summary="", url=f"https://news.example.com/{i}", source="Example",
                     published=utils.now_local() - timedelta(hours=2), official=True)
@@ -535,10 +535,6 @@ class TestPreview:
         assert "Aperçu terminé : 1/2" in out
         assert [c[0] for c in writer.calls] == ["thread", "reactive"]
 
-    @pytest.mark.xfail(strict=True, reason="BUG: --preview reactive gives the writer insider items "
-                                           "(appeal < 1) that the live breaking-news desk filters out "
-                                           "(scheduler.maybe_reactive), so the preview can show a post the "
-                                           "bot would never write")
     def test_breaking_news_preview_offers_the_editor_what_the_live_bot_does(self, settings, tmp_path, clock):
         insider = _story(1, "OpenAI launches a new API for developers")
         everyday = _story(2, "A humanoid robot folds laundry in a real home")

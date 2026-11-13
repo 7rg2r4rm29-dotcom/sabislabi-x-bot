@@ -448,8 +448,10 @@ class Publisher:
                     item["id"], item.get("kind"), when, hours)
         self._refresh(item)
         label, verb = KIND_FR.get(item.get("kind") or "", ("Le post", "publié"))
-        self._notify(f"⌛ {label} validé pour {when} n'a pas pu partir à temps (bot arrêté ou X saturé ?). "
-                     f"Avec plus de {hours} h de retard, je ne le publie pas : rien n'est parti. "
+        fem = verb.endswith("e")                     # « publiée » : l'histoire du jour
+        self._notify(f"⌛ {label} {'validée' if fem else 'validé'} pour {when} n'a pas pu partir à temps "
+                     f"(bot arrêté ou X saturé ?). Avec plus de {hours} h de retard, je ne "
+                     f"{'la' if fem else 'le'} publie pas : rien n'est parti. "
                      "Le prochain créneau suit son cours.")
 
     def _recover_stuck(self) -> None:

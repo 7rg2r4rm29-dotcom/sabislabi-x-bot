@@ -5,7 +5,7 @@ et bilan de la semaine.
   post) et range leurs statistiques publiques dans `state.published[*].metrics`,
   puis recalcule les agrégats dans `state.data["performance"]`.
   `maybe_refresh()` ne le fait qu'une fois toutes les ~3 h.
-- `performance_notes()` : 3 à 6 lignes EN ANGLAIS pour Claude (ce qui marche
+- `performance_notes()` : 3 à 7 lignes EN ANGLAIS pour Claude (ce qui marche
   sur CE compte), vide tant qu'il n'y a pas assez de posts mesurés.
 - `daily_report()` / `weekly_report()` : textes Telegram en français (HTML).
 
@@ -293,7 +293,7 @@ class Analytics:
         return over, under
 
     def performance_notes(self) -> str:
-        """≤ 6 lignes en anglais pour les consignes de Claude ; "" si moins de
+        """≤ 7 lignes en anglais pour les consignes de Claude ; "" si moins de
         5 posts mesurés. Ne lève jamais d'exception."""
         try:
             return self._performance_notes()
