@@ -1,15 +1,25 @@
-"""Tests du Writer (bot/writer.py) : aucun appel réseau, Claude simulé par FakeLLM."""
+"""Tests du Writer (bot/writer.py) : aucun appel réseau, Claude simulé par FakeLLM.
+
+Le Writer travaille en deux temps : la rédaction en chef (« pick-… », effort bas)
+choisit les histoires sur une liste de titres, le bot lit le texte des articles
+retenus (lecteur injecté : jamais le vrai réseau), puis Claude écrit (« post-… » /
+« thread-… ») et un relecteur vérifie chaque affirmation (« factcheck »)."""
 from __future__ import annotations
 
 import random
+import threading
+import time
 from datetime import timedelta
 
 import pytest
 
+from bot import sources
 from bot import writer as wmod
+from bot.filters import _normalize_words, off_limits_term, publish_problem
 from bot.models import Draft, NewsItem, Visual
 from bot.utils import iso, now_local
 from bot.writer import Writer
+from bot.x_api import contains_url
 from tests.fakes import FakeLLM
 
 
@@ -23,11 +33,13 @@ def _frozen(clock):
 
 
 def news(n: int, title: str, summary: str = "", url: str | None = None, source: str = "OpenAI",
-         hours: float | None = 2.0, official: bool = True, kind: str = "rss", engagement: int = 0) -> NewsItem:
+         hours: float | None = 2.0, official: bool = True, kind: str = "rss", engagement: int = 0,
+         body: str = "") -> NewsItem:
     return NewsItem(
-        id=f"id{n}", title=title, summary=summary, url=url or f"https://openai.com/index/news-{n}",
+        id=f"id{n}", title=title, summary=summary,
+        url=url if url is not None else f"https://openai.com/index/news-{n}",
         source=source, published=(now_local() - timedelta(hours=hours)) if hours is not None else None,
-        official=official, kind=kind, engagement=engagement,
+        official=official, kind=kind, engagement=engagement, body=body,
     )
 
 
@@ -44,74 +56,1181 @@ def items():
         news(3, "Claude can now build small apps inside the chat",
              "Anthropic announced app building directly in conversations.",
              url="https://x.com/claudeai/status/123", source="@claudeai", kind="x", engagement=900),
+        news(4, "This home robot folds your laundry while you sleep",
+             "The robot costs $24,000 and will reach 100 homes next year, the company says.",
+             url="https://www.theverge.com/robots/laundry-robot", source="The Verge", official=False, hours=20),
     ]
 
 
-def make_writer(settings, state, responses=None, seed: int = 1) -> tuple[Writer, FakeLLM]:
+class Reader:
+    """Lecteur d'articles simulé (Writer(read_article=…)) : note chaque adresse lue et
+    rend le texte prévu pour elle — une valeur, une exception à lever ou une fonction
+    à appeler. Sans texte prévu : "" (article illisible)."""
+
+    def __init__(self, texts: dict | None = None) -> None:
+        self.texts = dict(texts or {})
+        self.urls: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str):
+        with self._lock:
+            self.urls.append(url)
+        got = self.texts.get(url, "")
+        if isinstance(got, BaseException):
+            raise got
+        return got(url) if callable(got) else got
+
+
+def make_writer(settings, state, responses=None, seed: int = 1, reader: Reader | None = None):
     llm = FakeLLM(responses or {})
-    w = Writer(settings, llm, state)
+    w = Writer(settings, llm, state, read_article=reader if reader is not None else Reader())
     w.rng = random.Random(seed)
     return w, llm
 
 
-# La carte jointe à chaque post (bot/cards.py la dessine) : ici, une phrase à copier.
-CARD = {"card_type": "prompt", "card_title": "Check any *AI answer*",
-        "card_lines": ["What would make this answer wrong?"],
-        "card_note": "Works in ChatGPT, Claude or Gemini."}
-CARD_PARSED = {"type": "prompt", "title": "Check any *AI answer*",
-               "lines": ["What would make this answer wrong?"], "note": "Works in ChatGPT, Claude or Gemini."}
+def pick(*ids, reason: str = "la plus surprenante") -> dict:
+    """Réponse de la rédaction en chef : les numéros retenus, le meilleur d'abord."""
+    return {"picks": list(ids), "reason": reason}
 
 
-def post_resp(text: str, source_ids=None, used_note_ids=None, visual_url: str = "",
-              poll_options=None, reason: str = "raison", **card) -> dict:
-    obj = {"text": text, "source_ids": list(source_ids or []), "used_note_ids": list(used_note_ids or []),
-           **CARD, "visual_url": visual_url, "poll_options": list(poll_options or []), "reason": reason}
-    obj.update(card)
-    return obj
+def post_resp(text: str, source_ids=(1,), used_note_ids=(), visual_url: str = "[1]", poll_options=(),
+              hook: str = "THE NUMBER", reason: str = "raison") -> dict:
+    return {"hook_options": (text or "").splitlines()[:1] * 5, "text": text, "source_ids": list(source_ids),
+            "used_note_ids": list(used_note_ids), "visual_url": visual_url, "poll_options": list(poll_options),
+            "hook": hook, "reason": reason}
 
 
-def only(w: Writer, *genres: str) -> None:
-    """Impose les genres de thread candidats (sinon : rotation du jour)."""
-    w.thread_plan = lambda recent_kinds: list(genres)
+def gm_resp(text: str, used_note_ids=(), poll_options=(), reason: str = "idée du jour") -> dict:
+    return {"text": text, "used_note_ids": list(used_note_ids), "poll_options": list(poll_options),
+            "reason": reason}
 
 
-FC_OK = {"ok": True, "issues": "", "plain": True, "hard_words": ""}
+FC_OK = {"claims": [{"claim": "voice chat is free", "quote": "no longer require a paid plan", "supported": True}],
+         "ok": True, "issues": "", "plain": True, "hard_words": ""}
 
-NEWS_TEXT = ("free voice mode changes who practices hard conversations.\n"
-             "try this tonight: rehearse your salary talk out loud and ask it to push back like a tough manager.")
-NEWS_TEXT_2 = ("the best use of free voice mode isn't search.\n"
-               "it's rehearsal: ask it to play a difficult client and interrupt you. you'll find your weak spots.")
-TIP_TEXT = ('before you trust an AI answer, ask it: "what would make this answer wrong?"\n'
-            "you'll catch more mistakes than you think.")
-TIP_TEXT_2 = ('stop asking AI to "make this better".\n'
-              'paste your draft and ask: "list the weakest sentences and rewrite only those".')
+
+def fc_fail(issues: str = "", claims=(), ok: bool = False, plain: bool = True, hard_words: str = "") -> dict:
+    return {"claims": list(claims), "ok": ok, "issues": issues, "plain": plain, "hard_words": hard_words}
+
+
+def flow(kind: str, *posts: dict, picks=(1,), factcheck=FC_OK) -> dict:
+    """Réponses de Claude pour un post : la rédaction en chef retient `picks`, chaque
+    essai de rédaction rend le post suivant de la liste, le relecteur rend `factcheck`
+    (une liste se consomme appel après appel)."""
+    return {"pick-": pick(*picks), f"post-{kind}": list(posts), "factcheck": factcheck}
+
+
+NEWS_TEXT = ("ChatGPT will now talk with you out loud, for free.\n"
+             "No paid plan needed anymore.\n"
+             "Would you try it tonight?")
+NEWS_TEXT_2 = ("Talking out loud to ChatGPT no longer costs a thing.\n"
+               "Every user gets it now.\n"
+               "Cool or creepy?")
+TIP_TEXT = ("Soon, your laundry could fold itself.\n"
+            "A home robot already does it in early tests.\n"
+            "Would you let one in?")
+TIP_TEXT_2 = ("A robot that folds your clothes is already in a few homes.\n"
+              "It is still slow.\n"
+              "What chore would you give it first?")
+REACT_TEXT = ("Anyone can now chat out loud with ChatGPT, at no cost.\n"
+              "No subscription, no card.\n"
+              "Who will you call first?")
+GM_TEXT = "gm. what's one chore you'd happily hand to a robot today?"
+
+NOTES = ["I tested ChatGPT voice on my commute: it understood my accent",
+         "my side project got its first paying user yesterday"]
+HEADER = "OWNER'S RECENT REAL NOTES (true; use one only if it fits naturally)"
+
+
+# ---------------------------------------------------------------------------
+# La rédaction en chef : quelle histoire raconter ?
+# ---------------------------------------------------------------------------
+class TestEditorPick:
+    def test_headlines_shown_to_the_editor(self, settings, state, items):
+        items[1].summary = "Reliability problems when chaining tools. " + "More detail here. " * 30
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)))
+        assert w.draft_post("news", items, [], "") is not None
+        c = llm.calls[0]
+        assert c["label"] == "pick-news" and c["system"] == wmod.EDITOR_PROMPT and c["effort"] == "low"
+        assert set(c["schema"]["properties"]) == {"picks", "reason"}
+        user = c["user"]
+        assert ("[1] OpenAI · OFFICIAL · published 2 h ago — Voice mode is now available to all ChatGPT users"
+                " — OpenAI says voice conversations no longer require a paid plan.") in user
+        assert "[2] Hacker News · published 2 h ago · 420 points on Hacker News — Why most AI agent demos" in user
+        assert "[3] @claudeai · OFFICIAL · published 2 h ago · 900 likes on X — Claude can now" in user
+        assert "[4] The Verge · published 20 h ago — This home robot folds your laundry" in user
+        summary = items[1].summary.strip()                   # résumé coupé à HEADLINE_SUMMARY caractères
+        assert summary[:wmod.HEADLINE_SUMMARY] in user and summary[:wmod.HEADLINE_SUMMARY + 1] not in user
+
+    @pytest.mark.parametrize("kind, mood", [("news", "THE STORY OF THE DAY"), ("tip", "THE FUTURE IS COMING")])
+    def test_one_brief_per_kind(self, settings, state, items, kind, mood):
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_post(kind, items, [], "") is None
+        user = llm.calls[0]["user"]
+        assert llm.labels() == [f"pick-{kind}"]
+        brief = wmod.PICK_BRIEFS[kind].format(n=wmod.MAX_STORIES_POST, m=wmod.MAX_STORIES_POST - 1)
+        assert brief in user and mood in user
+        assert "Pick up to 3 different stories" in user and "(4 numbers at most)" in user
+
+    def test_recent_posts_listed_for_the_editor(self, settings, state, items):
+        state.remember_text("gm", "gm. an old morning post")
+        for i in range(12):
+            state.remember_text("tip", f"old post #{i:02d}")
+        state.remember_text("thread", "An old thread hook about robots")
+        state.new_item("news", ["A scheduled post about drones"], status="approved")
+        state.new_item("tip", ["A rejected post about phones"], status="rejected")
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_post("news", items, [], "") is None
+        user = llm.calls[0]["user"]
+        assert "never pick the same story again" in user
+        for t in ("old post #11", "old post #04", "An old thread hook about robots", "A scheduled post about drones"):
+            assert f"- {t}" in user, t
+        assert "old post #03" not in user and "gm. an old morning post" not in user      # les 10 derniers
+        assert "A rejected post about phones" not in user
+
+    def test_bad_picks_ignored_and_never_more_than_asked(self, settings, state, items):
+        w, llm = make_writer(settings, state, {"pick-": pick(9, 0, "x", True, None, 2, 2, 4, 1, 3, reason="robots")})
+        stories, why = w._pick("news", items, 2)
+        assert stories == [items[1], items[3]] and why == "robots"
+        stories, _ = w._pick("news", items, 4)
+        assert stories == [items[1], items[3], items[0], items[2]]
+
+    def test_writer_sees_only_the_picked_stories_in_the_editor_order(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, source_ids=[2], visual_url="[2]"),
+                                                   picks=(4, 1)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.sources == [items[0]] and d.visual == Visual("shot", items[0].url)
+        user = llm.calls[1]["user"]
+        assert "[1] The Verge" in user and "[2] OpenAI · OFFICIAL" in user
+        assert user.index(items[3].title) < user.index(items[0].title)
+        assert items[1].title not in user and items[2].title not in user
+
+    def test_at_most_max_items_pick_headlines(self, settings, state):
+        many = [news(i, f"Robot story number {i:03d}", url=f"https://site{i}.com/a") for i in range(1, 131)]
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_post("tip", many, [], "") is None
+        user = llm.calls[0]["user"]
+        assert f"[{wmod.MAX_ITEMS_PICK}] " in user and f"[{wmod.MAX_ITEMS_PICK + 1}] " not in user
+
+    @pytest.mark.parametrize("answer", [pick(), None, {"picks": "1", "reason": ""}, {"picks": [0, 99]}, {}])
+    def test_nothing_picked_means_no_post_and_no_writer_call(self, settings, state, items, answer):
+        w, llm = make_writer(settings, state, {"pick-": answer, "post-": post_resp(NEWS_TEXT), "factcheck": FC_OK})
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news"]
+        assert w.read_article.urls == []
+
+    @pytest.mark.parametrize("kind", ["tip", "news"])
+    def test_without_usable_news_nothing_is_asked(self, settings, state, kind):
+        bad = [news(7, "Bitcoin jumps after ETF news", "crypto rally"), news(8, "", ""), "not a news item"]
+        w, llm = make_writer(settings, state, flow(kind, post_resp(TIP_TEXT)))
+        assert w.draft_post(kind, [], [], "") is None
+        assert w.draft_post(kind, bad, [], "") is None
+        assert llm.calls == []
+        assert w._pick(kind, [], 4) == ([], "aucune actu")
+
+    def test_off_limits_items_never_shown(self, settings, state, items):
+        settings.blacklist_keywords = ["secretcorp"]
+        bad = [news(7, "Bitcoin jumps after ETF news", "crypto rally"),
+               news(8, "SecretCorp launches a chatbot", "a launch")]
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        w.draft_post("tip", bad + items, [], "")
+        user = llm.calls[0]["user"]
+        assert "Bitcoin" not in user and "SecretCorp" not in user
+        assert f"[1] OpenAI · OFFICIAL · published 2 h ago — {items[0].title}" in user
+
+
+# ---------------------------------------------------------------------------
+# Lecture des articles retenus
+# ---------------------------------------------------------------------------
+class TestArticleReading:
+    def test_only_picked_stories_are_read_never_x(self, settings, state, items):
+        reader = Reader({items[0].url: "OpenAI made voice chat free for every user, the company said on Monday."})
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), picks=(1, 3)), reader=reader)
+        d = w.draft_post("news", items, [], "")
+        assert d is not None
+        assert reader.urls == [items[0].url]                  # l'actu 3 est un post X : jamais lue
+        assert items[0].body.startswith("OpenAI made voice chat free")
+        assert items[1].body == items[2].body == items[3].body == ""
+        user = llm.calls[1]["user"]
+        assert "Article: OpenAI made voice chat free" in user
+        assert f"Summary: {items[2].summary}" in user
+        assert "(a post on X: it can't be used for the screenshot)" in user
+
+    def test_articles_are_read_between_the_pick_and_the_writing(self, settings, state, items):
+        labels_when_read = []
+        reader = Reader({items[0].url: lambda url: labels_when_read.append(llm.labels()) or "Full text."})
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)), reader=reader)
+        assert w.draft_post("news", items, [], "") is not None
+        assert labels_when_read == [["pick-news"]]
+
+    def test_body_already_read_and_pages_without_address_are_skipped(self, settings, state, items):
+        items[0].body = "Already read text."
+        no_page = news(9, "A story without a page", "summary", url="")
+        reader = Reader({items[0].url: "NEW TEXT", items[1].url: "Fresh text about reliability."})
+        w, _ = make_writer(settings, state, reader=reader)
+        w._read_articles([items[0], items[1], items[2], no_page])
+        assert reader.urls == [items[1].url]
+        assert items[0].body == "Already read text." and items[1].body == "Fresh text about reliability."
+        w._read_articles([items[2], no_page])                 # rien à lire : le lecteur n'est pas appelé
+        assert reader.urls == [items[1].url]
+
+    @pytest.mark.parametrize("result", [RuntimeError("boom"), "", "   \n ", None, 42, b"bytes"])
+    def test_unreadable_article_keeps_the_summary(self, settings, state, items, result):
+        reader = Reader({items[0].url: result})
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)), reader=reader)
+        assert w.draft_post("news", items, [], "") is not None
+        assert items[0].body == ""
+        for c in llm.calls[1:]:                                # rédaction et relecture
+            assert f"Summary: {items[0].summary}" in c["user"] and "Article:" not in c["user"]
+
+    def test_slow_article_keeps_the_summary(self, settings, state, items, monkeypatch):
+        monkeypatch.setattr(wmod, "READ_TIMEOUT_S", 0.2)
+        release = threading.Event()
+
+        def slow(url):
+            release.wait(5)
+            return "late text"
+        reader = Reader({items[0].url: slow, items[1].url: "Fast text about reliability."})
+        w, _ = make_writer(settings, state, reader=reader)
+        t0 = time.monotonic()
+        try:
+            w._read_articles([items[0], items[1]])
+        finally:
+            release.set()
+        assert time.monotonic() - t0 < 3
+        assert items[0].body == "" and items[1].body == "Fast text about reliability."
+
+    def test_one_shared_deadline_for_all_articles(self, settings, state, monkeypatch):
+        monkeypatch.setattr(wmod, "READ_TIMEOUT_S", 0.3)
+        release = threading.Event()
+        stories = [news(i, f"Story {i}", url=f"https://site{i}.com/a") for i in range(1, 7)]
+        reader = Reader({s.url: (lambda url: "late" if release.wait(5) else "") for s in stories})
+        w, _ = make_writer(settings, state, reader=reader)
+        t0 = time.monotonic()
+        try:
+            w._read_articles(stories)
+        finally:
+            release.set()
+        # Un délai PAR article ferait 6 × 0,3 s = 1,8 s ; le délai commun s'arrête vers 0,55 s.
+        assert time.monotonic() - t0 < 1.2
+        assert all(s.body == "" for s in stories)
+
+    def test_off_limits_article_text_is_ignored(self, settings, state, items):
+        reader = Reader({items[0].url: "Voice chat is now free. The same company also runs a casino app."})
+        w, _ = make_writer(settings, state, reader=reader)
+        w._read_articles([items[0]])
+        assert reader.urls == [items[0].url] and items[0].body == ""
+
+    def test_long_article_is_cut_for_claude(self, settings, state, items):
+        long_text = "The robot folds towels in the demo. " * 300 + "TAILMARKER"
+        assert len(long_text) > wmod.ARTICLE_SHOWN
+        reader = Reader({items[0].url: long_text})
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)), reader=reader)
+        assert w.draft_post("news", items, [], "") is not None
+        assert items[0].body == long_text                     # le texte entier est gardé…
+        assert [c["label"] for c in llm.calls[1:]] == ["post-news", "factcheck"]
+        for c in llm.calls[1:]:                                # … Claude n'en lit que le début
+            assert "Article: " + long_text[:wmod.ARTICLE_SHOWN] in c["user"]
+            assert "TAILMARKER" not in c["user"]
+        assert wmod.ARTICLE_SHOWN == sources.ARTICLE_MAX_CHARS
+
+    def test_default_reader_is_the_sources_article_reader(self, settings, state, items, monkeypatch):
+        seen = []
+        monkeypatch.setattr(sources, "fetch_article_text", lambda url: seen.append(url) or "Read by sources.")
+        w = Writer(settings, FakeLLM(), state)
+        w._read_articles([items[0], items[2]])
+        assert seen == [items[0].url] and items[0].body == "Read by sources."
+
+
+# ---------------------------------------------------------------------------
+# Posts « le futur arrive » (tip) et « l'histoire du jour » (news)
+# ---------------------------------------------------------------------------
+class TestPostWriting:
+    def test_news_post_full_flow(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT, hook="5. the number", reason="voix gratuite pour tous"), picks=(1, 2)))
+        d = w.draft_post("news", items, [], "")
+        assert isinstance(d, Draft) and d.kind == "news" and d.texts == [NEWS_TEXT]
+        assert d.sources == [items[0]] and d.reason == "voix gratuite pour tous"
+        assert d.hook == "THE NUMBER"
+        assert d.visual == Visual("shot", items[0].url)
+        assert d.poll is None and not d.from_fallback and d.used_notes == []
+        assert llm.labels() == ["pick-news", "post-news", "factcheck"]
+        write = llm.calls[1]
+        assert write["system"] == wmod.SYSTEM_PROMPT and write["effort"] is None
+        assert "This post: THE STORY OF THE DAY" in write["user"]
+        assert "Today is Thursday October 15, 10:00 in Europe." in write["user"]
+        assert "[1] OpenAI · OFFICIAL · published 2 h ago" in write["user"]
+        assert f"Summary: {items[1].summary}" in write["user"]
+        assert "POLL" not in write["user"] and "SCREENSHOT: not available" not in write["user"]
+        props = list(write["schema"]["properties"])
+        assert props[0] == "hook_options"                      # cinq débuts AVANT le texte
+        assert set(props) == {"hook_options", "text", "source_ids", "used_note_ids", "visual_url", "hook", "reason"}
+        fc = llm.calls[2]["user"]
+        assert NEWS_TEXT in fc and items[0].title in fc
+        assert items[1].title not in fc                        # le relecteur ne voit que les actus citées
+
+    def test_tip_post(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT, source_ids=[1], reason=""), picks=(4,)))
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.kind == "tip" and d.texts == [TIP_TEXT]
+        assert d.sources == [items[3]] and d.reason == "le futur arrive"
+        assert d.visual == Visual("shot", items[3].url)
+        assert llm.labels() == ["pick-tip", "post-tip", "factcheck"]
+        user = llm.calls[1]["user"]
+        assert "This post: THE FUTURE IS COMING" in user and "POLL (optional)" in user
+        assert "poll_options" in llm.calls[1]["schema"]["properties"]
+
+    def test_default_reason_for_news(self, settings, state, items):
+        w, _ = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, reason="  ")))
+        assert w.draft_post("news", items, [], "").reason == "l'histoire du jour"
+
+    @pytest.mark.parametrize("source_ids", [[], [0, 9, "x"]])
+    def test_post_without_a_cited_story_is_refused(self, settings, state, items, source_ids):
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT, source_ids=source_ids),
+                                                   post_resp(TIP_TEXT, source_ids=source_ids)))
+        assert w.draft_post("tip", items, [], "") is None
+        assert llm.labels() == ["pick-tip", "post-tip", "post-tip"]          # jamais relu
+        assert "must rely on the numbered news items and list them in source_ids" in llm.calls[2]["user"]
+
+    def test_uncited_then_cited(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT, source_ids=[]), post_resp(TIP_TEXT_2)))
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.texts == [TIP_TEXT_2] and d.sources == [items[0]]
+
+    @pytest.mark.parametrize("kind", ["tip", "news"])
+    def test_factcheck_is_mandatory(self, settings, state, items, kind):
+        w, llm = make_writer(settings, state, flow(kind, post_resp(NEWS_TEXT), factcheck=None))
+        assert w.draft_post(kind, items, [], "") is None
+        assert llm.labels() == [f"pick-{kind}", f"post-{kind}", "factcheck"]       # pas de second essai
+
+    def test_factcheck_failure_retries_once_with_the_issues(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+            factcheck=[fc_fail("the item never says it works without internet"), FC_OK]))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert llm.labels() == ["pick-news", "post-news", "factcheck", "post-news", "factcheck"]  # un seul choix
+        retry = llm.calls[3]["user"]
+        assert retry.startswith(llm.calls[1]["user"])         # même consigne, plus le motif du refus
+        assert "YOUR PREVIOUS ANSWER WAS REJECTED" in retry
+        assert "a fact-checker found unsupported claims: the item never says it works without internet" in retry
+        assert NEWS_TEXT.splitlines()[0] in retry             # le brouillon refusé est montré
+
+    def test_factcheck_failing_twice_means_no_post(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=fc_fail("unsupported claim")))
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news", "post-news", "factcheck", "post-news", "factcheck"]
+
+    @pytest.mark.parametrize("bad, feedback", [
+        ("The new LLM from OpenAI can talk out loud.\nWould you?", 'it used tech jargon ("LLM")'),
+        ("Talk to it at chatgpt.com, for free.\nWould you?", "it contained a link or a domain name"),
+        ("See https://openai.com/voice for free voice.\nWould you?", "it contained a link or a domain name"),
+        ("Free voice chat is a total game changer.\nWould you?",
+         'it used a stock phrase that sounds like an ad or a machine ("game changer")'),
+        ("BREAKING: ChatGPT voice is now free.\nWould you?", '("BREAKING")'),
+        ("ChatGPT voice is now free in 40 countries.\nWould you?",
+         "the figure 40 is not in the stories you cite"),
+        ("ChatGPT voice is free, like a crypto airdrop.\nWould you?", "it used an off-limits word or topic (crypto)"),
+        ('{"text": "ChatGPT voice is free"}', "looked like JSON"),
+        ("", "the text was empty"),
+    ])
+    def test_code_checks_send_the_draft_back_once(self, settings, state, items, bad, feedback):
+        w, llm = make_writer(settings, state, flow("news", post_resp(bad), post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "factcheck"]
+        assert feedback in llm.calls[2]["user"]
+
+    def test_code_check_failing_twice_means_no_post(self, settings, state, items):
+        bad = "Talk to it at chatgpt.com, for free.\nWould you?"
+        w, llm = make_writer(settings, state, flow("news", post_resp(bad), post_resp(bad)))
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news", "post-news", "post-news"]
+
+    def test_lowercase_breaking_is_fine(self, settings, state, items):
+        text = "A record-breaking robot just folded a shirt.\nWould you?"
+        w, llm = make_writer(settings, state, flow("news", post_resp(text)))
+        assert w.draft_post("news", items, [], "").texts == [text]
+
+    def test_figures_must_come_from_the_cited_stories(self, settings, state, items):
+        text = "This home robot folds your towels for $24,000.\nIt is coming next year.\nWould you buy one?"
+        # L'actu 2 (le robot) est retenue mais pas citée au 1er essai : son prix ne compte pas.
+        w, llm = make_writer(settings, state, flow("tip", post_resp(text, source_ids=[1]),
+                                                   post_resp(text, source_ids=[2], visual_url="[2]"), picks=(1, 4)))
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.texts == [text] and d.sources == [items[3]]
+        assert "the figure $24,000 is not in the stories you cite" in llm.calls[2]["user"]
+
+    def test_figure_from_the_article_text_counts(self, settings, state, items):
+        reader = Reader({items[0].url: "Voice chat is now free. It works in 50 languages, OpenAI says."})
+        text = "ChatGPT now talks with you in 50 languages, for free.\nWould you try it?"
+        w, llm = make_writer(settings, state, flow("news", post_resp(text)), reader=reader)
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [text]
+
+    def test_figure_from_a_used_note_counts(self, settings, state, items):
+        notes = ["I talked to ChatGPT for 14 minutes on my commute"]
+        text = "I talked to ChatGPT for 14 minutes on the train today.\nVoice is now free for everyone.\nWould you?"
+        w, llm = make_writer(settings, state, flow("news", post_resp(text), post_resp(text, used_note_ids=[1])))
+        d = w.draft_post("news", items, notes, "")
+        assert d is not None and d.used_notes == notes
+        assert "the figure 14 is not in the stories you cite" in llm.calls[2]["user"]
+
+    @pytest.mark.parametrize("raw, shape", [("5. the number", "THE NUMBER"), ("NO X, NO Y", "NO X, NO Y"),
+                                            ("my own idea", ""), ("", "")])
+    def test_hook_shape_is_stored_on_the_draft(self, settings, state, items, raw, shape):
+        w, _ = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, hook=raw)))
+        assert w.draft_post("news", items, [], "").hook == shape
+
+    def test_same_opening_as_a_recent_post_is_refused(self, settings, state, items):
+        state.remember_text("tip", "ChatGPT will now read your mail aloud.\nHandy.")
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert ('it starts with the same words as one of your recent posts ("chatgpt will now…")'
+                in llm.calls[2]["user"])
+
+    def test_same_closing_line_as_a_pending_post_is_refused(self, settings, state, items):
+        state.new_item("reactive", ["Robots can fold laundry now.\nWould you try it tonight?"], status="approved")
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert ('it ends with the same line as one of your recent posts ("would you try it tonight")'
+                in llm.calls[2]["user"])
+
+    def test_echo_check_scope(self, settings, state, items):
+        """Seuls comptent les 3 derniers posts tip / news / reactive publiés et ceux en
+        attente : ni le gm, ni les threads, ni un post refusé, ni un post plus ancien."""
+        state.remember_text("news", "ChatGPT will now draw for you.\nOld.")      # 4e en partant de la fin
+        for t in ("Robot dogs can open doors.\nWow.", "Glasses that translate a chat.\nNeat.",
+                  "Cars that park alone.\nHmm."):
+            state.remember_text("news", t)
+        state.remember_text("gm", "ChatGPT will now wake you up.\nWould you try it tonight?")
+        state.remember_text("thread", "ChatGPT will now speak for free.\nWould you try it tonight?")
+        state.new_item("tip", ["ChatGPT will now sing.\nWould you try it tonight?"], status="rejected")
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert llm.labels() == ["pick-news", "post-news", "factcheck"]
+
+    def test_short_texts_have_no_opening_or_closing_to_compare(self, settings, state, items):
+        state.remember_text("news", "Wow, robots.")
+        w, _ = make_writer(settings, state, flow("news", post_resp("Wow, robots fold laundry now.")))
+        assert w._echoes_recent("Wow, robots.") is None       # moins de 3 mots, une seule ligne
+        assert w.draft_post("news", items, [], "") is not None
+
+
+# ---------------------------------------------------------------------------
+# La capture : la page d'une actu CITÉE, jamais un post X
+# ---------------------------------------------------------------------------
+class TestScreenshotTarget:
+    @pytest.mark.parametrize("source_ids, visual_url, expected", [
+        ([1], "[1]", 0),
+        ([1], "", 0),
+        ([1], "[2]", 0),                                       # page d'une actu retenue mais non citée
+        ([1], "[9]", 0),
+        ([1], "https://techcrunch.com/other", 0),
+        ([1, 2], "[2]", 1),
+        ([1, 2], " 2 ", 1),
+        ([1, 2], "https://someblog.dev/agents-break/", 1),
+        ([3, 1], "[3]", 0),                                    # un post X : jamais de capture
+        ([3, 1], "https://x.com/claudeai/status/123", 0),
+        ([3], "[3]", None),                                    # rien de montrable : texte seul
+    ])
+    def test_screenshot_is_always_a_cited_page_never_x(self, settings, state, items, source_ids, visual_url,
+                                                        expected):
+        w, _ = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT, source_ids=source_ids, visual_url=visual_url), picks=(1, 2, 3)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None
+        assert d.visual == (None if expected is None else Visual("shot", items[expected].url))
+
+    def test_screenshots_disabled(self, settings, state, items):
+        settings.screenshots_enabled = False
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.visual is None
+        assert 'SCREENSHOT: not available right now — visual_url must be "".' in llm.calls[1]["user"]
+        settings.screenshots_enabled = True
+        d2 = w.draft_post("news", items, [], "")
+        assert d2.visual == Visual("shot", items[0].url)
+        assert "SCREENSHOT: not available" not in [c for c in llm.calls if c["label"] == "post-news"][1]["user"]
+
+    def test_url_helpers(self):
+        assert wmod.is_capturable_url("https://www.theverge.com/a")
+        assert wmod.is_capturable_url("http://someblog.dev/post")
+        for bad in ("https://x.com/a/status/1", "https://mobile.twitter.com/a", "ftp://openai.com/x", "",
+                    "openai.com", None):
+            assert not wmod.is_capturable_url(bad), bad
+        assert wmod.is_x_url("https://twitter.com/a") and wmod.is_x_url("https://www.x.com/a")
+        assert not wmod.is_x_url("https://openai.com") and not wmod.is_x_url("https://notx.com/a")
+
+
+# ---------------------------------------------------------------------------
+# Relecture : chaque affirmation, en face de la phrase de la source
+# ---------------------------------------------------------------------------
+class TestFactcheck:
+    def test_factcheck_message_and_schema(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, used_note_ids=[1]), picks=(1, 2)))
+        assert w.draft_post("news", items, NOTES, "") is not None
+        fc = llm.calls[2]
+        assert fc["label"] == "factcheck" and fc["system"] == wmod.FACTCHECK_PROMPT and fc["effort"] is None
+        assert f'DRAFT:\n"""\n{NEWS_TEXT}\n"""' in fc["user"]
+        assert items[0].title in fc["user"] and items[1].title not in fc["user"]
+        assert wmod.PERSONAL_FACTS in fc["user"] and f"- {NOTES[0]}" in fc["user"]
+        props = fc["schema"]["properties"]
+        assert list(props) == ["claims", "ok", "issues", "plain", "hard_words"]      # chaque affirmation d'abord
+        claim = props["claims"]["items"]
+        assert set(claim["properties"]) == {"claim", "quote", "supported"}
+        assert claim["additionalProperties"] is False and set(claim["required"]) == set(claim["properties"])
+
+    def test_unsupported_claim_fails_even_when_ok_is_true(self, settings, state, items):
+        verdict = fc_fail(ok=True, claims=[
+            {"claim": "you can speak to it at home", "quote": "voice conversations", "supported": True},
+            {"claim": "it works in every language", "quote": "", "supported": False},
+            {"claim": "it is free forever", "quote": "no longer require a paid plan", "supported": False}])
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=[verdict, FC_OK]))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        retry = llm.calls[3]["user"]
+        assert ('a fact-checker found unsupported claims: "it works in every language" (not in the stories); '
+                '"it is free forever" (the story says: "no longer require a paid plan")') in retry
+        assert "you can speak to it at home" not in retry     # une affirmation sourcée n'est pas renvoyée
+
+    def test_the_issues_line_is_fed_back_first(self, settings, state, items):
+        verdict = fc_fail("the story never says it is free forever",
+                          claims=[{"claim": "free forever", "quote": "", "supported": False}])
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=[verdict, FC_OK]))
+        assert w.draft_post("news", items, [], "") is not None
+        retry = llm.calls[3]["user"]
+        assert "a fact-checker found unsupported claims: the story never says it is free forever" in retry
+        assert '"free forever" (not in the stories)' not in retry
+
+    @pytest.mark.parametrize("verdict", [{"ok": False, "issues": ""}, {"ok": "true"}, {"ok": 1},
+                                         {"plain": True}, {}])
+    def test_ok_must_be_a_real_true(self, settings, state, items, verdict):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=[verdict, FC_OK]))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert "a fact-checker found unsupported claims: unsupported claims" in llm.calls[3]["user"]
+
+    @pytest.mark.parametrize("claims", ["none", None, [None, "x", 3], [{"claim": "a", "supported": None}],
+                                        [{"claim": "b", "quote": "", "supported": True}]])
+    def test_odd_claim_lists_do_not_block_a_true_ok(self, settings, state, items, claims):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), factcheck=dict(FC_OK, claims=claims)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert llm.labels() == ["pick-news", "post-news", "factcheck"]
+
+    def test_too_technical_is_rewritten(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+            factcheck=[fc_fail(ok=True, plain=False, hard_words="voice mode rollout"), FC_OK]))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert "an everyday reader would stumble on: voice mode rollout" in llm.calls[3]["user"]
+
+    def test_facts_and_plain_words_reported_together(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+            factcheck=[fc_fail("no price in the story", plain=False, hard_words="rollout"), FC_OK]))
+        assert w.draft_post("news", items, [], "") is not None
+        retry = llm.calls[3]["user"]
+        assert "a fact-checker found unsupported claims: no price in the story" in retry
+        assert "Also: an everyday reader would stumble on: rollout" in retry
+
+    def test_still_a_bit_technical_on_second_try_is_accepted(self, settings, state, items):
+        """Faits justes, relecteur encore tatillon sur les mots au 2e essai : le post part."""
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=fc_fail(ok=True, plain=False, hard_words="plan")))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert llm.labels() == ["pick-news", "post-news", "factcheck", "post-news", "factcheck"]
+
+    def test_wrong_facts_and_hard_words_on_second_try_mean_no_post(self, settings, state, items):
+        w, _ = make_writer(settings, state, flow(
+            "news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2),
+            factcheck=fc_fail("no price in the story", plain=False, hard_words="plan")))
+        assert w.draft_post("news", items, [], "") is None
+
+
+# ---------------------------------------------------------------------------
+# Formes d'accroche et chiffres sourcés (fonctions pures)
+# ---------------------------------------------------------------------------
+class TestHookShape:
+    @pytest.mark.parametrize("raw, expected", [
+        ("THE NUMBER", "THE NUMBER"),
+        ("5. the number", "THE NUMBER"),
+        ("THE NUMBER: 3 seconds of your voice", "THE NUMBER"),
+        ("it can do what?", "IT CAN DO WHAT?"),
+        ("No X, no Y", "NO X, NO Y"),
+        ("It doesn't exist", "IT DOESN'T EXIST"),
+        ("Science fiction for real", "SCIENCE FICTION, FOR REAL"),
+        ("11 - most people have no idea", "MOST PEOPLE HAVE NO IDEA"),
+        ("the machine failed", "THE MACHINE FAILED"),
+        ("", ""), ("   ", ""), (None, ""), (42, ""), (["THE NUMBER"], ""),
+        ("a brand new shape", ""), ("the", ""), ("NUMBER", ""),
+    ])
+    def test_hook_shape(self, raw, expected):
+        assert wmod.hook_shape(raw) == expected
+
+    def test_every_shape_of_the_playbook(self):
+        assert len(wmod.HOOK_SHAPES) == 11
+        for i, name in enumerate(wmod.HOOK_SHAPES, start=1):
+            assert f"{i}. {name}" in wmod.PLAYBOOK, name
+            assert wmod.hook_shape(name) == name
+            assert wmod.hook_shape(f"{i}. {name.lower()}: an example") == name
+
+
+class TestUngroundedNumber:
+    @pytest.mark.parametrize("text, hay, expected", [
+        ("It costs $499.", "Price: $499 at launch.", None),
+        ("It costs $499.", "Price not announced.", "$499"),
+        ("Used by 1,000 people.", "used by 1000 people", None),
+        ("Used by 1000 people.", "used by 1,000 people", None),
+        ("Used by 1,000 people.", "used by 1 000 people", None),
+        ("40% faster.", "It is 40 percent faster.", None),
+        ("40% faster.", "It is much faster.", "40%"),
+        ("It takes 3.5 seconds.", "in 3.5 seconds", None),
+        ("It takes 3.5 seconds.", "in 35 seconds", "3.5"),
+        ("Ready in 5 minutes, for 3 people.", "", None),       # petits nombres : laissés au relecteur
+        ("It comes out in 2026.", "", None),                   # l'année en cours
+        ("It comes out in 2027.", "", "2027"),
+        ("300,000 robots.", "300k robots", None),
+        ("2,000,000 users.", "2 million users", None),
+        ("2000000 users.", "2m users", None),
+        ("10 robots.", "ten robots", None),
+        ("100 robots.", "a hundred robots", None),
+        ("Version 12 is out.", "version 12", None),
+        ("It costs $5.", "it costs 5 dollars", None),
+        ("It costs $5.", "it is cheap", "$5"),
+        ("€20 a month.", "20 euros a month", None),
+        ("1.5 billion views.", "1.5 billion views", None),
+        ("It costs 24.", "It costs $24,000.", "24"),           # 24 n'est pas « 24 000 »
+        ("From $499 to $799.", "from $499", "$799"),           # le premier chiffre non sourcé
+    ])
+    def test_ungrounded_number(self, text, hay, expected):
+        src = [news(1, "A title", hay)]
+        assert wmod.ungrounded_number(text, src) == expected
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "BUG: ungrounded_number saute tout nombre d'un seul chiffre sans $/%/décimale, même suivi "
+        "d'un multiplicateur (« 3 billion », « 5 million ») : ces chiffres ne sont jamais comparés aux "
+        "sources, alors qu'un chiffre inventé ne doit « jamais pouvoir être publié, quoi qu'en dise "
+        "le relecteur »"))
+    @pytest.mark.parametrize("text, hay", [
+        ("It now has 3 billion users.", "Nobody knows how many users it has."),
+        ("It already has 5 million users.", "It has 2 million users."),
+    ])
+    def test_single_digit_millions_are_checked(self, text, hay):
+        assert wmod.ungrounded_number(text, [news(1, "A title", hay)]) is not None
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "BUG: ungrounded_number tient 100 / 1,000 / 1,000,000 pour sourcés dès que « hundred » / "
+        "« thousand » / « million » apparaît n'importe où dans les sources (« three hundred », "
+        "« 2 million »), et 20 dès que « twenty » apparaît (« twenty-five ») : un chiffre faux passe"))
+    @pytest.mark.parametrize("text, hay", [
+        ("100 robots are ready.", "Three hundred robots are ready."),
+        ("1,000 people tried it.", "Five thousand people tried it."),
+        ("1,000,000 people use it.", "2 million people use it."),
+        ("20 robots were sold.", "Twenty-five robots were sold."),
+    ])
+    def test_number_words_ground_only_their_own_value(self, text, hay):
+        assert wmod.ungrounded_number(text, [news(1, "A title", hay)]) is not None
+
+    def test_title_body_and_notes_count(self):
+        assert wmod.ungrounded_number("It walks 12 km.", [news(1, "It walks 12 km", "")]) is None
+        assert wmod.ungrounded_number("It walks 12 km.", [news(1, "Robot", "", body="It walked 12 km.")]) is None
+        assert wmod.ungrounded_number("I tried it for 14 days.", [], ["I tried it for 14 days"]) is None
+        assert wmod.ungrounded_number("I tried it for 14 days.", [], [None, ""]) == "14"
+        assert wmod.ungrounded_number("", []) is None and wmod.ungrounded_number(None, []) is None
+
+
+# ---------------------------------------------------------------------------
+# Post GM : ni rédaction en chef, ni source exigée
+# ---------------------------------------------------------------------------
+class TestGm:
+    def test_gm_needs_no_news_and_no_source(self, settings, state, items):
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp(GM_TEXT)], "factcheck": FC_OK})
+        d = w.draft_post("gm", items, [], "")
+        assert d is not None and d.kind == "gm" and d.texts == [GM_TEXT]
+        assert d.sources == [] and d.visual is None and d.poll is None and d.hook == ""
+        assert d.reason == "idée du jour"
+        assert llm.labels() == ["post-gm", "factcheck"]       # pas de rédaction en chef
+        assert w.read_article.urls == []
+        c = llm.calls[0]
+        assert c["system"] == wmod.GM_SYSTEM_PROMPT and items[0].title not in c["user"]
+        assert c["user"].startswith("Today is Thursday October 15.")
+        assert set(c["schema"]["properties"]) == {"text", "used_note_ids", "poll_options", "reason"}
+        fc = llm.calls[1]["user"]
+        assert "(no item cited: any claim about news, products, numbers or dates is unsupported)" in fc
+
+    def test_gm_requires_the_word_gm(self, settings, state):
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp("good morning, what would you hand to a robot?"),
+                                                           gm_resp(GM_TEXT)], "factcheck": FC_OK})
+        d = w.draft_post("gm", [], [], "")
+        assert d is not None and d.texts == [GM_TEXT]
+        assert 'the morning post must contain the word "gm"' in llm.calls[1]["user"]
+
+    def test_gm_max_200(self, settings, state):
+        long_gm = "gm. " + "a little idea about robots at home " * 7
+        assert 200 < len(long_gm) <= 260
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp(long_gm), gm_resp(long_gm)]})
+        assert w.draft_post("gm", [], [], "") is None
+        assert "max 200" in llm.calls[1]["user"]
+
+    def test_gm_shows_recent_gm_posts(self, settings, state):
+        state.remember_text("gm", "gm. coffee first, then the hard task")
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp(GM_TEXT)], "factcheck": FC_OK})
+        assert w.draft_post("gm", [], [], "") is not None
+        assert "coffee first, then the hard task" in llm.calls[0]["user"]
+
+    def test_gm_with_factcheck_down_is_flagged_not_dropped(self, settings, state):
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp(GM_TEXT, reason="")]})
+        d = w.draft_post("gm", [], [], "")
+        assert d is not None and d.reason.startswith("post du matin")
+        assert "vérification des faits indisponible" in d.reason
+        assert llm.labels() == ["post-gm", "factcheck"]
+
+    def test_gm_factcheck_failure_retries(self, settings, state):
+        w, llm = make_writer(settings, state, {
+            "post-gm": [gm_resp("gm. I just closed a deal with a robot company."), gm_resp(GM_TEXT)],
+            "factcheck": [fc_fail("personal claim not in the notes"), FC_OK]})
+        d = w.draft_post("gm", [], [], "")
+        assert d is not None and d.texts == [GM_TEXT]
+        assert "personal claim not in the notes" in llm.calls[2]["user"]
+
+
+# ---------------------------------------------------------------------------
+# Sondages
+# ---------------------------------------------------------------------------
+class TestPolls:
+    TEXTS = ["Robots that fold laundry are coming to real homes.\nWould you let one in?",
+             "A home robot can now load your dishwasher.\nHelpful or creepy?",
+             "Some cars already park themselves while you watch.\nWould you trust it?"]
+    OPTS = ["Yes, gladly", "No way"]
+
+    def _writer(self, settings, state, *texts, poll_options=None):
+        opts = self.OPTS if poll_options is None else poll_options
+        return make_writer(settings, state, flow("tip", *[post_resp(t, poll_options=opts) for t in texts]))
+
+    def test_poll_returned_without_screenshot(self, settings, state, items):
+        w, llm = self._writer(settings, state, self.TEXTS[0])
+        d = w.draft_post("tip", items, [], "")
+        assert d.poll == {"options": self.OPTS, "duration_minutes": wmod.POLL_DURATION_MIN}
+        assert d.visual is None and d.sources == [items[0]]  # un sondage n'a pas d'image
+        assert state.data.get("poll_dates", []) == []         # compté à la publication, pas au brouillon
+        assert "POLL (optional)" in llm.calls[1]["user"]
+
+    def test_gm_poll(self, settings, state):
+        w, _ = make_writer(settings, state, {"post-gm": [gm_resp("gm. robots at home: yes or no?",
+                                                                 poll_options=["Yes", "No"])],
+                                             "factcheck": FC_OK})
+        d = w.draft_post("gm", [], [], "")
+        assert d.poll and d.poll["options"] == ["Yes", "No"] and d.visual is None
+
+    def test_poll_limit_two_per_rolling_week(self, settings, state, items):
+        now = now_local()
+        state.data["poll_dates"] = [iso(now - timedelta(days=1)), iso(now - timedelta(days=6))]
+        w, llm = self._writer(settings, state, self.TEXTS[0])
+        assert w.polls_left() == 0
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.poll is None
+        assert d.visual == Visual("shot", items[0].url)      # plus de sondage : la capture revient
+        assert "POLL: not available" in llm.calls[1]["user"]
+        assert len(state.data["poll_dates"]) == 2
+
+    def test_old_polls_do_not_count(self, settings, state, items):
+        now = now_local()
+        state.data["poll_dates"] = [iso(now - timedelta(days=8)), iso(now - timedelta(days=10)),
+                                    "2026-10-14", "garbage", 42]
+        w, _ = self._writer(settings, state, self.TEXTS[0])
+        assert w.polls_left() == 1                            # seul le 14/10 compte
+        d = w.draft_post("tip", items, [], "")
+        assert d.poll is not None
+        state.new_item("tip", d.texts, status="awaiting", poll=d.poll)      # sondage en attente
+        assert w.polls_left() == 0
+
+    def test_two_polls_then_blocked(self, settings, state, items):
+        w, llm = self._writer(settings, state, *self.TEXTS)
+        for _ in range(2):
+            d = w.draft_post("tip", items, [], "")
+            assert d.poll is not None
+            state.new_item("tip", d.texts, status="approved", poll=d.poll)
+        third = w.draft_post("tip", items, [], "")
+        assert third is not None and third.poll is None
+        assert "POLL: not available" in [c for c in llm.calls if c["label"] == "post-tip"][-1]["user"]
+
+    def test_rejected_poll_draft_does_not_use_the_quota(self, settings, state, items):
+        w, _ = self._writer(settings, state, self.TEXTS[0])
+        d = w.draft_post("tip", items, [], "")
+        state.new_item("tip", d.texts, status="rejected", poll=d.poll)
+        assert w.polls_left() == 2
+
+    @pytest.mark.parametrize("opts", [
+        ["only one"],
+        ["Yes", "an option that is far too long for X"],
+        ["a", "b", "c", "d", "e"],
+        ["Yes", "yes"],                                        # doublon -> une seule option
+        ["Yes", "chatgpt.com"],
+        ["Yes", "Any LLM"],                                    # jargon
+        ["Yes", "At the casino"],                              # hors ligne
+        "Yes or no",
+    ])
+    def test_invalid_poll_options_ignored(self, settings, state, items, opts):
+        w, _ = self._writer(settings, state, self.TEXTS[0], poll_options=opts)
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.poll is None and d.visual == Visual("shot", items[0].url)
+        assert state.data.get("poll_dates", []) == []
+
+    def test_news_never_has_a_poll(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, poll_options=["Yes", "No"])))
+        d = w.draft_post("news", items, [], "")
+        assert d.poll is None and d.visual == Visual("shot", items[0].url)
+        assert "POLL" not in llm.calls[1]["user"]
+        assert "poll_options" not in llm.calls[1]["schema"]["properties"]
+        assert state.data.get("poll_dates", []) == []
+
+    def test_writer_never_records_poll_dates(self, settings, state, items):
+        w, _ = make_writer(settings, state, flow(
+            "tip", post_resp("Vote at robots.com: would you?", poll_options=self.OPTS),
+            post_resp(self.TEXTS[0], poll_options=self.OPTS)))
+        assert w.draft_post("tip", items, [], "").poll is not None
+        assert state.data.get("poll_dates", []) == []
+        w2, _ = make_writer(settings, state, {"post-gm": [gm_resp("no greeting here", poll_options=["a", "b"])] * 2})
+        assert w2.draft_post("gm", [], [], "") is None
+        assert state.data.get("poll_dates", []) == []
+
+
+# ---------------------------------------------------------------------------
+# Notes perso et notes de performance
+# ---------------------------------------------------------------------------
+class TestNotesAndPerf:
+    def test_notes_listed_and_used_notes_returned(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT, used_note_ids=[2, 7])))
+        d = w.draft_post("tip", items, NOTES, "")
+        assert d.used_notes == [NOTES[1]]
+        user = llm.calls[1]["user"]
+        assert HEADER in user and f"[1] {NOTES[0]}" in user and f"[2] {NOTES[1]}" in user
+        assert NOTES[0] not in llm.calls[0]["user"]          # la rédaction en chef ne lit que les titres
+
+    def test_no_notes_no_header(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT)))
+        d = w.draft_post("tip", items, [None, "  "], "")      # notes vides ignorées
+        assert d.used_notes == [] and HEADER not in llm.calls[1]["user"]
+
+    def test_only_the_last_notes_are_kept(self, settings, state, items):
+        notes = [f"note number {i:02d}" for i in range(12)]
+        w, llm = make_writer(settings, state, flow("tip", post_resp(TIP_TEXT)))
+        w.draft_post("tip", items, notes, "")
+        user = llm.calls[1]["user"]
+        assert "note number 03" not in user and "[1] note number 04" in user and "[8] note number 11" in user
+
+    def test_used_notes_passed_to_factcheck(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, used_note_ids=[1])))
+        d = w.draft_post("news", items, NOTES, "")
+        assert d.used_notes == [NOTES[0]] and f"- {NOTES[0]}" in llm.calls[2]["user"]
+
+    def test_gm_notes(self, settings, state):
+        w, llm = make_writer(settings, state, {"post-gm": [gm_resp(
+            "gm. tested voice chat on my commute. what would you ask it?", used_note_ids=[1])],
+            "factcheck": FC_OK})
+        d = w.draft_post("gm", [], NOTES, "")
+        assert d.used_notes == [NOTES[0]] and HEADER in llm.calls[0]["user"]
+
+    def test_perf_in_every_writing_prompt(self, settings, state, items):
+        perf = "Robot stories got twice as many replies as AI launches."
+        settings.thread_candidates = 1
+        w, llm = make_writer(settings, state, {
+            "pick-": pick(1), "post-tip": [post_resp(TIP_TEXT)], "post-gm": [gm_resp(GM_TEXT)],
+            "post-reactive": [post_resp(REACT_TEXT)], "thread-": thread_responder(), "factcheck": FC_OK})
+        assert w.draft_post("tip", items, [], perf) is not None
+        assert w.draft_post("gm", [], [], perf) is not None
+        assert w.draft_thread(items, [], perf) is not None
+        assert w.draft_reactive(items, [], perf) is not None
+        writing = [c for c in llm.calls if c["label"].startswith(("post-", "thread-"))]
+        assert [c["label"] for c in writing] == ["post-tip", "post-gm", "thread-timely", "post-reactive"]
+        for c in writing:
+            assert "WHAT WORKED RECENTLY" in c["user"] and perf in c["user"], c["label"]
+        for c in llm.calls:
+            if c["label"].startswith(("pick-", "factcheck")):
+                assert perf not in c["user"], c["label"]
+
+
+# ---------------------------------------------------------------------------
+# Filtres, nouvel essai, anti-répétition, pannes
+# ---------------------------------------------------------------------------
+class TestFiltersAndRetry:
+    def test_hashtags_and_mentions_removed(self, settings, state, items):
+        w, _ = make_writer(settings, state, flow("news", post_resp(
+            "#AI ChatGPT will now talk with you out loud, @OpenAI says.\nWould you try it?")))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and "#" not in d.texts[0] and "@" not in d.texts[0]
+
+    def test_long_dashes_become_commas(self, settings, state, items):
+        w, _ = make_writer(settings, state, flow("news", post_resp(
+            "ChatGPT will now talk with you — for free.\nWould you try it?")))
+        assert w.draft_post("news", items, [], "").texts == ["ChatGPT will now talk with you, for free.\n"
+                                                             "Would you try it?"]
+
+    def test_weighted_length_counts_emojis_double(self, settings, state, items):
+        long_text = "x" * 255 + "🚀🚀🚀"                     # 258 caractères, 261 pondérés
+        assert len(long_text) < wmod.POST_MAX
+        w, llm = make_writer(settings, state, flow("news", post_resp(long_text), post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert "261 weighted characters, max 260" in llm.calls[2]["user"]
+
+    def test_anti_repetition_against_recent_posts(self, settings, state, items):
+        state.remember_text("tip", TIP_TEXT)
+        near_copy = TIP_TEXT.replace("in?", "in!")
+        w, llm = make_writer(settings, state, flow("tip", post_resp(near_copy), post_resp(TIP_TEXT_2)))
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.texts == [TIP_TEXT_2]
+        assert "too similar to a recent post" in llm.calls[2]["user"]
+        assert TIP_TEXT.splitlines()[0] in llm.calls[1]["user"]       # posts récents montrés
+
+    def test_anti_repetition_threshold_is_0_6(self, settings, state, items):
+        state.remember_text("tip", TIP_TEXT)
+        partial = "Early tests show your home robot could soon fold laundry.\nThe future, maybe."
+        cand = _normalize_words(partial)
+        ratio = len(cand & _normalize_words(TIP_TEXT)) / len(cand)
+        assert 0.6 < ratio <= 0.7                     # refusé à 0,6, accepté au seuil par défaut 0,7
+        w, llm = make_writer(settings, state, flow("tip", post_resp(partial), post_resp(TIP_TEXT_2)))
+        d = w.draft_post("tip", items, [], "")
+        assert d is not None and d.texts == [TIP_TEXT_2]
+        assert "too similar to a recent post" in llm.calls[2]["user"]
+
+    def test_too_close_to_the_source_wording(self, settings, state, items):
+        copy = "Voice mode is now available to all ChatGPT users, OpenAI says."
+        w, llm = make_writer(settings, state, flow("news", post_resp(copy), post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert "too close to a source's wording" in llm.calls[2]["user"]
+
+    def test_malformed_output_types(self, settings, state, items):
+        bad = {"text": 123, "source_ids": "x", "used_note_ids": None, "visual_url": 5, "hook": 7}
+        w, llm = make_writer(settings, state, flow("tip", bad, bad))
+        assert w.draft_post("tip", items, [], "") is None
+        assert llm.labels() == ["pick-tip", "post-tip", "post-tip"]
+
+    def test_claude_silent_or_crashing(self, settings, state, items):
+        w, llm = make_writer(settings, state, {"pick-": pick(1)})
+        assert w.draft_post("tip", items, [], "") is None
+        assert llm.labels() == ["pick-tip", "post-tip"]      # pas de second essai inutile
+
+        def boom(*a):
+            raise RuntimeError("network down")
+        w2, _ = make_writer(settings, state, {"pick-": boom, "post-": boom, "thread-": boom, "factcheck": boom,
+                                               "judge": boom, "comment-": boom, "radar-": boom, "screenshot-": boom})
+        assert w2.draft_post("news", items, [], "") is None
+        assert w2.draft_post("gm", [], [], "") is None
+        assert w2.draft_thread(items, [], "") is None
+        assert w2.draft_reactive(items, [], "") is None
+        assert w2.draft_comment_reply("my post", "bob", "how would I try this at home?") is None
+        assert w2.draft_radar_reply("sama", "a long enough post about building robots at home", 5, 50) is None
+        assert w2.screenshot_is_clean("capture.jpg") == (False, "vérification de l'image indisponible")
+
+    def test_internal_crash_never_escapes(self, settings, state, items, monkeypatch):
+        w, _ = make_writer(settings, state)
+
+        def crash(*a, **k):
+            raise RuntimeError("bug")
+        monkeypatch.setattr(w, "_write_post", crash)
+        monkeypatch.setattr(w, "_usable_items", crash)
+        assert w.draft_post("gm", [], [], "") is None
+        assert w.draft_post("news", items, [], "") is None
+        assert w.draft_thread(items, [], "") is None
+        assert w.draft_reactive(items, [], "") is None
+        monkeypatch.setattr(w, "_fallback_text", crash)
+        d = w.fallback_post("tip")
+        assert d.texts == [wmod.DEFAULT_FALLBACKS["tip"][0]] and d.from_fallback
+
+    def test_unknown_kind(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)))
+        assert w.draft_post("meme", items, [], "") is None
+        assert w.draft_post("reactive", items, [], "") is None   # le réactif passe par draft_reactive
+        assert w.draft_post(None, items, [], "") is None
+        assert llm.calls == []
+        assert w.draft_post(" News ", items, [], "") is not None  # casse et espaces tolérés
+
+    def test_efforts(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)))
+        w.draft_post("news", items, [], "")
+        assert [(c["label"], c["effort"]) for c in llm.calls] == [("pick-news", "low"), ("post-news", None),
+                                                                   ("factcheck", None)]
+
+    def test_schemas_are_strict(self, settings, state, items):
+        w, llm = make_writer(settings, state, {
+            "pick-": pick(1), "post-news": [post_resp(NEWS_TEXT)], "post-tip": [post_resp(TIP_TEXT)],
+            "post-gm": [gm_resp(GM_TEXT)], "post-reactive": [post_resp(REACT_TEXT)], "factcheck": FC_OK})
+        assert w.draft_post("news", items, [], "") is not None
+        assert w.draft_post("tip", items, [], "") is not None
+        assert w.draft_post("gm", items, [], "") is not None
+        assert w.draft_reactive(items, [], "") is not None
+        by_label = {c["label"]: c["schema"] for c in llm.calls}
+        for label, sch in by_label.items():
+            assert sch["additionalProperties"] is False, label
+            assert set(sch["required"]) == set(sch["properties"]), label
+        post = {"hook_options", "text", "source_ids", "used_note_ids", "visual_url", "hook", "reason"}
+        assert set(by_label["post-news"]["properties"]) == post
+        assert set(by_label["post-reactive"]["properties"]) == post
+        assert set(by_label["post-tip"]["properties"]) == post | {"poll_options"}
+        assert set(by_label["post-gm"]["properties"]) == {"text", "used_note_ids", "poll_options", "reason"}
+        for label in ("post-news", "post-tip", "post-reactive"):
+            assert list(by_label[label]["properties"])[0] == "hook_options", label
+        assert set(by_label["pick-news"]["properties"]) == {"picks", "reason"}
+
+    @pytest.mark.parametrize("problem, english", [
+        ("formule toute faite (game changer)",
+         'it used a stock phrase that sounds like an ad or a machine ("game changer"): say the fact itself'),
+        ("chiffre absent des sources ($499)", "the figure $499 is not in the stories you cite"),
+        ("même début qu'un post récent (chatgpt will now)",
+         'it starts with the same words as one of your recent posts ("chatgpt will now…"): open differently'),
+        ("même fin qu'un post récent (would you)",
+         'it ends with the same line as one of your recent posts ("would you"): end differently'),
+        ("aucune source citée", "must rely on the numbered news items and list them in source_ids"),
+        ("tweet 3 : chiffre absent des sources (40)",
+         "tweet 3 was rejected: the figure 40 is not in the stories you cite"),
+        ("thread trop court (3 tweets)", "the thread had only 3 usable tweets: write 4 to 7"),
+        ("vérification factuelle : no price" + wmod.PROBLEM_SEP + "trop technique : rollout",
+         "a fact-checker found unsupported claims: no price."),
+        ("un motif inconnu", "un motif inconnu"),
+        ("", "rejected by the automatic checks"),
+    ])
+    def test_feedback_in_english(self, problem, english):
+        assert english in wmod._feedback_en(problem)
+        if wmod.PROBLEM_SEP in problem:
+            assert "Also: an everyday reader would stumble on: rollout" in wmod._feedback_en(problem)
+
+
+# ---------------------------------------------------------------------------
+# « Ça vient de tomber » : le post réactif
+# ---------------------------------------------------------------------------
+class TestReactive:
+    def test_no_fresh_items_no_call(self, settings, state):
+        old = [news(1, "Old launch", "old", hours=30), news(2, "No date", "x", hours=None),
+               news(3, "Just too old", "x", hours=wmod.REACTIVE_MAX_AGE_H)]
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT)))
+        assert w.draft_reactive(old, [], "") is None
+        assert w.draft_reactive([], [], "") is None
+        assert llm.calls == []
+
+    def test_fresh_stories_only_and_one_story_at_most(self, settings, state, items):
+        stale = news(5, "Something from this morning", "older news", hours=13)
+        blocked = news(6, "AI startup hit with lawsuit over training data", "court case", hours=1)
+        reader = Reader({items[0].url: "OpenAI made voice chat free on Monday."})
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT, hook="IT CAN DO WHAT?", reason="",
+                                                                         poll_options=["Yes", "No"]),
+                                                   picks=(1, 2)), reader=reader)
+        d = w.draft_reactive(items + [stale, blocked], NOTES, "")
+        assert isinstance(d, Draft) and d.kind == "reactive" and d.texts == [REACT_TEXT]
+        assert d.sources == [items[0]] and d.visual == Visual("shot", items[0].url)
+        assert d.reason == "ça vient de tomber" and d.hook == "IT CAN DO WHAT?" and d.poll is None
+        assert llm.labels() == ["pick-reactive", "post-reactive", "factcheck"]
+        assert reader.urls == [items[0].url]
+        editor = llm.calls[0]["user"]
+        assert wmod.PICK_BRIEFS["reactive"].format(n=1, m=0) in editor and "Pick at most 1." in editor
+        assert "[3] @claudeai" in editor and "[4] " not in editor
+        assert "this morning" not in editor and "lawsuit" not in editor and items[3].title not in editor
+        write = llm.calls[1]
+        assert write["system"] == wmod.SYSTEM_PROMPT and "This post: THIS JUST HAPPENED" in write["user"]
+        assert HEADER in write["user"] and "Article: OpenAI made voice chat free" in write["user"]
+        assert items[1].title not in write["user"]            # le 2e choix est écarté : une seule histoire
+        assert "POLL" not in write["user"] and "poll_options" not in write["schema"]["properties"]
+
+    def test_just_under_the_age_limit_is_fresh(self, settings, state):
+        it = news(1, "A robot opens a door by itself", "a demo", hours=wmod.REACTIVE_MAX_AGE_H - 0.1)
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_reactive([it], [], "") is None
+        assert llm.labels() == ["pick-reactive"] and it.title in llm.calls[0]["user"]
+
+    @pytest.mark.parametrize("answer", [pick(reason="rien d'assez fort"), None])
+    def test_nothing_picked_no_post(self, settings, state, items, answer):
+        w, llm = make_writer(settings, state, {"pick-": answer, "post-": [post_resp(REACT_TEXT)],
+                                               "factcheck": FC_OK})
+        assert w.draft_reactive(items, [], "") is None
+        assert llm.labels() == ["pick-reactive"]
+        assert w.read_article.urls == []
+
+    def test_factcheck_is_mandatory(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT), factcheck=None))
+        assert w.draft_reactive(items, [], "") is None
+        assert llm.labels() == ["pick-reactive", "post-reactive", "factcheck"]
+
+    def test_factcheck_failure_retry(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT), post_resp(NEWS_TEXT_2),
+                                                   factcheck=[fc_fail("invented detail"), FC_OK]))
+        d = w.draft_reactive(items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT_2]
+        assert "invented detail" in llm.calls[3]["user"]
+
+    def test_reactive_needs_a_cited_story(self, settings, state, items):
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT, source_ids=[]),
+                                                   post_resp(REACT_TEXT, source_ids=[])))
+        assert w.draft_reactive(items, [], "") is None
+        assert llm.labels() == ["pick-reactive", "post-reactive", "post-reactive"]
+
+    def test_same_story_as_recent_post_rejected(self, settings, state, items):
+        state.remember_text("news", REACT_TEXT)
+        w, llm = make_writer(settings, state, flow("reactive", post_resp(REACT_TEXT), post_resp(REACT_TEXT)))
+        assert w.draft_reactive(items, [], "") is None
+        assert REACT_TEXT.splitlines()[0] in llm.calls[0]["user"]        # la rédaction en chef le voit
+        assert REACT_TEXT.splitlines()[0] in llm.calls[1]["user"]        # la rédaction aussi
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "BUG: _draft_reactive coupe la liste à 100 actus AVANT d'écarter les trop vieilles "
+        "(self._usable_items(news, 100)) alors que sa propre limite est MAX_ITEMS_PICK = 120 : "
+        "le test `len(fresh) >= MAX_ITEMS_PICK` ne peut jamais être vrai, et sur les 120 titres "
+        "frais que le planificateur passe (NEWS_PER_POST), les 20 derniers ne sont jamais montrés"))
+    def test_editor_sees_every_fresh_story_up_to_max_items_pick(self, settings, state):
+        fresh = [news(i, f"Robot story number {i:03d}", url=f"https://site{i}.com/a", hours=1)
+                 for i in range(1, wmod.MAX_ITEMS_PICK + 1)]
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_reactive(fresh, [], "") is None
+        assert f"[{wmod.MAX_ITEMS_PICK}] " in llm.calls[0]["user"]
+
+
+# ---------------------------------------------------------------------------
+# Threads : un candidat par genre, le juge, la rotation
+# ---------------------------------------------------------------------------
+THREAD_HOOKS = {
+    "timely": "ChatGPT can now hold a real spoken conversation, for free. Most people have no idea yet.",
+    "future": "Soon, you may stop typing messages altogether. You will just talk to your phone.",
+    "weekly": "This week, the future got closer: talking to an AI became free, and robots learned new chores.",
+}
+THREAD_BODY = [
+    "It answers in a calm voice, and you can cut it off mid-sentence.",
+    "You can ask it to slow down, or to explain a word you missed.",
+    "It still makes mistakes, so check anything that matters.",
+    "Teachers already use it to let shy students practise speaking.",
+    "It can switch languages in the middle of a sentence.",
+    "It does not remember the call once you hang up, the company says.",
+    "Some people find a talking machine at the dinner table a little creepy.",
+    "Would you talk to it in front of your friends?",
+]
 
 
 def thread_tweets(genre: str, n: int = 5) -> list[str]:
-    hooks = {
-        "beginner": "most people use ChatGPT like a search box. snap your fridge and ask what to cook tonight.",
-        "timely": "free voice mode means anyone can rehearse a hard conversation tonight. here is the method.",
-        "tutorial": "turn any long report into the decisions it asks you to make, with one prompt.",
-        "weekly": "this week, three AI changes that matter if you never read tech news. the first one is free.",
-    }
-    body = [
-        f"step {w}: open the chat, paste your material and say what decision you need from it."
-        for w in ("one", "two", "three", "four", "five", "six", "seven", "eight")
-    ]
-    return [hooks.get(genre, f"{genre} hook")] + [f"{genre} — {b}" for b in body[: n - 1]]
+    return [THREAD_HOOKS[genre]] + THREAD_BODY[: n - 1]
 
 
-def thread_resp(genre: str, n: int = 5, source_ids=None, **extra) -> dict:
-    obj = {"tweets": thread_tweets(genre, n), "source_ids": list(source_ids or []), "used_note_ids": [],
-           "card_type": "list", "card_title": "5 things to *try tonight*",
-           "card_lines": ["Dinner from a fridge photo", "A letter explained simply"], "card_note": "",
-           "visual_url": "", "reason": f"raison {genre}"}
+def thread_resp(genre: str, n: int = 5, source_ids=(1,), visual_url: str = "[1]", **extra) -> dict:
+    obj = {"tweets": thread_tweets(genre, n), "source_ids": list(source_ids), "used_note_ids": [],
+           "visual_url": visual_url, "reason": f"raison {genre}"}
     obj.update(extra)
     return obj
 
 
 def thread_responder(per_genre: dict | None = None):
-    per_genre = per_genre or {}
+    """Réponses « thread-<genre> » : celle prévue pour ce genre (une liste se consomme
+    essai après essai, None = Claude ne répond pas), sinon un bon thread de 5 tweets."""
+    per_genre = dict(per_genre or {})
 
     def _resp(label, system, user, schema):
         genre = label.split("-", 1)[1]
@@ -120,961 +1239,338 @@ def thread_responder(per_genre: dict | None = None):
             if isinstance(v, list):
                 return v.pop(0) if v else None
             return v
-        return thread_resp(genre, source_ids=[1] if genre == "timely" else [])
+        return thread_resp(genre)
     return _resp
 
 
-# ---------------------------------------------------------------------------
-# Posts d'actu : ancrage + vérification factuelle
-# ---------------------------------------------------------------------------
-class TestNewsGrounding:
-    def test_grounded_news_post_is_factchecked(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[1], reason="voix gratuite pour tous"),
-            "factcheck": FC_OK,
-        })
-        d = w.draft_post("news", items, [], "")
-        assert isinstance(d, Draft)
-        assert d.kind == "news" and d.texts == [NEWS_TEXT]
-        assert d.sources == [items[0]]
-        assert d.reason == "voix gratuite pour tous"
-        assert d.poll is None and not d.from_fallback
-        assert llm.labels() == ["post-news", "factcheck"]
-        user = llm.calls[0]["user"]
-        assert "[1] OpenAI · OFFICIAL" in user and "[2] Hacker News" in user
-        assert "420 points on Hacker News" in user and "900 likes on X" in user
-        assert "a post on X: it can't be shown" in user
-        assert "would my neighbour care?" in user        # l'actu doit parler à tout le monde
-        assert d.card == CARD_PARSED and d.visual is None
-        fc = llm.calls[1]
-        assert NEWS_TEXT in fc["user"] and items[0].title in fc["user"]
-        assert items[1].title not in fc["user"]          # seules les actus citées
-        assert "IMAGE CARD posted with it" in fc["user"] and "What would make this answer wrong?" in fc["user"]
-        assert set(fc["schema"]["properties"]) == {"ok", "issues", "plain", "hard_words"}
+_NO_JUDGE = object()
 
-    def test_factcheck_failure_retries_with_issues(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
-            "factcheck": [{"ok": False, "issues": "the item never mentions salary talks being faster"}, FC_OK],
-        })
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT_2]
-        assert llm.labels() == ["post-news", "factcheck", "post-news", "factcheck"]
-        retry_user = llm.calls[2]["user"]
-        assert "fact-checker" in retry_user
-        assert "the item never mentions salary talks being faster" in retry_user
-        assert NEWS_TEXT.splitlines()[0] in retry_user      # le brouillon refusé est montré
 
-    def test_factcheck_failing_twice_returns_none(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[1]),
-            "factcheck": {"ok": False, "issues": "unsupported claim"},
-        })
-        assert w.draft_post("news", items, [], "") is None
-        assert llm.labels() == ["post-news", "factcheck", "post-news", "factcheck"]
+def thread_flow(per_genre=None, picks=(1,), factcheck=FC_OK, judge=_NO_JUDGE) -> dict:
+    resp = {"pick-": pick(*picks), "thread-": thread_responder(per_genre), "factcheck": factcheck}
+    if judge is not _NO_JUDGE:
+        resp["judge"] = judge
+    return resp
 
-    def test_factcheck_unavailable_returns_none_without_retry(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, source_ids=[1])})
-        assert w.draft_post("news", items, [], "") is None
-        assert llm.labels() == ["post-news", "factcheck"]
 
-    def test_news_slot_without_news_for_everyday_people_is_an_everyday_post(self, settings, state, items):
-        """Aucune actu ne parle au grand public : le créneau « actu » devient un post
-        du quotidien (aucune source citée), toujours relu."""
-        w, llm = make_writer(settings, state, {"post-news": post_resp(TIP_TEXT, source_ids=[]),
-                                               "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [TIP_TEXT] and d.sources == []
-        assert llm.labels() == ["post-news", "factcheck"]
-        assert "no item cited" in llm.calls[1]["user"]
+def only(w: Writer, *genres: str) -> None:
+    """Impose les genres des candidats du jour (sinon : le plan du jour)."""
+    w.thread_plan = lambda recent_kinds: list(genres)
 
-    def test_too_technical_is_rewritten(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
-            "factcheck": [{"ok": True, "issues": "", "plain": False, "hard_words": "voice mode latency"}, FC_OK]})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT_2]
-        retry_user = llm.calls[2]["user"]
-        assert "an everyday reader would stumble on: voice mode latency" in retry_user
 
-    def test_facts_and_plain_words_reported_together(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
-            "factcheck": [{"ok": False, "issues": "no price in the item", "plain": False, "hard_words": "rollout"},
-                          FC_OK]})
-        assert w.draft_post("news", items, [], "") is not None
-        retry_user = llm.calls[2]["user"]
-        assert "no price in the item" in retry_user and "stumble on: rollout" in retry_user
-
-    def test_still_a_bit_technical_on_second_try_is_accepted(self, settings, state, items):
-        """Faits justes, relecteur encore tatillon au 2e essai : le post part quand même."""
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, source_ids=[1]), post_resp(NEWS_TEXT_2, source_ids=[1])],
-            "factcheck": {"ok": True, "issues": "", "plain": False, "hard_words": "rehearsal"}})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT_2]
-        assert llm.labels() == ["post-news", "factcheck", "post-news", "factcheck"]
-
-    @pytest.mark.parametrize("bad, word", [
-        ("the new LLM is free for everyone. here is what to try first with it tonight.", "LLM"),
-        ("this open-source release changes what you can do at home with your photos.", "open-source"),
-        ("stop writing emails by hand: this workflow does it for you in one minute.", "workflow"),
-        ("AI can hallucinate. ask it where it found each fact before you trust it.", "hallucinate"),
-    ])
-    def test_tech_jargon_rejected_by_code(self, settings, state, items, bad, word):
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(bad), post_resp(TIP_TEXT)],
-                                               "factcheck": FC_OK})
-        d = w.draft_post("tip", items, [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-        assert llm.labels() == ["post-tip", "post-tip", "factcheck"]
-        assert f'it used tech jargon ("{word}")' in llm.calls[1]["user"]
-
-    def test_news_without_items_is_still_factchecked(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-news": post_resp(TIP_TEXT), "factcheck": FC_OK})
-        d = w.draft_post("news", [], [], "")
-        assert d is not None and d.sources == []
-        assert llm.labels() == ["post-news", "factcheck"]
-        assert "no news items could be collected" in llm.calls[0]["user"]
-        assert "no item cited" in llm.calls[1]["user"]
-
-    def test_out_of_range_source_ids_ignored(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[9, 0, "x", True, 2, 2]), "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.sources == [items[1]]
-
-    def test_tip_without_sources_is_still_factchecked(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT), "factcheck": FC_OK})
-        d = w.draft_post("tip", items, [], "")
-        assert d is not None and d.kind == "tip" and d.texts == [TIP_TEXT]
-        assert llm.labels() == ["post-tip", "factcheck"]
-        assert "relis bien" not in d.reason
-
-    def test_unsourced_tip_with_factcheck_down_is_flagged_not_dropped(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT)})
-        d = w.draft_post("tip", items, [], "")
-        assert d is not None and "vérification des faits indisponible" in d.reason
-
-    def test_invented_personal_story_in_tip_is_rejected(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-tip": [post_resp("yesterday I sorted 400 client emails in 5 min with Claude. here's how."),
-                         post_resp(TIP_TEXT)],
-            "factcheck": [{"ok": False, "issues": "personal claim not in notes"}, FC_OK]})
-        d = w.draft_post("tip", items, [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-
-    def test_tip_citing_a_source_is_factchecked(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(NEWS_TEXT, source_ids=[1]),
-                                               "factcheck": FC_OK})
-        d = w.draft_post("tip", items, [], "")
-        assert d is not None and d.sources == [items[0]]
-        assert llm.labels() == ["post-tip", "factcheck"]
-
-    def test_off_limits_items_never_shown(self, settings, state, items):
-        settings.blacklist_keywords = ["secretcorp"]
-        bad = [news(7, "Bitcoin jumps after ETF news", "crypto rally"),
-               news(8, "SecretCorp launches a chatbot", "a launch")]
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT)})
-        w.draft_post("tip", bad + items, [], "")
-        user = llm.calls[0]["user"]
-        assert "Bitcoin" not in user and "SecretCorp" not in user
-        assert items[0].title in user
-
-
-# ---------------------------------------------------------------------------
-# Filtres, nouvel essai, anti-répétition
-# ---------------------------------------------------------------------------
-class TestFiltersAndRetry:
-    @pytest.mark.parametrize("bad", [
-        "try this in claude.ai today: paste your draft and ask for the weakest sentences",
-        "full guide here https://example.com/guide — paste your draft and ask for the weakest part",
-        "open www.perplexity.ai and ask it to compare three sources before you decide",
-    ])
-    def test_url_or_domain_rejected_then_retry(self, settings, state, bad):
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(bad), post_resp(TIP_TEXT)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-        assert llm.labels() == ["post-tip", "post-tip", "factcheck"]
-        assert "domain name" in llm.calls[1]["user"]
-        assert "REJECTED" in llm.calls[1]["user"]
-
-    def test_url_twice_returns_none(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp("go to chatgpt.com and paste it")})
-        assert w.draft_post("tip", [], [], "") is None
-        assert llm.labels() == ["post-tip", "post-tip"]
-
-    def test_hashtags_and_mentions_removed(self, settings, state):
-        w, _ = make_writer(settings, state, {"post-tip": post_resp(
-            '#AI tip: ask @OpenAI models "what would make this wrong?" before you trust the answer')})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None
-        assert "#" not in d.texts[0] and "@" not in d.texts[0]
-
-    def test_weighted_length_counts_emojis_double(self, settings, state):
-        long_text = "x" * 255 + "🚀🚀🚀"           # 258 caractères, 261 pondérés
-        assert len(long_text) < 260
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(long_text), post_resp(TIP_TEXT)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-        assert "261 weighted characters, max 260" in llm.calls[1]["user"]
-
-    def test_off_limits_text_rejected(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": [
-            post_resp("AI is the new crypto: everyone is early and nobody reads the docs"),
-            post_resp(TIP_TEXT)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-        assert "off-limits" in llm.calls[1]["user"]
-
-    def test_anti_repetition_against_recent_posts(self, settings, state):
-        state.remember_text("tip", TIP_TEXT)
-        near_copy = TIP_TEXT.replace("think.", "think!")
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(near_copy), post_resp(TIP_TEXT_2)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT_2]
-        assert "too similar to a recent post" in llm.calls[1]["user"]
-        assert TIP_TEXT.splitlines()[0][:40] in llm.calls[0]["user"]   # posts récents montrés
-
-    def test_anti_repetition_threshold_is_0_6(self, settings, state):
-        from bot.filters import _normalize_words
-        state.remember_text("tip", TIP_TEXT)
-        partial = "before you trust AI answers, ask what would break them"
-        cand = _normalize_words(partial)
-        ratio = len(cand & _normalize_words(TIP_TEXT)) / len(cand)
-        assert 0.6 < ratio <= 0.7                     # refusé à 0,6, accepté au seuil par défaut 0,7
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(partial), post_resp(TIP_TEXT_2)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT_2]
-        assert "too similar to a recent post" in llm.calls[1]["user"]
-
-    def test_malformed_output_types(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": {"text": 123, "source_ids": "x",
-                                                            "used_note_ids": None}})
-        assert w.draft_post("tip", [], [], "") is None
-        assert llm.labels() == ["post-tip", "post-tip"]
-
-    def test_json_leak_rejected(self, settings, state):
-        w, _ = make_writer(settings, state, {"post-tip": [post_resp('{"text": "hello"}'), post_resp(TIP_TEXT)]})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.texts == [TIP_TEXT]
-
-    def test_llm_none_and_exception(self, settings, state):
-        w, llm = make_writer(settings, state, {})
-        assert w.draft_post("tip", [], [], "") is None
-        assert llm.labels() == ["post-tip"]          # pas de second essai inutile
-
-        def boom(*a):
-            raise RuntimeError("network down")
-        w2, _ = make_writer(settings, state, {"post-": boom, "thread-": boom, "reactive": boom,
-                                               "comment-": boom, "radar-": boom, "screenshot-": boom})
-        assert w2.draft_post("news", [], [], "") is None
-        assert w2.draft_thread([], [], "") is None
-        assert w2.draft_reactive([news(1, "Fresh launch", "something new")], [], "") is None
-        assert w2.draft_comment_reply("my post", "bob", "how do I do this with Claude?") is None
-        assert w2.draft_radar_reply("sama", "a long enough post about building with AI tools", 5, 50) is None
-        assert w2.screenshot_is_clean("capture.jpg") == (False, "vérification de l'image indisponible")
-
-    def test_unknown_kind(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-": post_resp(TIP_TEXT)})
-        assert w.draft_post("meme", [], [], "") is None
-        assert llm.calls == []
-
-    def test_effort_default_for_posts(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, source_ids=[1]),
-                                               "factcheck": FC_OK})
-        w.draft_post("news", items, [], "")
-        assert [c["effort"] for c in llm.calls] == [None, None]
-
-    def test_schemas_are_strict(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, source_ids=[1]),
-                                               "factcheck": FC_OK, "post-tip": post_resp(TIP_TEXT),
-                                               "post-gm": post_resp("gm. what's one task you'd hand to AI today?")})
-        w.draft_post("news", items, [], "")
-        w.draft_post("tip", items, [], "")
-        w.draft_post("gm", items, [], "")
-        by_label = {c["label"]: c["schema"] for c in llm.calls}
-        for sch in by_label.values():
-            assert sch["additionalProperties"] is False
-            assert set(sch["required"]) == set(sch["properties"])
-        assert "poll_options" not in by_label["post-news"]["properties"]
-        assert "poll_options" in by_label["post-tip"]["properties"]
-        gm_props = by_label["post-gm"]["properties"]
-        assert "poll_options" in gm_props and "used_note_ids" in gm_props
-        assert "visual_url" not in gm_props and "source_ids" not in gm_props and "card_type" not in gm_props
-        for label in ("post-news", "post-tip"):
-            props = by_label[label]["properties"]
-            assert {"card_type", "card_title", "card_lines", "card_note", "visual_url"} <= set(props)
-            assert props["card_type"]["enum"] == ["prompt", "steps", "list", "fact", "phone", "none"]
-            assert "image_prompt" not in props
-
-
-# ---------------------------------------------------------------------------
-# Post GM
-# ---------------------------------------------------------------------------
-class TestGm:
-    def test_gm_requires_the_word_gm(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-gm": [
-            post_resp("good morning builders, what are you shipping today?"),
-            post_resp("gm. what's one boring task you'd hand to AI today if you trusted it?")]})
-        d = w.draft_post("gm", items, [], "")
-        assert d is not None and d.texts[0].startswith("gm.")
-        assert d.visual is None and d.sources == []
-        assert '"gm"' in llm.calls[1]["user"]
-        assert items[0].title not in llm.calls[0]["user"]          # pas d'actu dans le gm
-        assert llm.calls[0]["system"] == wmod.GM_SYSTEM_PROMPT
-
-    def test_gm_max_200(self, settings, state):
-        long_gm = "gm. " + "a little idea about learning in public " * 6
-        assert 200 < len(long_gm) <= 260
-        w, llm = make_writer(settings, state, {"post-gm": post_resp(long_gm)})
-        assert w.draft_post("gm", [], [], "") is None
-        assert "max 200" in llm.calls[1]["user"]
-
-    def test_gm_shows_recent_gm_posts(self, settings, state):
-        state.remember_text("gm", "gm. coffee first, then the hard task")
-        w, llm = make_writer(settings, state, {"post-gm": post_resp("gm. which tab do you open first at work?")})
-        assert w.draft_post("gm", [], [], "") is not None
-        assert "coffee first, then the hard task" in llm.calls[0]["user"]
-
-
-# ---------------------------------------------------------------------------
-# Sondages
-# ---------------------------------------------------------------------------
-class TestPolls:
-    POLL_TEXT = "quick one: where do you draft your emails these days?"
-
-    def test_poll_returned_without_visual(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(
-            self.POLL_TEXT, poll_options=["Claude", "ChatGPT", "Gemini", "by hand"], card_type="none")})
-        d = w.draft_post("tip", [], [], "")
-        assert d.poll == {"options": ["Claude", "ChatGPT", "Gemini", "by hand"], "duration_minutes": 1440}
-        assert d.visual is None and d.card is None          # un sondage n'a pas d'image
-        assert state.data.get("poll_dates", []) == []   # compté à la publication, pas au brouillon
-        assert "POLL (optional)" in llm.calls[0]["user"]
-
-    def test_gm_poll(self, settings, state):
-        w, _ = make_writer(settings, state, {"post-gm": post_resp(
-            "gm. emails this morning: who writes yours?", poll_options=["Claude", "ChatGPT"])})
-        d = w.draft_post("gm", [], [], "")
-        assert d.poll and d.poll["options"] == ["Claude", "ChatGPT"]
-
-    def test_poll_limit_two_per_rolling_week(self, settings, state):
-        now = now_local()
-        state.data["poll_dates"] = [iso(now - timedelta(days=1)), iso(now - timedelta(days=6))]
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(
-            self.POLL_TEXT, poll_options=["Claude", "ChatGPT"])})
-        assert w.polls_left() == 0
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.poll is None
-        assert d.card == CARD_PARSED                        # plus de sondage : le post garde sa carte
-        assert "POLL: not available" in llm.calls[0]["user"]
-        assert len(state.data["poll_dates"]) == 2
-
-    def test_old_polls_do_not_count(self, settings, state):
-        now = now_local()
-        state.data["poll_dates"] = [iso(now - timedelta(days=8)), iso(now - timedelta(days=10)),
-                                    "2026-10-14", "garbage", 42]
-        w, _ = make_writer(settings, state, {"post-tip": post_resp(self.POLL_TEXT,
-                                                                   poll_options=["Claude", "ChatGPT"])})
-        assert w.polls_left() == 1                          # seul le 14/10 compte
-        d = w.draft_post("tip", [], [], "")
-        assert d.poll is not None
-        state.new_item("tip", d.texts, status="awaiting", poll=d.poll)   # carte en attente
-        assert w.polls_left() == 0
-
-    def test_two_polls_then_blocked(self, settings, state):
-        texts = [self.POLL_TEXT, "honest question: which assistant writes your meeting notes?",
-                 "which tool do you open first when a client email lands?"]
-        w, llm = make_writer(settings, state, {"post-tip": [post_resp(t, poll_options=["Claude", "ChatGPT"])
-                                                            for t in texts]})
-        for _ in range(2):
-            d = w.draft_post("tip", [], [], "")
-            assert d.poll is not None
-            state.new_item("tip", d.texts, status="approved", poll=d.poll)
-        third = w.draft_post("tip", [], [], "")
-        assert third.poll is None
-        assert "POLL: not available" in [c for c in llm.calls if c["label"] == "post-tip"][-1]["user"]
-
-    def test_rejected_poll_draft_does_not_use_the_quota(self, settings, state):
-        w, _ = make_writer(settings, state, {"post-tip": post_resp(self.POLL_TEXT,
-                                                                   poll_options=["Claude", "ChatGPT"])})
-        d = w.draft_post("tip", [], [], "")
-        state.new_item("tip", d.texts, status="rejected", poll=d.poll)
-        assert w.polls_left() == 2
-
-    @pytest.mark.parametrize("opts", [
-        ["only one"],
-        ["Claude", "an option that is far too long for X"],
-        ["a", "b", "c", "d", "e"],
-        ["Claude", "claude"],                                # doublon -> une seule option
-        ["Claude", "chatgpt.com"],
-        ["Claude", "Any LLM"],                               # jargon
-    ])
-    def test_invalid_poll_options_ignored(self, settings, state, opts):
-        w, _ = make_writer(settings, state, {"post-tip": post_resp(self.POLL_TEXT, poll_options=opts)})
-        d = w.draft_post("tip", [], [], "")
-        assert d is not None and d.poll is None
-        assert state.data.get("poll_dates", []) == []
-
-    def test_news_never_has_poll(self, settings, state, items):
-        w, _ = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, source_ids=[1],
-                                                                    poll_options=["a b", "c d"]),
-                                             "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d.poll is None
-        assert state.data.get("poll_dates", []) == []
-
-    def test_writer_never_records_poll_dates(self, settings, state):
-        w, _ = make_writer(settings, state, {"post-tip": [
-            post_resp("poll at claude.ai: which one?", poll_options=["Claude", "ChatGPT"]),
-            post_resp(self.POLL_TEXT, poll_options=["Claude", "ChatGPT"])]})
-        assert w.draft_post("tip", [], [], "").poll is not None
-        assert state.data.get("poll_dates", []) == []
-
-        w2, _ = make_writer(settings, state, {"post-gm": post_resp("no greeting here", poll_options=["a", "b"])})
-        assert w2.draft_post("gm", [], [], "") is None
-        assert state.data.get("poll_dates", []) == []
-
-
-# ---------------------------------------------------------------------------
-# Notes perso et notes de performance
-# ---------------------------------------------------------------------------
-NOTES = ["I tested Claude Projects for my invoices: it caught two duplicates",
-         "my side project got its first paying user yesterday"]
-HEADER = "OWNER'S RECENT REAL NOTES (true; use one only if it fits naturally)"
-
-
-class TestNotesAndPerf:
-    def test_notes_listed_and_used_notes_returned(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT, used_note_ids=[2, 7])})
-        d = w.draft_post("tip", items, NOTES, "")
-        assert d.used_notes == [NOTES[1]]
-        user = llm.calls[0]["user"]
-        assert HEADER in user
-        assert f"[1] {NOTES[0]}" in user and f"[2] {NOTES[1]}" in user
-        assert "used_note_ids" in llm.calls[0]["schema"]["properties"]
-
-    def test_no_notes_no_header(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT)})
-        d = w.draft_post("tip", [], [None, "  "], "")          # notes vides ignorées
-        assert d.used_notes == []
-        assert HEADER not in llm.calls[0]["user"]
-
-    def test_used_notes_passed_to_factcheck(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[1], used_note_ids=[1]), "factcheck": FC_OK})
-        d = w.draft_post("news", items, NOTES, "")
-        assert d.used_notes == [NOTES[0]]
-        assert NOTES[0] in llm.calls[1]["user"]
-
-    def test_gm_notes(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-gm": post_resp(
-            "gm. tested AI on my invoices yesterday. what's your most boring task?", used_note_ids=[1])})
-        d = w.draft_post("gm", [], NOTES, "")
-        assert d.used_notes == [NOTES[0]] and HEADER in llm.calls[0]["user"]
-
-    def test_perf_in_user_message(self, settings, state, items):
-        perf = "Tutorials with a copyable prompt got 2x more bookmarks than news takes."
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT), "post-gm": post_resp(
-            "gm. what's one task you'd hand to AI today?"), "thread-": thread_responder(),
-            "factcheck": FC_OK, "judge": {"winner": 1, "reason": "ok"},
-            "reactive": {"post": False, "reason": "rien", "text": "", "source_ids": [], "used_note_ids": [],
-                         "card_type": "none", "card_title": "", "card_lines": [], "card_note": "",
-                         "visual_url": ""}})
-        w.draft_post("tip", items, [], perf)
-        w.draft_post("gm", [], [], perf)
-        w.draft_thread(items, [], perf)
-        w.draft_reactive(items, [], perf)
-        for c in llm.calls:
-            if c["label"] in ("factcheck", "judge"):
-                continue
-            assert perf in c["user"], c["label"]
-            assert "WHAT WORKED RECENTLY" in c["user"]
-
-
-# ---------------------------------------------------------------------------
-# Cartes (le visuel de chaque post)
-# ---------------------------------------------------------------------------
-class TestCards:
-    def _draft(self, settings, state, items, **resp):
-        w, _ = make_writer(settings, state, {"post-news": post_resp(NEWS_TEXT, **resp), "factcheck": FC_OK})
-        return w.draft_post("news", items, [], "")
-
-    def _problem(self, settings, state, items, **resp):
-        """Le motif renvoyé à Claude quand la carte du 1er essai est refusée."""
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp(NEWS_TEXT, **resp), post_resp(NEWS_TEXT)], "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.card == CARD_PARSED
-        assert llm.labels() == ["post-news", "post-news", "factcheck"]
-        retry = llm.calls[1]["user"]
-        assert "the image card was rejected" in retry and "Follow the CARD rules" in retry
-        return retry
-
-    PHONE = {"card_type": "phone", "card_title": "ChatGPT voice is now *free*",
-             "card_lines": ["No paid plan needed", "Talk instead of typing"], "card_note": ""}
-
-    def test_phone_card_shows_the_cited_page(self, settings, state, items):
-        d = self._draft(settings, state, items, source_ids=[1], visual_url="[1]", **self.PHONE)
-        assert d.visual == Visual("phone", "https://openai.com/index/voice-for-everyone")
-        assert d.card["type"] == "phone" and d.card["lines"] == ["No paid plan needed", "Talk instead of typing"]
-
-    def test_phone_card_on_any_cited_site(self, settings, state, items):
-        d = self._draft(settings, state, items, source_ids=[2], visual_url="[2]", **self.PHONE)
-        assert d.visual == Visual("phone", "https://someblog.dev/agents-break")
-
-    @pytest.mark.parametrize("url", ["", "[2]", "[9]", "https://techcrunch.com/other", "nonsense"])
-    def test_phone_card_never_leaves_the_cited_items(self, settings, state, items, url):
-        """Page non citée, numéro inconnu, adresse au hasard : on montre la page de l'actu citée."""
-        d = self._draft(settings, state, items, source_ids=[1], visual_url=url, **self.PHONE)
-        assert d.visual == Visual("phone", items[0].url)
-
-    def test_phone_card_picks_the_designated_cited_item(self, settings, state, items):
-        d = self._draft(settings, state, items, source_ids=[1, 2], visual_url="[2]", **self.PHONE)
-        assert d.visual == Visual("phone", items[1].url)
-        d = self._draft(settings, state, items, source_ids=[1, 2], visual_url=items[1].url + "/", **self.PHONE)
-        assert d.visual == Visual("phone", items[1].url)
-
-    @pytest.mark.parametrize("source_ids, url", [([3], "[3]"), ([3], "https://x.com/claudeai/status/123"),
-                                                  ([], "[1]"), ([], "https://openai.com/x")])
-    def test_phone_without_showable_page_becomes_a_drawn_card(self, settings, state, items, source_ids, url):
-        """Post X ou aucune actu citée : jamais de capture, une carte dessinée avec les mêmes textes."""
-        d = self._draft(settings, state, items, source_ids=source_ids, visual_url=url, **self.PHONE)
-        assert d is not None and d.visual is None
-        assert d.card["type"] == "list" and d.card["title"] == "ChatGPT voice is now *free*"
-
-    def test_phone_with_one_line_becomes_a_fact_card(self, settings, state, items):
-        d = self._draft(settings, state, items, card_type="phone", card_title="Voice is free now",
-                        card_lines=["No paid plan needed"], card_note="")
-        assert d.visual is None and d.card["type"] == "fact" and d.card["lines"] == ["No paid plan needed"]
-
-    def test_screenshots_disabled(self, settings, state, items):
-        settings.screenshots_enabled = False
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[1], visual_url="[1]", **self.PHONE), "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d.visual is None and d.card["type"] == "list"
-        assert 'the "phone" card is not available right now' in llm.calls[0]["user"]
-        settings.screenshots_enabled = True
-        w.draft_post("news", items, [], "")
-        assert "not available right now" not in [c for c in llm.calls if c["label"] == "post-news"][1]["user"]
-
-    def test_card_text_is_cleaned(self, settings, state, items):
-        d = self._draft(settings, state, items, card_type="steps", card_title='"Fix a bad *answer*" 🚀',
-                        card_lines=["1. Open ChatGPT → tap the mic 🎤", "- Say what you need", "• Ask for a shorter one",
-                                    "  ", "Step 4: double-check the result"],
-                        card_note="  Free versions   too.  ")
-        assert d.card == {"type": "steps", "title": "Fix a bad *answer*",
-                          "lines": ["Open ChatGPT › tap the mic", "Say what you need", "Ask for a shorter one",
-                                    "double-check the result"],
-                          "note": "Free versions too."}
-
-    def test_prompt_card_is_one_message(self, settings, state, items):
-        d = self._draft(settings, state, items, card_type="prompt", card_title="Dinner from a *fridge photo*",
-                        card_lines=['"Here is a photo of my fridge.', 'Give me 3 dinners I can make tonight."'],
-                        card_note="x" * 200)
-        assert d.card["lines"] == ["Here is a photo of my fridge. Give me 3 dinners I can make tonight."]
-        assert d.card["note"] == ""                         # note trop longue : on s'en passe
-        keep = self._draft(settings, state, items, card_type="prompt", card_title="A plan in one message",
-                           card_lines=["3 dinners for 4 people, under 30 minutes each."], card_note="")
-        assert keep.card["lines"] == ["3 dinners for 4 people, under 30 minutes each."]   # le chiffre du début reste
-
-    def test_fact_card_extra_lines_are_dropped(self, settings, state, items):
-        d = self._draft(settings, state, items, card_type="fact", card_title="Voice is free now",
-                        card_lines=["one", "two", "three", "four", "five"], card_note="")
-        assert d.card["lines"] == ["one", "two", "three"]
-        bare = self._draft(settings, state, items, card_type="fact", card_title="Voice is free now",
-                           card_lines=[], card_note="")
-        assert bare.card == {"type": "fact", "title": "Voice is free now", "lines": [], "note": ""}
-
-    def test_card_is_required_without_a_poll(self, settings, state, items):
-        retry = self._problem(settings, state, items, card_type="none", card_title="", card_lines=[])
-        assert "a card is required" in retry
-
-    @pytest.mark.parametrize("card, why", [
-        ({"card_type": "poster"}, "unknown card_type"),
-        ({"card_title": "  "}, "card_title is empty"),
-        ({"card_title": "A title that goes on and on until it no longer fits on any card at all"},
-         "card_title is too long"),
-        ({"card_type": "steps", "card_lines": ["Only one step"]}, 'a "steps" card needs 2 to 4 card_lines (got 1)'),
-        ({"card_type": "steps", "card_lines": ["a", "b", "c", "d", "e"]}, "needs 2 to 4 card_lines (got 5)"),
-        ({"card_type": "list", "card_lines": []}, 'a "list" card needs 2 to 5 card_lines (got 0)'),
-        ({"card_type": "prompt", "card_lines": []}, 'a "prompt" card needs exactly 1 card_lines (got 0)'),
-        ({"card_type": "list", "card_lines": ["short", "x" * 81]}, "a card line is too long (81 characters, max 60)"),
-        ({"card_type": "prompt", "card_lines": ["y" * 241]}, "a card line is too long (241 characters, max 190)"),
-        ({"card_lines": ["Paste it into chatgpt.com and ask"]}, "no links or domain names on the card"),
-        ({"card_title": "Your first casino night plan"}, "off-limits word or topic on the card (casino)"),
-        ({"card_note": "Works with any LLM."}, 'tech jargon on the card ("LLM")'),
-        ({"card_type": "list", "card_lines": ["Pick a use case", "Then try it"]}, 'tech jargon on the card ("use case")'),
-    ])
-    def test_bad_card_is_sent_back_once(self, settings, state, items, card, why):
-        assert why in self._problem(settings, state, items, **card)
-
-    def test_card_refused_twice_the_post_goes_out_as_text(self, settings, state, items):
-        """Le texte est bon : on ne perd pas le créneau pour une carte ratée."""
-        w, llm = make_writer(settings, state, {
-            "post-news": post_resp(NEWS_TEXT, source_ids=[1], card_type="steps", card_lines=["One step"]),
-            "factcheck": FC_OK})
-        d = w.draft_post("news", items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT] and d.card is None and d.visual is None
-        assert llm.labels() == ["post-news", "post-news", "factcheck"]
-        assert "IMAGE CARD" not in llm.calls[2]["user"]
-
-    def test_card_never_checked_when_text_is_rejected(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "post-news": [post_resp("read it on claude.ai tonight", card_type="none"), post_resp(NEWS_TEXT)],
-            "factcheck": FC_OK})
-        assert w.draft_post("news", items, [], "") is not None
-        assert "domain name" in llm.calls[1]["user"] and "image card" not in llm.calls[1]["user"]
-
-    def test_url_helpers(self):
-        assert wmod.is_capturable_url("https://www.theverge.com/a")
-        assert wmod.is_capturable_url("https://someblog.dev/post")
-        for bad in ("https://x.com/a/status/1", "https://mobile.twitter.com/a", "ftp://openai.com/x", "", "openai.com"):
-            assert not wmod.is_capturable_url(bad), bad
-        assert wmod.is_x_url("https://twitter.com/a") and not wmod.is_x_url("https://openai.com")
-
-    def test_card_text_helper(self):
-        assert wmod.card_text("→ Dinner ideas") == "Dinner ideas"
-        assert wmod.card_text("Photo -> recipe") == "Photo › recipe"
-        assert wmod.card_text("5:30 wake-up plan") == "5:30 wake-up plan"
-        assert wmod.card_text("2) Paste the text") == "Paste the text"
-        assert wmod.card_text("Café déjà vu — it’s “fine”…") == "Café déjà vu — it’s “fine”…"
-        assert wmod.card_text("#AI tip for @you") == "tip for"
-        assert wmod.card_text(None) == "" and wmod.card_text(42) == "42"
-        assert wmod.card_as_text(CARD_PARSED).splitlines() == [
-            "[prompt] Check any AI answer", "- What would make this answer wrong?",
-            "(Works in ChatGPT, Claude or Gemini.)"]
-        assert wmod.card_as_text(None) == ""
-
-
-# ---------------------------------------------------------------------------
-# Les « moments de la vie » des astuces
-# ---------------------------------------------------------------------------
-class TestLifeAreas:
-    def test_theme_rotates_without_repeating(self, settings, state):
-        w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT), "factcheck": FC_OK})
-        seen = []
-        for _ in range(300):
-            key, text = w._next_life_area()
-            assert key not in seen[-wmod.LIFE_AREAS_MEMORY:], (key, seen)
-            assert text and key in dict(wmod.LIFE_AREAS)
-            seen.append(key)
-        assert set(seen) == set(dict(wmod.LIFE_AREAS))      # tous les thèmes finissent par passer
-        assert len(state.data["life_areas_recent"]) == wmod.LIFE_AREAS_MEMORY
-
-    def test_theme_is_in_the_tip_prompt_only(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"post-": post_resp(TIP_TEXT), "factcheck": FC_OK})
-        w.draft_post("tip", items, [], "")
-        w.draft_post("news", items, [], "")
-        tip_user, news_user = [c["user"] for c in llm.calls if c["label"].startswith("post-")]
-        area = dict(wmod.LIFE_AREAS)[state.data["life_areas_recent"][-1]]
-        assert "EVERYDAY USE" in tip_user and f"Theme of this post: {area}" in tip_user
-        assert "NEWS IN PLAIN WORDS" in news_user and "Theme of this post" not in news_user
-        assert len(state.data["life_areas_recent"]) == 1
-
-    def test_areas_are_clean(self):
-        from bot.filters import find_tech_jargon, off_limits_term
-        keys = [k for k, _ in wmod.LIFE_AREAS]
-        assert len(keys) == len(set(keys)) > wmod.LIFE_AREAS_MEMORY
-        for _key, text in wmod.LIFE_AREAS:
-            assert not off_limits_term(text) and not find_tech_jargon(text), text
-
-
-# ---------------------------------------------------------------------------
-# Threads : candidats, juge, rotation
-# ---------------------------------------------------------------------------
 class TestThreads:
-    def test_candidates_judge_and_rotation(self, settings, state, items):
-        settings.thread_candidates = 3
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
-                                               "judge": {"winner": 3, "reason": "le plus utile cette semaine"}})
+    def test_two_candidates_then_the_judge(self, settings, state, items):
+        settings.thread_candidates = 3                         # en semaine : timely puis future
+        w, llm = make_writer(settings, state, thread_flow(picks=(1, 2),
+                                                          judge={"winner": 2, "reason": "le plus parlant"}))
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.kind == "thread" and d.angle == "timely"
-        assert d.texts == thread_tweets("timely")
-        assert d.sources == [items[0]]
-        assert d.card["type"] == "list" and d.card["title"] == "5 things to *try tonight*"
-        assert "choisi parmi 3" in d.reason and "le plus utile cette semaine" in d.reason
-        assert llm.labels() == ["thread-beginner", "factcheck", "thread-tutorial", "factcheck",
-                                "thread-timely", "factcheck", "judge"]
-        for c in llm.calls:
-            expected = settings.llm_effort_thread if c["label"].startswith("thread-") else None
-            assert c["effort"] == expected, c["label"]
-        judge_user = llm.calls[-1]["user"]
-        assert "THREAD 3 [kind: timely]" in judge_user and "Previous threads" not in judge_user
-        assert set(llm.calls[-1]["schema"]["properties"]) == {"winner", "reason"}
-        assert "ONLY TWEET 1 REACHES NEW PEOPLE" in llm.calls[0]["system"]
-        assert wmod.THREAD_ANGLES["beginner"] in llm.calls[0]["user"]
-        assert "IMAGE CARD posted with it" in llm.calls[1]["user"]      # la couverture est relue aussi
+        assert d is not None and d.kind == "thread" and d.angle == "future"
+        assert d.texts == thread_tweets("future")
+        assert d.sources == [items[1]]                         # l'actu 1 est déjà prise par le 1er candidat
+        assert d.visual == Visual("shot", items[1].url) and d.poll is None
+        assert d.reason.startswith("raison future · choisi parmi 2") and "le plus parlant" in d.reason
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "factcheck",
+                                "pick-thread-future", "thread-future", "factcheck", "judge"]
+        efforts = {c["label"]: c["effort"] for c in llm.calls}
+        assert efforts["pick-thread-timely"] == efforts["pick-thread-future"] == "low"
+        assert efforts["thread-timely"] == efforts["thread-future"] == settings.llm_effort_thread
+        assert efforts["factcheck"] is None and efforts["judge"] is None
+        timely = llm.calls[1]
+        assert timely["system"] == wmod.THREAD_SYSTEM_PROMPT and wmod.THREAD_ANGLES["timely"] in timely["user"]
+        assert set(timely["schema"]["properties"]) == {"tweets", "source_ids", "used_note_ids", "visual_url",
+                                                       "reason"}
+        fc = llm.calls[2]["user"]
+        assert "1/ " + THREAD_HOOKS["timely"] in fc and "2/ " + THREAD_BODY[0] in fc
+        judge = llm.calls[-1]
+        assert judge["system"] == wmod.JUDGE_SYSTEM_PROMPT
+        assert set(judge["schema"]["properties"]) == {"winner", "reason"}
+        assert ("THREAD 1 [kind: timely] (5 tweets), built on:\n"
+                "   - Voice mode is now available to all ChatGPT users (OpenAI)\n"
+                "   Tweets:\n   1/ " + THREAD_HOOKS["timely"]) in judge["user"]
+        assert ("THREAD 2 [kind: future] (5 tweets), built on:\n"
+                "   - Why most AI agent demos break in production (Hacker News)") in judge["user"]
+        assert "Previous threads" not in judge["user"]
 
-    def test_last_published_kind_goes_last(self, settings, state, items):
+    @pytest.mark.parametrize("genre, n", [("timely", 3), ("future", 4), ("weekly", 6)])
+    def test_each_genre_has_its_own_pick(self, settings, state, genre, n):
+        many = [news(i, f"Robot story number {i:02d}", url=f"https://site{i}.com/a") for i in range(1, 11)]
+        w, llm = make_writer(settings, state, thread_flow(picks=tuple(range(1, 11))))
+        only(w, genre)
+        assert w.draft_thread(many, [], "") is not None
+        assert llm.labels() == [f"pick-thread-{genre}", f"thread-{genre}", "factcheck"]
+        assert wmod.MAX_STORIES_THREAD[genre] == n
+        assert wmod.PICK_BRIEFS[f"thread-{genre}"].format(n=n, m=n - 1) in llm.calls[0]["user"]
+        write = llm.calls[1]["user"]
+        assert f"[{n}] " in write and f"[{n + 1}] " not in write       # jamais plus que demandé
+        assert sorted(w.read_article.urls) == sorted(f"https://site{i}.com/a" for i in range(1, n + 1))
+
+    def test_a_story_used_by_one_candidate_is_not_offered_to_the_next(self, settings, state, items):
         settings.thread_candidates = 3
-        state.data["thread_recent_kinds"] = ["tutorial", "beginner"]
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
-                                               "judge": {"winner": 1, "reason": "ok"}})
+        w, llm = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", source_ids=[1, 3])},
+                                                          picks=(1, 2, 4), judge={"winner": 1, "reason": "ok"}))
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "tutorial"
-        assert [c["label"] for c in llm.calls if c["label"].startswith("thread-")] == \
-            ["thread-tutorial", "thread-timely", "thread-beginner"]
-        judge_user = llm.calls[-1]["user"]
-        assert "Previous threads published (oldest → newest): tutorial, beginner" in judge_user
-        assert "prefer a kind different from the last one" in judge_user
-
-    def test_thread_plan(self, settings, state):
-        w, _ = make_writer(settings, state)
-        settings.thread_candidates = 6
-        assert w.thread_plan([]) == ["beginner", "tutorial", "timely"]
-        assert w.thread_plan(["timely"]) == ["beginner", "tutorial", "timely"]
-        assert w.thread_plan(["beginner", "tutorial"]) == ["beginner", "timely", "tutorial"]
-        assert w.thread_plan(["weekly", "beginner"]) == ["tutorial", "timely", "beginner"]
-        settings.thread_candidates = 1
-        assert w.thread_plan(["beginner"]) == ["tutorial"]
-        assert w.thread_plan(["tutorial"]) == ["beginner"]
-        settings.thread_candidates = 0                       # réglage absurde : un candidat quand même
-        assert w.thread_plan([]) == ["beginner"]
-        assert set(wmod.THREAD_ANGLES) == set(wmod.THREAD_ANGLE_KINDS) == set(wmod.GENRE_FR)
-
-    def test_weekend_thread_is_the_weekly_recap(self, settings, state, clock):
-        w, _ = make_writer(settings, state)
-        clock(13, 0, day=18)                                  # dimanche 18 octobre 2026
-        settings.thread_candidates = 3
-        assert w.thread_plan(["tutorial"]) == ["weekly", "beginner", "tutorial"]
-        clock(13, 0, day=20)                                  # mardi : pas de récap
-        assert "weekly" not in w.thread_plan(["tutorial"])
-
-    def test_recent_thread_kinds_synced_from_published_items(self, settings, state):
-        w, _ = make_writer(settings, state)
-        state.data["thread_recent_kinds"] = ["tutorial"]
-        state.new_item("thread", ["a"], status="published", meta={"angle": "weekly"})
-        state.new_item("thread", ["b"], status="rejected", meta={"angle": "timely"})
-        state.new_item("tip", ["c"], status="published", meta={"angle": "beginner"})
-        state.new_item("thread", ["e"], status="published", meta={"angle": "story"})   # ancien genre : ignoré
-        assert w.recent_thread_kinds() == ["tutorial", "weekly"]
-        assert w.recent_thread_kinds() == ["tutorial", "weekly"]      # idempotent
-        state.new_item("thread", ["d"], status="published", meta={"angle": "beginner"})
-        assert w.recent_thread_kinds() == ["tutorial", "weekly", "beginner"]
-        assert state.data["thread_recent_kinds"] == ["tutorial", "weekly", "beginner"]
+        assert d is not None and d.sources == [items[0], items[3]]
+        offered = next(c for c in llm.calls if c["label"] == "pick-thread-future")["user"]
+        assert items[0].title not in offered and items[3].title not in offered   # racontées par le 1er
+        assert items[1].title in offered and items[2].title in offered           # retenue mais pas citée : libre
 
     def test_single_candidate_no_judge(self, settings, state, items):
         settings.thread_candidates = 1
-        state.data["thread_recent_kinds"] = ["beginner"]
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK})
+        w, llm = make_writer(settings, state, thread_flow(judge={"winner": 1, "reason": "x"}))
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "tutorial"
+        assert d is not None and d.angle == "timely" and d.reason == "raison timely"
         assert "judge" not in llm.labels()
 
-    @pytest.mark.parametrize("verdict", [None, {"winner": 9, "reason": "?"}, {"winner": "abc", "reason": ""}])
-    def test_bad_judge_falls_back_to_first(self, settings, state, items, verdict):
-        settings.thread_candidates = 2
-        state.data["thread_recent_kinds"] = ["beginner"]
-        w, _ = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
-                                             "judge": verdict})
+    def test_one_candidate_left_no_judge(self, settings, state, items):
+        settings.thread_candidates = 3
+        w, llm = make_writer(settings, state, thread_flow({"timely": None}, judge={"winner": 1, "reason": "x"}))
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "tutorial"
+        assert d is not None and d.angle == "future" and d.sources == [items[0]]
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "pick-thread-future", "thread-future",
+                                "factcheck"]
 
-    def test_numbering_stripped_and_truncated(self, settings, state, items):
-        tweets = [f"{i}/ " + t for i, t in enumerate(thread_tweets("timely", 9), start=1)]
-        w, _ = make_writer(settings, state, {"thread-": thread_responder(
-            {"timely": thread_resp("timely", source_ids=[1], tweets=tweets)}), "factcheck": FC_OK})
+    @pytest.mark.parametrize("verdict", [None, {"winner": 9, "reason": "?"}, {"winner": 0, "reason": "?"},
+                                         {"winner": "abc", "reason": ""}, {"reason": "pas de numéro"}])
+    def test_bad_judge_falls_back_to_the_first(self, settings, state, items, verdict):
+        settings.thread_candidates = 3
+        w, llm = make_writer(settings, state, thread_flow(judge=verdict))
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.angle == "timely" and llm.labels()[-1] == "judge"
+        assert "premier candidat" in d.reason
+
+    def test_last_published_genre_goes_last(self, settings, state, items):
+        settings.thread_candidates = 3
+        state.data["thread_recent_kinds"] = ["future", "timely"]
+        w, llm = make_writer(settings, state, thread_flow(judge={"winner": 1, "reason": "ok"}))
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.angle == "future"
+        assert [c["label"] for c in llm.calls if c["label"].startswith("thread-")] == ["thread-future",
+                                                                                       "thread-timely"]
+        judge_user = llm.calls[-1]["user"]
+        assert "Previous threads published (oldest → newest): future, timely" in judge_user
+        assert "prefer a kind different from the last one" in judge_user
+
+    def test_thread_plan_on_weekdays(self, settings, state):
+        w, _ = make_writer(settings, state)
+        settings.thread_candidates = 3
+        assert w.thread_plan([]) == ["timely", "future"]
+        assert w.thread_plan(["future"]) == ["timely", "future"]
+        assert w.thread_plan(["timely"]) == ["future", "timely"]       # le dernier genre publié en dernier
+        assert w.thread_plan(["timely", "weekly"]) == ["timely", "future"]
+        settings.thread_candidates = 1
+        assert w.thread_plan(["timely"]) == ["future"]
+        assert w.thread_plan(["future"]) == ["timely"]
+        settings.thread_candidates = 0                         # réglage absurde : un candidat quand même
+        assert w.thread_plan([]) == ["timely"]
+        assert set(wmod.THREAD_ANGLES) == set(wmod.THREAD_ANGLE_KINDS) == set(wmod.GENRE_FR) \
+            == set(wmod.MAX_STORIES_THREAD) == {"timely", "future", "weekly"}
+
+    @pytest.mark.parametrize("day, weekly", [(15, False), (16, True), (17, True), (18, True), (19, False)])
+    def test_end_of_week_thread_is_the_week_in_review(self, settings, state, clock, day, weekly):
+        clock(13, 0, day=day)                                  # 15/10/2026 : jeudi ; 16-18 : ven.-dim.
+        w, _ = make_writer(settings, state)
+        settings.thread_candidates = 3
+        plan = w.thread_plan(["timely"])
+        assert plan == (["weekly", "timely", "future"] if weekly else ["future", "timely"])
+        settings.thread_candidates = 1
+        assert w.thread_plan(["weekly"]) == (["weekly"] if weekly else ["timely"])
+
+    def test_sunday_thread_flow(self, settings, state, items, clock):
+        clock(18, 0, day=18)                                   # dimanche
+        settings.thread_candidates = 1
+        w, llm = make_writer(settings, state, thread_flow(picks=(1, 2, 3, 4)))
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.angle == "weekly" and d.texts == thread_tweets("weekly")
+        assert llm.labels() == ["pick-thread-weekly", "thread-weekly", "factcheck"]
+        assert "Pick the 5 to 6 stories of the week" in llm.calls[0]["user"]
+        assert "Today is Sunday October 18." in llm.calls[1]["user"]
+        assert wmod.THREAD_ANGLES["weekly"] in llm.calls[1]["user"]
+
+    @pytest.mark.parametrize("n", [7, 8, 9])
+    def test_numbering_stripped_and_long_threads_cut_to_seven(self, settings, state, items, n):
+        tweets = [f"{i}/ {t}" for i, t in enumerate(thread_tweets("timely", n), start=1)]
+        w, _ = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", tweets=tweets)}))
         only(w, "timely")
         d = w.draft_thread(items, [], "")
-        expected = thread_tweets("timely", 9)
-        assert d.texts == expected[:6] + [expected[-1]]
-        assert not any(t.startswith(("1/", "2/")) for t in d.texts)
+        expected = thread_tweets("timely", n)
+        assert d.texts == expected[:6] + [expected[-1]]          # le hook… et la chute
+        assert len(d.texts) == wmod.THREAD_MAX_TWEETS == 7
 
-    def test_bad_tweet_triggers_retry(self, settings, state, items):
-        bad = thread_tweets("timely")
-        bad[2] = "step three: sign up at claude.ai and open a new project for this."
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({"timely": [
-            thread_resp("timely", source_ids=[1], tweets=bad), thread_resp("timely", source_ids=[1])]}),
-            "factcheck": FC_OK})
+    def test_empty_and_non_text_tweets_are_skipped(self, settings, state, items):
+        tweets = ["", "  3/  ", None, 42] + thread_tweets("timely", 4)
+        w, _ = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", tweets=tweets)}))
+        only(w, "timely")
+        assert w.draft_thread(items, [], "").texts == thread_tweets("timely", 4)
+
+    def test_four_tweets_are_enough_three_are_not(self, settings, state, items):
+        assert wmod.THREAD_MIN_TWEETS == 4
+        w, llm = make_writer(settings, state, thread_flow({"timely": [thread_resp("timely", n=3),
+                                                                      thread_resp("timely", n=4)]}))
         only(w, "timely")
         d = w.draft_thread(items, [], "")
-        assert d is not None and d.texts == thread_tweets("timely")
-        assert llm.labels() == ["thread-timely", "thread-timely", "factcheck"]
-        assert "tweet 3 was rejected: it contained a link or a domain name" in llm.calls[1]["user"]
-
-    def test_jargon_in_a_tweet_triggers_retry(self, settings, state, items):
-        bad = thread_tweets("tutorial")
-        bad[1] = "step one: pick the best LLM for the job, then paste your material."
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({"tutorial": [
-            thread_resp("tutorial", tweets=bad), thread_resp("tutorial")]}), "factcheck": FC_OK})
-        only(w, "tutorial")
-        assert w.draft_thread(items, [], "") is not None
-        assert 'tweet 2 was rejected: it used tech jargon ("LLM")' in llm.calls[1]["user"]
+        assert d is not None and len(d.texts) == 4
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "thread-timely", "factcheck"]
+        assert "the thread had only 3 usable tweets: write 4 to 7" in llm.calls[2]["user"]
 
     def test_too_short_everywhere_returns_none(self, settings, state, items):
         settings.thread_candidates = 3
-        short = {g: thread_resp(g, n=3, source_ids=[1]) for g in wmod.THREAD_ANGLE_KINDS}
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(short)})
+        short = {g: thread_resp(g, n=3) for g in wmod.THREAD_ANGLE_KINDS}
+        w, llm = make_writer(settings, state, thread_flow(short, judge={"winner": 1, "reason": "x"}))
         assert w.draft_thread(items, [], "") is None
-        assert "judge" not in llm.labels()
-        assert "only 3 usable tweets" in llm.calls[1]["user"]
+        assert "judge" not in llm.labels() and "factcheck" not in llm.labels()
 
-    def test_news_claims_without_citation_fail_the_factcheck(self, settings, state, items):
-        """Plus de règle « il faut citer » côté code : un thread d'actu sans source
-        est simplement recalé par la relecture (aucun fait d'actu n'est sourcé)."""
-        w, llm = make_writer(settings, state, {
-            "thread-": thread_responder({"timely": [thread_resp("timely"), thread_resp("timely", source_ids=[1])]}),
-            "factcheck": [{"ok": False, "issues": "no item cited"},
-                          {"ok": False, "issues": "nothing in the items about apps"}]})
-        only(w, "timely")
-        assert w.draft_thread(items, [], "") is None
-        assert llm.labels() == ["thread-timely", "factcheck", "thread-timely", "factcheck"]
-        assert "no item cited" in llm.calls[1]["user"]
-        assert "a fact-checker found unsupported claims: no item cited" in llm.calls[2]["user"]
-
-    @pytest.mark.parametrize("genre", ["timely", "weekly"])
-    def test_news_thread_dropped_when_factcheck_is_down(self, settings, state, items, genre):
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({genre: thread_resp(genre)})})
-        only(w, genre)
-        assert w.draft_thread(items, [], "") is None
-        assert llm.labels() == [f"thread-{genre}", "factcheck"]
-
-    def test_timely_without_items_still_factchecked(self, settings, state):
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({"timely": thread_resp("timely")}),
-                                               "factcheck": FC_OK})
-        only(w, "timely")
-        d = w.draft_thread([], [], "")
-        assert d is not None and d.sources == []
-        assert llm.labels() == ["thread-timely", "factcheck"]
-
-    def test_tutorial_without_sources_is_factchecked_too(self, settings, state, items):
-        settings.thread_candidates = 2
-        state.data["thread_recent_kinds"] = ["beginner"]
-        w, llm = make_writer(settings, state, {"thread-": thread_responder({"timely": None}),
-                                               "judge": {"winner": 1, "reason": "ok"}})
-        d = w.draft_thread(items, [], "")
-        assert d is not None and d.angle == "tutorial"
-        assert "factcheck" in llm.labels() and "judge" not in llm.labels()
-        assert "relis bien" in d.reason      # vérification indisponible ici : signalée sur la carte
-
-    def test_cover_card_of_a_news_thread_can_be_the_page(self, settings, state, items):
-        w, _ = make_writer(settings, state, {"thread-": thread_responder(
-            {"timely": thread_resp("timely", source_ids=[1], visual_url="[1]", card_type="phone")}),
-            "factcheck": FC_OK})
+    @pytest.mark.parametrize("bad, feedback", [
+        ("Try it yourself at chatgpt.com tonight.", "tweet 3 was rejected: it contained a link or a domain name"),
+        ("Pick the best LLM for the job, then just talk.", 'tweet 3 was rejected: it used tech jargon ("LLM")'),
+        ("It already speaks 40 languages.", "tweet 3 was rejected: the figure 40 is not in the stories you cite"),
+        ("Honestly, it is a game changer.", 'tweet 3 was rejected: it used a stock phrase'),
+    ])
+    def test_bad_tweet_is_sent_back(self, settings, state, items, bad, feedback):
+        tweets = thread_tweets("timely")
+        tweets[2] = bad
+        w, llm = make_writer(settings, state, thread_flow({"timely": [thread_resp("timely", tweets=tweets),
+                                                                      thread_resp("timely")]}))
         only(w, "timely")
         d = w.draft_thread(items, [], "")
-        assert d.visual == Visual("phone", items[0].url) and d.card["type"] == "phone"
+        assert d is not None and d.texts == thread_tweets("timely")
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "thread-timely", "factcheck"]
+        assert feedback in llm.calls[2]["user"]
 
-    def test_bad_cover_card_retry_then_text_only(self, settings, state, items):
-        bad = thread_resp("beginner", card_type="steps", card_lines=["Only one"])
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(
-            {"beginner": [dict(bad), thread_resp("beginner")]}), "factcheck": FC_OK})
-        only(w, "beginner")
+    def test_grounded_figure_in_a_tweet_passes(self, settings, state, items):
+        tweets = thread_tweets("future")
+        tweets[1] = "A machine that tidies clothes at home already exists. Price: $24,000."
+        w, _ = make_writer(settings, state, thread_flow({"future": thread_resp("future", tweets=tweets)}, picks=(4,)))
+        only(w, "future")
         d = w.draft_thread(items, [], "")
-        assert d.card["type"] == "list"
-        assert "the image card was rejected" in llm.calls[1]["user"]
-        w2, llm2 = make_writer(settings, state, {"thread-": thread_responder({"beginner": dict(bad)}),
-                                                 "factcheck": FC_OK})
-        only(w2, "beginner")
+        assert d is not None and d.texts[1] == tweets[1] and d.sources == [items[3]]
+
+    def test_thread_without_a_cited_story_is_refused(self, settings, state, items):
+        w, llm = make_writer(settings, state, thread_flow({"timely": [thread_resp("timely", source_ids=[]),
+                                                                      thread_resp("timely", source_ids=[0, 9])]}))
+        only(w, "timely")
+        assert w.draft_thread(items, [], "") is None
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "thread-timely"]   # jamais relu
+        assert "must rely on the numbered news items" in llm.calls[2]["user"]
+
+    def test_factcheck_down_drops_the_candidate(self, settings, state, items):
+        settings.thread_candidates = 3
+        w, llm = make_writer(settings, state, thread_flow(factcheck=None, judge={"winner": 1, "reason": "x"}))
+        assert w.draft_thread(items, [], "") is None
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "factcheck",
+                                "pick-thread-future", "thread-future", "factcheck"]
+
+    def test_factcheck_failure_retries_with_the_numbered_draft(self, settings, state, items):
+        w, llm = make_writer(settings, state, thread_flow(
+            {"timely": [thread_resp("timely"), thread_resp("timely")]},
+            factcheck=[fc_fail("tweet 5 says teachers use it; the story does not"), FC_OK]))
+        only(w, "timely")
+        d = w.draft_thread(items, [], "")
+        assert d is not None
+        assert llm.labels() == ["pick-thread-timely", "thread-timely", "factcheck", "thread-timely", "factcheck"]
+        retry = llm.calls[3]["user"]
+        assert "a fact-checker found unsupported claims: tweet 5 says teachers use it" in retry
+        assert "1/ " + THREAD_HOOKS["timely"] in retry
+
+    def test_factcheck_failing_twice_drops_the_candidate(self, settings, state, items):
+        w, _ = make_writer(settings, state, thread_flow(factcheck=fc_fail("invented quote")))
+        only(w, "timely")
+        assert w.draft_thread(items, [], "") is None
+
+    def test_hook_too_similar_to_a_recent_thread(self, settings, state, items):
+        state.remember_text("thread", THREAD_HOOKS["timely"])
+        w, llm = make_writer(settings, state, thread_flow())
+        only(w, "timely")
+        assert w.draft_thread(items, [], "") is None
+        assert "too similar to a recent post" in llm.calls[2]["user"]
+
+    def test_thread_screenshot_is_a_cited_page_never_x(self, settings, state, items):
+        w, _ = make_writer(settings, state, thread_flow(
+            {"timely": thread_resp("timely", source_ids=[2, 1], visual_url="[2]")}, picks=(1, 3)))
+        only(w, "timely")
+        assert w.draft_thread(items, [], "").visual == Visual("shot", items[0].url)
+        w2, _ = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", visual_url="[1]")},
+                                                         picks=(3,)))
+        only(w2, "timely")
         d2 = w2.draft_thread(items, [], "")
-        assert d2 is not None and d2.card is None and d2.texts == thread_tweets("beginner")
-
-    def test_hook_too_similar_to_recent_thread(self, settings, state, items):
-        state.remember_text("thread", thread_tweets("timely")[0])
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK})
-        only(w, "timely")
-        assert w.draft_thread(items, [], "") is None
-        assert "too similar to a recent post" in llm.calls[1]["user"]
+        assert d2 is not None and d2.visual is None and d2.sources == [items[2]]
 
     def test_thread_notes(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(
-            {"timely": thread_resp("timely", source_ids=[1], used_note_ids=[2])}), "factcheck": FC_OK})
+        w, llm = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", used_note_ids=[2])}))
         only(w, "timely")
         d = w.draft_thread(items, NOTES, "")
-        assert d.used_notes == [NOTES[1]]
-        assert HEADER in llm.calls[0]["user"]
+        assert d.used_notes == [NOTES[1]] and HEADER in llm.calls[1]["user"]
+        assert f"- {NOTES[1]}" in llm.calls[2]["user"]
 
-    def test_topics_for_kind_ordering(self, settings, state):
-        w, _ = make_writer(settings, state)
-        topics = settings.evergreen_topics
-        assert w.topics_for_kind(topics, "tutorial")[0] == "TUTORIAL — topic A"
-        assert w.topics_for_kind(topics, "beginner")[0] == "BEGINNER — topic B"
-        for seed in range(10):
-            w.rng = random.Random(seed)
-            out = w.topics_for_kind(topics, "timely")
-            assert set(out[:2]) == {"STORY — topic C", "plain topic D"}   # sans étiquette connue d'abord
-            assert sorted(out) == sorted(topics)
-        assert w.topics_for_kind(topics, "tutorial", limit=2)[0] == "TUTORIAL — topic A"
-        assert len(w.topics_for_kind(topics, "tutorial", limit=2)) == 2
+    def test_a_crashing_candidate_does_not_stop_the_others(self, settings, state, items, monkeypatch):
+        settings.thread_candidates = 3
+        w, _ = make_writer(settings, state, thread_flow())
+        real_pick = w._pick
 
-    def test_topics_shown_in_thread_prompt(self, settings, state, items):
-        settings.thread_candidates = 2
-        state.data["thread_recent_kinds"] = ["beginner"]
-        w, llm = make_writer(settings, state, {"thread-": thread_responder(), "factcheck": FC_OK,
-                                               "judge": {"winner": 1, "reason": "ok"}})
-        w.draft_thread(items, [], "")
-        tut = next(c for c in llm.calls if c["label"] == "thread-tutorial")["user"]
-        topics_part = tut.split("Everyday topics you can pick from", 1)[1]
-        assert topics_part.index("TUTORIAL — topic A") < topics_part.index("STORY — topic C")
-        assert "Today is Thursday October 15." in tut
+        def flaky(brief, pool, n):
+            if brief == "thread-timely":
+                raise RuntimeError("boom")
+            return real_pick(brief, pool, n)
+        monkeypatch.setattr(w, "_pick", flaky)
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.angle == "future"
 
-
-# ---------------------------------------------------------------------------
-# Post réactif
-# ---------------------------------------------------------------------------
-REACT_TEXT = ("free voice mode for everyone is the quiet big one this week.\n"
-              "the people who win: anyone who practices out loud before a hard conversation.")
-
-
-def react_resp(post=True, text=REACT_TEXT, source_ids=(1,), **kw) -> dict:
-    obj = {"post": post, "reason": "grosse annonce", "text": text if post else "",
-           "source_ids": list(source_ids) if post else [], "used_note_ids": [],
-           "card_type": "phone" if post else "none", "card_title": "ChatGPT voice is now *free*" if post else "",
-           "card_lines": ["No paid plan needed", "Talk instead of typing"] if post else [], "card_note": "",
-           "visual_url": "[1]" if post else ""}
-    obj.update(kw)
-    return obj
-
-
-class TestReactive:
-    def test_no_fresh_items_no_call(self, settings, state):
-        old = [news(1, "Old launch", "old", hours=30), news(2, "No date", "x", hours=None)]
-        w, llm = make_writer(settings, state, {"reactive": react_resp()})
-        assert w.draft_reactive(old, [], "") is None
+    def test_without_usable_news_nothing_is_asked(self, settings, state):
+        w, llm = make_writer(settings, state, thread_flow())
+        assert w.draft_thread([], [], "") is None
+        assert w.draft_thread([news(1, "Bitcoin record", "crypto")], [], "") is None
         assert llm.calls == []
 
-    def test_gate_says_no(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"reactive": react_resp(post=False)})
-        assert w.draft_reactive(items, [], "") is None
-        assert llm.labels() == ["reactive"]
+    def test_thread_prompt(self, settings, state, items):
+        settings.evergreen_topics = ["plain topic A", "FUTURE — robots at home", "plain topic B",
+                                     "FUTURE — cars without a driver"]
+        settings.screenshots_enabled = False
+        w, llm = make_writer(settings, state, thread_flow())
+        only(w, "future")
+        d = w.draft_thread(items, [], "")
+        assert d is not None and d.visual is None
+        user = llm.calls[1]["user"]
+        assert user.startswith("Today is Thursday October 15.")
+        part = user.split("Themes people love", 1)[1]
+        for fut in ("FUTURE — robots at home", "FUTURE — cars without a driver"):
+            assert part.index(fut) < part.index("plain topic A") and part.index(fut) < part.index("plain topic B")
+        assert wmod.THREAD_ANGLES["future"] in user
+        assert 'SCREENSHOT: not available right now — visual_url must be "".' in user
+        assert "Write the thread now: 4 to 7 tweets." in user
 
-    def test_gate_yes_grounded(self, settings, state, items):
-        stale = news(5, "Something from two days ago", "old news", hours=50)
-        blocked = news(6, "AI startup hit with lawsuit over training data", "court case", hours=1)
-        w, llm = make_writer(settings, state, {"reactive": react_resp(), "factcheck": FC_OK})
-        d = w.draft_reactive(items + [stale, blocked], NOTES, "")
-        assert d is not None and d.kind == "reactive" and d.texts == [REACT_TEXT]
-        assert d.sources == [items[0]] and d.reason == "grosse annonce"
-        assert d.visual == Visual("phone", items[0].url)
-        assert d.card == {"type": "phone", "title": "ChatGPT voice is now *free*",
-                          "lines": ["No paid plan needed", "Talk instead of typing"], "note": ""}
-        assert "everyday people would care about RIGHT NOW" in llm.calls[0]["user"]
-        assert llm.labels() == ["reactive", "factcheck"]
-        user = llm.calls[0]["user"]
-        assert "two days ago" not in user and "lawsuit" not in user
-        assert HEADER in user
+    def test_topics_for_kind(self, settings, state):
+        topics = ["FUTURE — robots at home", "plain topic A", "future — cars without a driver", "plain topic B", 42]
+        w, _ = make_writer(settings, state)
+        for seed in range(10):
+            w.rng = random.Random(seed)
+            fut = w.topics_for_kind(topics, "future")
+            assert set(fut[:2]) == {"FUTURE — robots at home", "future — cars without a driver"}
+            assert sorted(fut) == sorted(t for t in topics if isinstance(t, str))
+            for genre in ("timely", "weekly"):
+                assert set(w.topics_for_kind(topics, genre)[:2]) == {"plain topic A", "plain topic B"}
+        short = w.topics_for_kind(topics, "future", limit=1)
+        assert len(short) == 1 and short[0].upper().startswith("FUTURE")
+        assert w.topics_for_kind([], "future") == []
 
-    def test_yes_without_source_then_no(self, settings, state, items):
-        w, llm = make_writer(settings, state, {"reactive": [react_resp(source_ids=()), react_resp(post=False)]})
-        assert w.draft_reactive(items, [], "") is None
-        assert llm.labels() == ["reactive", "reactive"]
-        assert "post = false" in llm.calls[1]["user"]
+    def test_recent_thread_kinds_synced_from_published_items(self, settings, state):
+        w, _ = make_writer(settings, state)
+        state.data["thread_recent_kinds"] = ["timely"]
+        state.new_item("thread", ["a"], status="published", meta={"angle": "weekly"})
+        state.new_item("thread", ["b"], status="rejected", meta={"angle": "future"})
+        state.new_item("tip", ["c"], status="published", meta={"angle": "future"})
+        state.new_item("thread", ["e"], status="published", meta={"angle": "tutorial"})   # ancien genre : ignoré
+        seen_by_publisher = state.new_item("thread", ["f"], status="published", meta={"angle": "future"})
+        state.data["thread_kinds_seen"] = [seen_by_publisher["id"]]    # déjà compté par le Publisher
+        assert w.recent_thread_kinds() == ["timely", "weekly"]
+        assert w.recent_thread_kinds() == ["timely", "weekly"]         # idempotent
+        state.new_item("thread", ["d"], status="published", meta={"angle": " Future "})
+        assert w.recent_thread_kinds() == ["timely", "weekly", "future"]
+        assert state.data["thread_recent_kinds"] == ["timely", "weekly", "future"]
 
-    def test_factcheck_failure_retry(self, settings, state, items):
-        w, llm = make_writer(settings, state, {
-            "reactive": [react_resp(), react_resp(text=NEWS_TEXT_2)],
-            "factcheck": [{"ok": False, "issues": "invented detail"}, FC_OK]})
-        d = w.draft_reactive(items, [], "")
-        assert d is not None and d.texts == [NEWS_TEXT_2]
-        assert "invented detail" in llm.calls[2]["user"]
-
-    def test_same_story_as_recent_post_rejected(self, settings, state, items):
-        state.remember_text("news", REACT_TEXT)
-        w, llm = make_writer(settings, state, {"reactive": react_resp(), "factcheck": FC_OK})
-        assert w.draft_reactive(items, [], "") is None
-        assert REACT_TEXT.splitlines()[0] in llm.calls[0]["user"]
+    def test_recent_thread_kinds_keeps_the_last_six(self, settings, state):
+        w, _ = make_writer(settings, state)
+        state.data["thread_recent_kinds"] = ["timely", "future"] * 3
+        state.new_item("thread", ["a"], status="published", meta={"angle": "weekly"})
+        assert w.recent_thread_kinds() == ["future", "timely", "future", "timely", "future", "weekly"]
 
 
 # ---------------------------------------------------------------------------
@@ -1247,7 +1743,7 @@ class TestRadar:
 
 
 # ---------------------------------------------------------------------------
-# Capture « smartphone » : Claude la regarde
+# Capture « smartphone » : Claude la regarde avant qu'elle serve
 # ---------------------------------------------------------------------------
 class TestScreenshotCheck:
     def test_verdicts(self, settings, state):
@@ -1259,90 +1755,117 @@ class TestScreenshotCheck:
         assert w.screenshot_is_clean("a.jpg") == (False, "capture pas assez propre")   # pas un vrai « oui »
         assert w.screenshot_is_clean("a.jpg") == (False, "vérification de l'image indisponible")
         call = llm.calls[0]
-        assert call["images"] == ["a.jpg"] and call["effort"] == "low"
-        assert "as seen on a phone" in call["system"] and "bottom edge may cut" in call["system"]
+        assert call["label"] == "screenshot-check" and call["images"] == ["a.jpg"] and call["effort"] == "low"
+        assert call["system"] == wmod.SCREENSHOT_CHECK_PROMPT
+        assert set(call["schema"]["properties"]) == {"ok", "issue"}
+        assert call["user"] == "Is this phone screenshot clean enough to be shown on an image posted on X?"
+
+    def test_headline_and_post_are_given(self, settings, state):
+        w, llm = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": "fine"}})
+        assert w.screenshot_is_clean("shot.jpg", headline="  Voice mode is free  ", post=NEWS_TEXT) == (True, "fine")
+        user = llm.calls[0]["user"]
+        assert user.startswith('The article\'s headline: "Voice mode is free"\n')
+        assert f'The post it will go with: """{NEWS_TEXT}"""\n' in user
+        assert user.endswith("posted on X?")
+
+    def test_long_headline_and_post_are_cut(self, settings, state):
+        w, llm = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": ""}})
+        w.screenshot_is_clean("shot.jpg", headline="H" * 400, post="P" * 700)
+        user = llm.calls[0]["user"]
+        assert '"' + "H" * 300 + '"\n' in user and "H" * 301 not in user
+        assert '"""' + "P" * 600 + '"""\n' in user and "P" * 601 not in user
+
+    def test_failures_mean_no_image(self, settings, state):
+        def boom(*a):
+            raise RuntimeError("API down")
+        w, _ = make_writer(settings, state, {"screenshot-check": boom})
+        assert w.screenshot_is_clean("a.jpg", headline="x", post="y") == \
+            (False, "vérification de l'image indisponible")
+        w2, llm2 = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": ""}})
+        assert w2.screenshot_is_clean("a.jpg", headline=42) == (False, "erreur de vérification")
+        assert llm2.calls == []
 
 
 # ---------------------------------------------------------------------------
 # Contenu des consignes (ligne éditoriale + algorithme X)
 # ---------------------------------------------------------------------------
 class TestPrompts:
-    WRITERS = ("SYSTEM_PROMPT", "THREAD_SYSTEM_PROMPT", "REACTIVE_GATE_PROMPT")
-
-    def test_growth_facts_in_prompts(self):
-        for name in self.WRITERS:
-            p = getattr(wmod, name)
-            assert '"Not interested"' in p and "copy-link" in p and "FIRST LINE" in p, name
-            assert "idiom-light" in p, name
+    def test_writing_prompts_carry_the_editorial_line(self):
+        shared = (wmod.AUDIENCE, wmod.INTRIGUE, wmod.PLAIN_WORDS, wmod.TRUTH, wmod.GROUNDING, wmod.OFF_LIMITS,
+                  wmod.GROWTH, wmod.TONE, wmod.PERSONAL_FACTS, wmod.SHOT_RULES, wmod.FORMAT_RULES)
+        for prompt in (wmod.SYSTEM_PROMPT, wmod.THREAD_SYSTEM_PROMPT):
+            assert "the future is arriving faster than people think" in prompt
+            for block in shared:
+                assert block in prompt
+        assert wmod.PLAYBOOK in wmod.SYSTEM_PROMPT and wmod.THREAD_GROWTH in wmod.THREAD_SYSTEM_PROMPT
+        for block in (wmod.AUDIENCE, wmod.PICKS, wmod.OFF_LIMITS):
+            assert block in wmod.EDITOR_PROMPT
+        assert "hook_options: write these FIRST" in wmod.SYSTEM_PROMPT
+        assert "exactly as written in the HOOKS list" in wmod.SYSTEM_PROMPT
+        assert "Crypto, NFTs" in wmod.OFF_LIMITS and "Muslim" in wmod.OFF_LIMITS
+        assert '"Not interested"' in wmod.GROWTH and "FIRST LINE" in wmod.GROWTH and "idiom-light" in wmod.GROWTH
         assert "ONLY TWEET 1 REACHES NEW PEOPLE" in wmod.THREAD_SYSTEM_PROMPT
         assert "Tweet 1 on its own" in wmod.JUDGE_SYSTEM_PROMPT
-        assert "empty greeting" in wmod.GM_SYSTEM_PROMPT
-        assert "copypasta" in wmod.RADAR_REPLY_PROMPT
+        assert "headlines of the stories it is built on" in wmod.JUDGE_SYSTEM_PROMPT
+        assert "claims: fill this FIRST" in wmod.FACTCHECK_PROMPT and "PLAIN-LANGUAGE CHECK" in wmod.FACTCHECK_PROMPT
+        assert "empty greeting" in wmod.GM_SYSTEM_PROMPT and "max 200 characters" in wmod.GM_SYSTEM_PROMPT
+        assert "copypasta" in wmod.RADAR_REPLY_PROMPT and "Muslim" in wmod.RADAR_REPLY_PROMPT
+        assert "headline" in wmod.SCREENSHOT_CHECK_PROMPT and '"Read next"' in wmod.SCREENSHOT_CHECK_PROMPT
 
-    def test_editorial_line_in_prompts(self):
-        for name in self.WRITERS:
+    def test_no_more_drawn_cards(self):
+        for name in ("SYSTEM_PROMPT", "THREAD_SYSTEM_PROMPT", "GM_SYSTEM_PROMPT", "EDITOR_PROMPT",
+                     "FACTCHECK_PROMPT", "JUDGE_SYSTEM_PROMPT"):
             p = getattr(wmod, name)
-            assert "Crypto, NFTs" in p and "Muslim" in p and "PERSONAL FACTS" in p, name
-            assert "GROUNDING" in p and "No links and no domain names" in p and "260 characters" in p, name
-        assert "max 200 characters" in wmod.GM_SYSTEM_PROMPT
-        assert "Muslim" in wmod.RADAR_REPLY_PROMPT and "Muslim" in wmod.GM_SYSTEM_PROMPT
+            assert "card_type" not in p and "IMAGE CARD" not in p and "image_prompt" not in p, name
 
-    def test_everyday_people_line_in_prompts(self):
-        """Novembre 2026 : on écrit pour M. et Mme Tout-le-monde."""
-        for name in self.WRITERS:
-            p = getattr(wmod, name)
-            assert "AI made simple, for everyday life" in p, name
-            assert "WHO YOU WRITE FOR" in p and "a nurse, a teacher, a shop owner" in p, name
-            assert "PLAIN WORDS ONLY" in p and "No tech jargon, ever" in p, name
-            assert "CARD — every post goes out with an image card" in p, name
-            assert "never makes you feel stupid" in p, name
-            assert "image_prompt" not in p and "screenshot" not in p.lower(), name
-        for name in ("SYSTEM_PROMPT", "REACTIVE_GATE_PROMPT"):
-            p = getattr(wmod, name)
-            assert "PLAYBOOK" in p and "NEWS IN PLAIN WORDS" in p and "Sentence case" in p, name
-        assert "just [launched" not in wmod.SYSTEM_PROMPT            # l'ancien format « lancement »
-        assert "stop a non-tech person scrolling" in wmod.JUDGE_SYSTEM_PROMPT
-        assert "PLAIN-LANGUAGE CHECK" in wmod.FACTCHECK_PROMPT and "IMAGE CARD" in wmod.FACTCHECK_PROMPT
-        assert "Most of the time the answer is NO" in wmod.REACTIVE_GATE_PROMPT
-
-    def test_prompts_respect_their_own_rules(self):
+    def test_prompt_examples_respect_their_own_rules(self):
         """Les exemples donnés à Claude ne contiennent ni lien ni sujet interdit."""
-        from bot.filters import off_limits_term
-        from bot.x_api import contains_url
-        for name in ("PLAYBOOK", "AUDIENCE", "TONE", "CARD_RULES", "ORIGINALITY"):
+        for name in ("AUDIENCE", "INTRIGUE", "PLAIN_WORDS", "PLAYBOOK", "PICKS", "TRUTH", "TONE", "SHOT_RULES",
+                     "THREAD_GROWTH"):
             block = getattr(wmod, name)
             assert not off_limits_term(block), (name, off_limits_term(block))
             assert not contains_url(block), name
-        for genre, angle in wmod.THREAD_ANGLES.items():
-            assert not off_limits_term(angle) and not contains_url(angle), genre
+        for key, text in list(wmod.THREAD_ANGLES.items()) + list(wmod.PICK_BRIEFS.items()):
+            assert not off_limits_term(text) and not contains_url(text), key
+
+    def test_pick_briefs(self):
+        assert set(wmod.PICK_BRIEFS) == {"news", "tip", "reactive", "thread-timely", "thread-future",
+                                         "thread-weekly"}
+        for key, brief in wmod.PICK_BRIEFS.items():
+            assert "{" not in brief.format(n=4, m=3) and "}" not in brief.format(n=4, m=3), key
 
     def test_fallback_texts_are_publishable(self):
-        from bot.filters import publish_problem
         for kind, texts in wmod.DEFAULT_FALLBACKS.items():
             for t in texts:
                 assert publish_problem(t, max_len=wmod.GM_MAX if kind == "gm" else wmod.POST_MAX,
                                        check_numbers=False, plain=True) is None, t
 
 
-
+# ---------------------------------------------------------------------------
+# Pas deux fois la même histoire
+# ---------------------------------------------------------------------------
 def test_news_slot_cannot_repeat_todays_reactive_post(settings, state, items):
-    reactive = ("free voice mode changes who practices hard conversations.\n"
-                "try this tonight: rehearse your salary talk out loud and ask it to push back.")
-    state.remember_text("reactive", reactive)
-    w, llm = make_writer(settings, state, {"post-news": [post_resp(reactive, source_ids=[1]),
-                                                         post_resp(NEWS_TEXT_2, source_ids=[1])],
-                                           "factcheck": FC_OK})
+    state.remember_text("reactive", REACT_TEXT)
+    w, llm = make_writer(settings, state, flow("news", post_resp(REACT_TEXT), post_resp(NEWS_TEXT_2)))
     d = w.draft_post("news", items, [], "")
     assert d is not None and d.texts == [NEWS_TEXT_2]
-    first_prompt = [c for c in llm.calls if c["label"] == "post-news"][0]["user"]
-    assert "never cover the same story" in first_prompt and "rehearse your salary talk" in first_prompt
-
+    assert "too similar to a recent post" in llm.calls[2]["user"]
+    editor = llm.calls[0]["user"]
+    assert "never pick the same story again" in editor and REACT_TEXT.splitlines()[0] in editor
+    first = llm.calls[1]["user"]
+    assert "never tell the same story again" in first and REACT_TEXT.splitlines()[0] in first
 
 
 def test_regeneration_is_not_rejected_for_resembling_the_version_it_replaces(settings, state, items):
-    item = state.new_item("tip", [TIP_TEXT], status="awaiting")
-    w, llm = make_writer(settings, state, {"post-tip": post_resp(TIP_TEXT_2), "factcheck": FC_OK})
-    w.regen_item_id = item["id"]
+    old = state.new_item("tip", [TIP_TEXT], status="awaiting")
+    again = "Soon, your laundry may fold itself at night.\nA robot does it in early tests.\nWould you let one in?"
+    w, llm = make_writer(settings, state, flow("tip", post_resp(again)))
+    w.regen_item_id = old["id"]
     d = w.draft_post("tip", items, [], "")
-    assert d is not None and d.texts == [TIP_TEXT_2]
-    assert TIP_TEXT.split("\n")[0] not in [c for c in llm.calls if c["label"] == "post-tip"][0]["user"]
+    assert d is not None and d.texts == [again]
+    for c in llm.calls[:2]:                                    # ni la rédaction en chef ni la rédaction
+        assert TIP_TEXT.splitlines()[0] not in c["user"], c["label"]
+    # Sans 🔄, la même proposition est refusée : elle répète un post en attente.
+    w2, llm2 = make_writer(settings, state, flow("tip", post_resp(again), post_resp(again)))
+    assert w2.draft_post("tip", items, [], "") is None
+    assert llm2.labels() == ["pick-tip", "post-tip", "post-tip"]
