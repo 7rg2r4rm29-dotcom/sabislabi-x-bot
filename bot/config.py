@@ -207,6 +207,7 @@ class Settings:
 
     # --- Visuels ---
     photos_enabled: bool = True          # PHOTOS_ENABLED (ancien nom : SCREENSHOTS_ENABLED)
+    videos_enabled: bool = True          # VIDEOS_ENABLED : extrait de la vidéo officielle de l'actu
     image_ai_enabled: bool = False
     image_model: str = "gpt-image-1"
     image_size: str = "1024x1024"
@@ -366,6 +367,7 @@ def load_settings() -> Settings:
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         # L'ancien réglage SCREENSHOTS_ENABLED (« une image ou pas ») vaut encore, faute du nouveau.
         photos_enabled=_env_bool("PHOTOS_ENABLED", _env_bool("SCREENSHOTS_ENABLED", True)),
+        videos_enabled=_env_bool("VIDEOS_ENABLED", True),
         image_ai_enabled=_env_bool("IMAGE_AI_ENABLED", False),
         image_model=_env("IMAGE_MODEL", "gpt-image-1") or "gpt-image-1",
         image_size=_env("IMAGE_SIZE", "1024x1024") or "1024x1024",

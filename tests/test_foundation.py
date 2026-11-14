@@ -330,6 +330,34 @@ class FakeSession:
         return r
 
 
+class TestTelegramMedia:
+    def test_video_photo_and_failures(self, tmp_path):
+        from bot.telegram import Telegram
+
+        class Resp:
+            def __init__(self, body):
+                self.body = body
+
+            def json(self):
+                return self.body
+
+        calls = []
+
+        class Session:
+            def post(self, url, data=None, files=None, timeout=None):
+                calls.append((url.rsplit("/", 1)[1], data, sorted(files), timeout))
+                return Resp({"ok": True, "result": {"message_id": 42}})
+        tg = Telegram("TOKEN", "777")
+        tg.session = Session()
+        clip, img = tmp_path / "clip.mp4", tmp_path / "p.jpg"
+        clip.write_bytes(b"mp4")
+        img.write_bytes(b"jpg")
+        assert tg.send_media(str(clip), "a clip") == 42 and tg.send_media(str(img), "a photo") == 42
+        assert [c[0] for c in calls] == ["sendVideo", "sendPhoto"]
+        assert calls[0][1]["supports_streaming"] == "true" and calls[0][2] == ["video"] and calls[0][3] == 120
+        assert tg.send_video(str(tmp_path / "missing.mp4")) is None
+
+
 class TestXClient:
     def _client(self, settings, state, responses):
         b = Budget(state, 1.5, 30)
@@ -341,6 +369,73 @@ class TestXClient:
         method, url, kw = x.session.requests[0]
         assert method == "POST" and url.endswith("/2/tweets") and kw["json"] == {"text": "hello world"}
         assert b.spent_today() == pytest.approx(0.015)
+
+    def test_video_upload_in_chunks_then_waits_for_processing(self, settings, state, clock, tmp_path,
+                                                              monkeypatch):
+        """Comme vérifié sur la vraie API le 14/11/2026 : initialize → append → finalize
+        (« pending ») → STATUS jusqu'à « succeeded »."""
+        monkeypatch.setattr(XClient, "VIDEO_CHUNK", 4)
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"0123456789")                     # 10 octets → 3 morceaux de 4 au plus
+        x, b = self._client(settings, state, [
+            FakeResp(200, {"data": {"id": "77", "media_key": "7_77", "expires_after_secs": 86399}}),
+            FakeResp(200, {"data": {"expires_at": 1}}), FakeResp(200, {"data": {"expires_at": 1}}),
+            FakeResp(200, {"data": {"expires_at": 1}}),
+            FakeResp(200, {"data": {"id": "77", "processing_info": {"state": "pending", "check_after_secs": 1}}}),
+            FakeResp(200, {"data": {"id": "77", "processing_info": {"state": "in_progress", "check_after_secs": 3}}}),
+            FakeResp(200, {"data": {"id": "77", "processing_info": {"state": "succeeded", "progress_percent": 100}}}),
+        ])
+        waits = []
+        assert x.upload_video(clip, sleep=waits.append) == "77"
+        reqs = x.session.requests
+        assert reqs[0][0] == "POST" and reqs[0][1].endswith("/2/media/upload/initialize")
+        assert reqs[0][2]["json"] == {"media_type": "video/mp4", "total_bytes": 10, "media_category": "tweet_video"}
+        assert [r[1].rsplit("/2/", 1)[1] for r in reqs[1:4]] == ["media/upload/77/append"] * 3
+        assert [r[2]["data"]["segment_index"] for r in reqs[1:4]] == ["0", "1", "2"]
+        assert [r[2]["files"]["media"][1] for r in reqs[1:4]] == [b"0123", b"4567", b"89"]
+        assert reqs[4][1].endswith("/2/media/upload/77/finalize")
+        assert reqs[5][0] == "GET" and reqs[5][2]["params"] == {"command": "STATUS", "media_id": "77"}
+        assert waits == [1, 3]
+        assert b.spent_today() == pytest.approx(0.005)
+
+    @pytest.mark.parametrize("finalize, status", [
+        ({"processing_info": {"state": "failed", "error": {"message": "InvalidContent"}}}, None),
+        ({"processing_info": {"state": "pending", "check_after_secs": 1}},
+         {"processing_info": {"state": "failed", "error": {"name": "UnsupportedMedia"}}}),
+    ])
+    def test_video_refused_by_x_is_an_invalid_error(self, settings, state, clock, tmp_path, finalize, status):
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"data")
+        responses = [FakeResp(200, {"data": {"id": "77"}}), FakeResp(200, {"data": {}}),
+                     FakeResp(200, {"data": {"id": "77", **finalize}})]
+        if status:
+            responses.append(FakeResp(200, {"data": {"id": "77", **status}}))
+        x, _ = self._client(settings, state, responses)
+        with pytest.raises(XError) as err:
+            x.upload_video(clip, sleep=lambda s: None)
+        assert err.value.kind == "invalid" and "refusée" in str(err.value)
+
+    def test_video_processing_too_long(self, settings, state, clock, tmp_path, monkeypatch):
+        monkeypatch.setattr(XClient, "VIDEO_PROCESSING_MAX_S", -1)
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"data")
+        x, _ = self._client(settings, state, [
+            FakeResp(200, {"data": {"id": "77"}}), FakeResp(200, {"data": {}}),
+            FakeResp(200, {"data": {"id": "77", "processing_info": {"state": "pending"}}})])
+        with pytest.raises(XError) as err:
+            x.upload_video(clip, sleep=lambda s: None)
+        assert err.value.kind == "invalid" and "trop long" in str(err.value)
+
+    def test_video_without_id_and_dry_run(self, settings, state, clock, tmp_path):
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"data")
+        x, _ = self._client(settings, state, [FakeResp(200, {"data": {}})])
+        with pytest.raises(XError) as err:
+            x.upload_video(clip, sleep=lambda s: None)
+        assert err.value.kind == "invalid"
+        settings.dry_run = True
+        x2, _ = self._client(settings, state, [])
+        assert x2.upload_video(clip).startswith("dry-") and x2.session.requests == []
 
     def test_reply_poll_media_body(self, settings, state, clock):
         x, b = self._client(settings, state, [FakeResp(201, {"data": {"id": "5"}})])

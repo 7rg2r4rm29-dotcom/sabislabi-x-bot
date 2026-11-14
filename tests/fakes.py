@@ -61,6 +61,14 @@ class FakeX:
         self.uploads.append(mid)
         return mid
 
+    def upload_video(self, path) -> str:
+        self.calls.append(("upload_video", str(path)))
+        if self.fail_next:
+            raise self.fail_next.pop(0)
+        mid = str(next(self._ids))
+        self.uploads.append(mid)
+        return mid
+
     def post(self, text: str, *, reply_to=None, media_ids=None, poll=None, made_with_ai=False) -> str:
         self.calls.append(("post", text, reply_to))
         if self.fail_next:
@@ -140,6 +148,11 @@ class FakeTelegram:
     def send_photo(self, path: str, caption: str = "") -> int:
         mid = next(self._ids)
         self.photos.append({"id": mid, "path": path, "caption": caption})
+        return mid
+
+    def send_video(self, path: str, caption: str = "") -> int:
+        mid = next(self._ids)
+        self.photos.append({"id": mid, "path": path, "caption": caption, "video": True})
         return mid
 
     def edit(self, message_id: int, text: str, buttons=None) -> bool:

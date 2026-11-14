@@ -40,10 +40,15 @@ ROBOT_TITLE = "A home robot now folds a whole basket of laundry on its own"
 SCAN_TITLE = "Doctors test a scanner that spots illness years before symptoms"
 ROBOT_FACT = "The robot needed about four minutes per shirt and never dropped a sock."
 SCAN_FACT = "The scan takes less time than a coffee break and uses no needles at all."
-# La photo d'ouverture de chaque article, et son crédit : l'entreprise de l'actu.
-ROBOT_PHOTO = "https://cdn.example.com/2026/10/home-robot.jpg"
-SCAN_PHOTO = "https://cdn.example.com/2026/10/scanner.jpg"
-PHOTOS = {ROBOT_TITLE: (ROBOT_PHOTO, "RoboHome"), SCAN_TITLE: (SCAN_PHOTO, "MedScan Labs")}
+# Chaque article renvoie vers la page OFFICIELLE de l'histoire (celle de l'entreprise) : c'est
+# là, et jamais sur la page du média, que le bot prend la photo (ou la vidéo).
+ROBOT_SOURCE = "https://robohome.example.org/news/laundry-robot"
+SCAN_SOURCE = "https://medscan.example.org/press/early-scan"
+ROBOT_PHOTO = "https://cdn.robohome.example.org/2026/10/home-robot.jpg"
+SCAN_PHOTO = "https://cdn.medscan.example.org/2026/10/scanner.jpg"
+ROBOT_VIDEO = "https://cdn.robohome.example.org/2026/10/home-robot.mp4"
+NEWS_PHOTO = "https://news.example.com/img/robot-by-our-photographer.jpg"   # la photo du média : jamais prise
+SOURCES = {ROBOT_TITLE: (ROBOT_SOURCE, ROBOT_PHOTO, "RoboHome"), SCAN_TITLE: (SCAN_SOURCE, SCAN_PHOTO, "MedScan Labs")}
 FEED = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Future Daily</title><link>https://news.example.com/</link>
 <description>Tech and science news</description>
@@ -63,14 +68,26 @@ def _page(title: str, fact: str) -> str:
              "before showing it in public for the very first time this week.",
              "It is not in shops yet, and the people behind it say there is still a lot of work to do before "
              "anyone can buy one or use it every day."]
-    photo, credit = PHOTOS[title]
+    source, _photo, _credit = SOURCES[title]
     return ("<!doctype html><html><head><title>" + title + "</title>"
-            f'<meta property="og:image" content="{photo}"><meta property="og:site_name" content="Future Daily">'
+            f'<meta property="og:image" content="{NEWS_PHOTO}"><meta property="og:site_name" content="Future Daily">'
             "</head><body><nav>Home · Tech</nav>"
             "<article><h1>" + title + "</h1>"
-            f"<figure><img src=\"{photo}\"><figcaption>Image Credits: {credit}</figcaption></figure>"
+            f"<figure><img src=\"{NEWS_PHOTO}\"><figcaption>Photo by our photographer</figcaption></figure>"
             + "".join(f"<p>{t}</p>" for t in paras)
+            + f'<p>The company <a href="{source}">announced it on its website</a>.</p>'
             + "</article></body></html>")
+
+
+def _source_page(title: str, video: str = "") -> str:
+    """La page officielle de l'histoire : sa photo, son crédit, et parfois sa vidéo."""
+    _source, photo, credit = SOURCES[title]
+    vid = f'<video autoplay muted><source src="{video}" type="video/mp4"></video>' if video else ""
+    return ("<!doctype html><html><head><title>" + title + "</title>"
+            f'<meta property="og:image" content="{photo}"><meta property="og:site_name" content="{credit}">'
+            "</head><body><article><h1>" + title + "</h1>"
+            f"<figure><img src=\"{photo}\"><figcaption>Image Credits: {credit}</figcaption></figure>{vid}"
+            "<p>Today we are showing it for the first time.</p></article></body></html>")
 
 
 class FakeWeb:
@@ -78,7 +95,8 @@ class FakeWeb:
 
     def __init__(self) -> None:
         self.pages = {FEED_URL: FEED, ROBOT_URL: _page(ROBOT_TITLE, ROBOT_FACT),
-                      SCAN_URL: _page(SCAN_TITLE, SCAN_FACT)}
+                      SCAN_URL: _page(SCAN_TITLE, SCAN_FACT),
+                      ROBOT_SOURCE: _source_page(ROBOT_TITLE), SCAN_SOURCE: _source_page(SCAN_TITLE)}
         self.requests: list[str] = []
 
     def __call__(self, url: str, accept: str = sources.FEED_ACCEPT) -> tuple[int, str]:
@@ -88,7 +106,7 @@ class FakeWeb:
         return 404, ""
 
     def articles_read(self) -> list[str]:
-        return [u for u in self.requests if u != FEED_URL]
+        return [u for u in self.requests if u not in (FEED_URL, ROBOT_SOURCE, SCAN_SOURCE)]
 
 
 @pytest.fixture
@@ -132,7 +150,9 @@ def responder(label, system, user, schema):
     if label == "factcheck":
         return {"claims": [{"claim": "the claim", "quote": "the story says so", "supported": True}],
                 "ok": True, "issues": "", "plain": True, "hard_words": ""}
-    if label == "photo-check":
+    if label == "source-link":
+        return {"pick": 1, "reason": "la page de l'entreprise"}
+    if label in ("photo-check", "video-check"):
         return {"ok": True, "issue": ""}
     if label == "comment-reply":
         return {"reply": True, "reason": "vraie question", "text": REPLY}
@@ -321,7 +341,7 @@ def test_auto_mode_day_every_post_goes_out_with_the_photo_of_its_story(feed_sett
     checks = [c for c in llm.calls if c["label"] == "photo-check"]
     assert [len(c["images"]) for c in checks] == [1, 1]
     assert ROBOT_TITLE in checks[0]["user"] and TIP.splitlines()[0] in checks[0]["user"]
-    assert 'credit line on the page: "RoboHome"' in checks[0]["user"]
+    assert 'credit line on the official page: "RoboHome"' in checks[0]["user"]
     assert SCAN_TITLE in checks[1]["user"] and '"MedScan Labs"' in checks[1]["user"]
     assert not [c for c in llm.calls if "screenshot" in c["label"]]
     items = sorted(state.items(statuses=("published",)), key=lambda i: i["publish_at"])
@@ -376,8 +396,8 @@ def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, stat
     from bot.config import parse_post_slots
     downloads: list[str] = []
     monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: downloads.append(url) or _jpeg())
-    monkeypatch.setitem(PHOTOS, ROBOT_TITLE, (ROBOT_PHOTO, "Jane Doe/Reuters"))
-    web.pages[ROBOT_URL] = _page(ROBOT_TITLE, ROBOT_FACT)
+    monkeypatch.setitem(SOURCES, ROBOT_TITLE, (ROBOT_SOURCE, ROBOT_PHOTO, "Jane Doe/Reuters"))
+    web.pages[ROBOT_SOURCE] = _source_page(ROBOT_TITLE)
     settings = feed_settings
     settings.approval_mode = "auto"
     settings.automated_label_ack = True
@@ -393,6 +413,77 @@ def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, stat
         t += timedelta(minutes=5)
     assert [p["text"] for p in x.posts] == [TIP] and x.posts[0]["media_ids"] is None
     assert downloads == [] and "photo-check" not in llm.labels()
+
+
+def test_the_medias_own_photo_is_never_taken_when_there_is_no_official_page(feed_settings, state, budget,
+                                                                              clock, monkeypatch, web):
+    """L'article ne renvoie vers aucune page officielle : texte seul, et la photo du média
+    (son photographe) n'est jamais téléchargée."""
+    from bot import visuals
+    from bot.config import parse_post_slots
+    downloads: list[str] = []
+    monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: downloads.append(url) or _jpeg())
+    web.pages[ROBOT_URL] = web.pages[ROBOT_URL].replace(ROBOT_SOURCE, "https://www.youtube.com/watch?v=robot")
+    settings = feed_settings
+    settings.approval_mode = "auto"
+    settings.automated_label_ack = True
+    settings.post_slots = parse_post_slots("tip@14:30")
+    settings.radar_enabled = settings.comments_enabled = settings.reactive_enabled = False
+    x, llm = FakeX(), FakeLLM({"": responder})
+    bot = Bot(settings, llm=llm, x=x, telegram=FakeTelegram(), state=state, budget=budget, rng=random.Random(0))
+    t = clock(13, 40)
+    while t <= clock(14, 40):
+        utils.set_clock(t)
+        bot.tick()
+        t += timedelta(minutes=5)
+    assert [p["text"] for p in x.posts] == [TIP] and x.posts[0]["media_ids"] is None
+    assert downloads == [] and NEWS_PHOTO not in web.requests
+    assert "source-link" not in llm.labels()                 # aucun lien possible : Claude n'est même pas appelé
+
+
+def test_auto_mode_post_goes_out_with_a_clip_of_the_official_video(feed_settings, state, budget, clock,
+                                                                    monkeypatch, web, tmp_path):
+    """La page officielle publie une vidéo : le bot en tire un extrait (vrai ffmpeg), Claude en
+    regarde trois images, et le post part avec la VIDÉO (envoyée à X comme une vidéo)."""
+    from bot import visuals
+    if not visuals.ffmpeg_exe():
+        pytest.skip("ffmpeg absent (paquet imageio-ffmpeg)")
+    import subprocess
+    from bot.config import parse_post_slots
+    src = tmp_path / "official.mp4"
+    subprocess.run([visuals.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=size=1280x720:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
+                    "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)],
+                   check=True, capture_output=True, timeout=120)
+    fetched: list[str] = []
+
+    def fake_fetch_video(url, dest):
+        fetched.append(url)
+        dest.write_bytes(src.read_bytes())
+        return True
+    monkeypatch.setattr(visuals, "fetch_video_file", fake_fetch_video)
+    monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: _jpeg())
+    web.pages[ROBOT_SOURCE] = _source_page(ROBOT_TITLE, video=ROBOT_VIDEO)
+    settings = feed_settings
+    settings.approval_mode = "auto"
+    settings.automated_label_ack = True
+    settings.post_slots = parse_post_slots("tip@14:30")
+    settings.radar_enabled = settings.comments_enabled = settings.reactive_enabled = False
+    tg, x, llm = FakeTelegram(), FakeX(), FakeLLM({"": responder})
+    bot = Bot(settings, llm=llm, x=x, telegram=tg, state=state, budget=budget, rng=random.Random(0))
+    t = clock(13, 40)
+    while t <= clock(14, 40):
+        utils.set_clock(t)
+        bot.tick()
+        t += timedelta(minutes=5)
+    assert [p["text"] for p in x.posts] == [TIP] and len(x.posts[0]["media_ids"]) == 1
+    assert fetched == [ROBOT_VIDEO]
+    assert [c[0] for c in x.calls if c[0].startswith("upload")] == ["upload_video"]
+    item = state.items(statuses=("published",))[0]
+    assert item["image_kind"] == "video" and item["image_path"].endswith(".mp4")
+    checks = [c for c in llm.calls if c["label"] == "video-check"]
+    assert len(checks) == 1 and len(checks[0]["images"]) == 3 and "photo-check" not in llm.labels()
+    assert tg.photos and tg.photos[0].get("video") and "vidéo de l'actu jointe" in tg.photos[0]["caption"]
 
 
 def test_auto_mode_requires_explicit_label_ack(settings):

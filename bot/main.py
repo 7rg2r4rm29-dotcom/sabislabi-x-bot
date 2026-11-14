@@ -262,9 +262,10 @@ def config_summary(settings) -> list[str]:
     try:
         import importlib.util
         has_pil = importlib.util.find_spec("PIL") is not None
+        has_ffmpeg = importlib.util.find_spec("imageio_ffmpeg") is not None
         has_openai = importlib.util.find_spec("openai") is not None
     except (ImportError, ValueError):
-        has_pil = has_openai = False
+        has_pil = has_openai = has_ffmpeg = False
     warn = [f"⚠️ {w}" for w in (getattr(s, "warnings", None) or [])]
     return warn + [
         f"Compte : @{s.handle or '?'} (X_USER_ID {_defined(s.x_user_id)})",
@@ -287,7 +288,9 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
-        f"Images : photo de l'actu {'oui' if s.photos_enabled else 'non'}"
+        f"Images (prises à la source officielle) : vidéo {'oui' if s.videos_enabled else 'non'}"
+        f"{'' if has_ffmpeg or not s.videos_enabled else ' (ffmpeg absent)'} · "
+        f"photo {'oui' if s.photos_enabled else 'non'}"
         f"{'' if has_pil else ' (Pillow absent : aucune image)'} · "
         f"photos IA {'oui' if s.image_ai_enabled else 'non'}"
         f"{'' if has_openai or not s.image_ai_enabled else ' (paquet openai absent)'}",
@@ -308,13 +311,14 @@ def _x_reason(e) -> str:
 
 
 def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | None = None,
-              out: Callable[[str], None] = print) -> int:
+              videos: Callable | None = None, out: Callable[[str], None] = print) -> int:
     """Vérifie Telegram, l'API X (≈ 0,01 $), Claude et le dessin des images. 0 si
     tout va bien, 1 sinon (des images impossibles ne bloquent pas : les posts
     partiraient simplement sans image). N'écrit JAMAIS dans l'état du bot en
     service (état jetable)."""
     ok = True
-    parts = {"telegram": "missing", "x": "missing", "claude": "missing", "images": "missing"}
+    parts = {"telegram": "missing", "x": "missing", "claude": "missing", "images": "missing",
+             "videos": "missing"}
     out("=== Configuration ===")
     for line in config_summary(settings):
         out("  " + line)
@@ -438,6 +442,21 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
             out(f"⚠️ Images : la mise au propre des photos ne marche pas ({why}). Les posts partiraient "
                 "SANS image. "
                 "Sur le serveur : .venv/bin/python -m pip install Pillow")
+        # --- Vidéos : un extrait d'essai tiré d'une vidéo fabriquée sur place (jamais bloquant)
+        try:
+            if videos is None:
+                from . import visuals
+                videos = visuals.video_self_test
+            cut, why = videos()
+        except Exception as e:  # noqa: BLE001
+            cut, why = False, type(e).__name__
+        if cut:
+            parts["videos"] = "ok"
+            out("✅ Vidéos : le découpage des extraits fonctionne")
+        else:
+            parts["videos"] = "bad"
+            out(f"⚠️ Vidéos : le découpage des extraits ne marche pas ({why}). Les posts garderaient la photo. "
+                "Sur le serveur : .venv/bin/python -m pip install imageio-ffmpeg")
     finally:
         tmp.cleanup()
     out("=== Résultat : " + ("tout est OK ✅" if ok else "au moins un problème ❌") + " ===")
@@ -654,7 +673,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                 out((f"{i}/ " if len(draft.texts) > 1 else "") + text)
             if getattr(draft, "poll", None):
                 out("[sondage] " + " · ".join(str(o) for o in draft.poll.get("options") or []))
-            out(f"photo : {path or 'aucune (le post partirait en texte seul)'}"
+            out(f"{'vidéo' if image_kind == 'video' else 'photo'} : "
+                f"{path or 'aucune (le post partirait en texte seul)'}"
                 + (f" ({image_kind})" if path else ""))
             if getattr(draft, "reason", ""):
                 out(f"pourquoi : {draft.reason}")
@@ -672,7 +692,10 @@ def _send_preview(telegram, label: str, draft, path: str | None) -> None:
         from .telegram import esc
         head = f"👀 <b>APERÇU — {esc(label)}</b> (rien n'est publié)"
         if path and Path(path).is_file():
-            telegram.send_photo(path, caption=head)
+            if str(path).lower().endswith((".mp4", ".m4v", ".mov", ".webm")) and hasattr(telegram, "send_video"):
+                telegram.send_video(path, caption=head)
+            else:
+                telegram.send_photo(path, caption=head)
         body = "\n\n".join(esc(t) for t in draft.texts)
         poll = getattr(draft, "poll", None) or {}
         if poll.get("options"):

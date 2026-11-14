@@ -150,11 +150,24 @@ def test_card_labels_thread_poll_image_fallback(app, fake_tg, tmp_path, clock):
     assert "⚠️ Sondage + image" in fake_tg.sent[-1]["text"] and both["poll"]
 
 
+def test_video_clip_card(app, fake_tg, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake mp4")
+    d = Draft(kind="news", texts=["A robot just folded a whole basket of laundry, alone."], reason="le robot")
+    item = app.create_post_item(d, slot_key="news-1900", slot_date="2026-10-16", publish_at=at(19, day=16),
+                                expires_at=at(21, day=16), image_path=str(clip), image_kind="video")
+    assert fake_tg.photos[-1]["video"] is True and fake_tg.photos[-1]["path"] == str(clip)
+    assert fake_tg.photos[-1]["caption"] == "📰 L'histoire du jour — vidéo de l'actu jointe à ce post"
+    assert "🎬 Extrait de la vidéo officielle de l'actu joint (au-dessus)" in fake_tg.sent[-1]["text"]
+    assert item["image_kind"] == "video"
+
+
 def test_labels_and_image_kinds():
     assert KIND_LABELS["tip"] == ("🔮", "Le futur arrive")
     assert KIND_LABELS["news"] == ("📰", "L'histoire du jour")
     assert KIND_LABELS["reactive"] == ("⚡", "Ça vient de tomber")
-    assert IMAGE_KINDS_FR == {"photo": "photo de l'actu", "shot": "capture d'écran", "ai": "image IA"}
+    assert IMAGE_KINDS_FR == {"video": "vidéo de l'actu", "photo": "photo de l'actu", "shot": "capture d'écran",
+                              "ai": "image IA"}
     assert THREAD_GENRES_FR["timely"] == "l'histoire que personne ne réalise"
     assert THREAD_GENRES_FR["weekly"] == "cette semaine, le futur s'est rapproché"
     # Les genres d'avant novembre 2026 gardent leur nom (items encore en mémoire).

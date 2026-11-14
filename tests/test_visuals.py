@@ -1,11 +1,12 @@
-"""Visuels (bot/visuals.py) : la photo de l'actu CITÉE, jamais une capture d'écran.
+"""Visuels (bot/visuals.py) : la vidéo ou la photo de l'actu, prise À LA SOURCE.
 
-La page de l'actu est lue en HTTP (jamais X), on y prend la photo d'ouverture qu'elle
-déclare (og:image) et son crédit ; un crédit d'agence ou du média lui-même est refusé
-d'office ; la photo est téléchargée (jamais depuis X ni une adresse privée), remise en
-JPEG propre, puis Claude la regarde avant qu'elle serve (sinon : actu suivante, puis
-texte seul). Aucune exception vers l'appelant. Aucun accès réseau : pages et images
-sont simulées (tests/conftest.py bloque la lecture des pages et la résolution des noms)."""
+Jamais l'image d'un média : la page officielle de l'histoire (flux officiel, ou lien de
+l'article désigné par Claude) donne sa vidéo (un fichier, jamais YouTube : extrait de
+30 s par ffmpeg) ou sa photo ; crédit d'agence refusé d'office ; Claude regarde avant
+que ça serve (sinon : page suivante, puis texte seul). Jamais X, jamais une adresse
+privée. Aucune exception vers l'appelant. Aucun accès réseau : pages, images et vidéos
+sont simulées (tests/conftest.py bloque la lecture des pages et la résolution des noms) ;
+les tests du découpage lancent le vrai ffmpeg sur une vidéo fabriquée sur place."""
 from __future__ import annotations
 
 import base64
@@ -21,22 +22,30 @@ import pytest
 from bot import utils, visuals
 from bot.models import Draft, NewsItem, Visual
 
+# Deux articles de presse (jamais une source d'image) et les pages officielles vers lesquelles ils renvoient.
 TC = "https://techcrunch.com/2026/11/13/chatgpts-new-wallet-lets-ai-agents-shop/"
 VERGE = "https://www.theverge.com/2026/11/13/openai-chatgpt-wallet"
-BLOG = "https://openai.com/index/introducing-chatgpt-wallet/"
+BLOG = "https://openai.example/index/introducing-chatgpt-wallet/"
+META = "https://about.fb.com/news/2026/11/introducing-spaces-customize-muse-app/"
+LAB = "https://www.university.example/news/robot-frog"
 XPOST = "https://x.com/OpenAI/status/1846000000000000000"
 TC_PHOTO = "https://techcrunch.com/wp-content/uploads/2026/11/chatgpt-wallet.jpg?w=1200"
 VERGE_PHOTO = "https://platform.theverge.com/wp-content/uploads/2026/11/wallet.jpg"
-BLOG_PHOTO = "https://images.openai.com/wallet-hero.png"
+BLOG_PHOTO = "https://images.openai.example/wallet-hero.png"
+META_PHOTO = "https://about.fb.com/wp-content/uploads/2026/11/Spaces_Social-Share.png"
+META_VIDEO = "https://about.fb.com/wp-content/uploads/2026/11/Spaces_Header.mp4?_=1"
+LAB_PHOTO = "https://www.university.example/media/frog.jpg"
 TITLES = {TC: "ChatGPT's new Wallet lets AI agents shop and check out for you",
           VERGE: "ChatGPT can now pay for things for you",
-          BLOG: "Introducing ChatGPT Wallet"}
+          BLOG: "Introducing ChatGPT Wallet",
+          META: "Introducing Spaces: customize the Muse app",
+          LAB: "A robot frog swims with no motor"}
 
 
 def page(title: str, photo: str = "", credit: str = "", site: str = "", extra_head: str = "",
-         body_before: str = "") -> str:
-    """Une page d'article : l'en-tête (photo déclarée pour le partage), puis le titre, la
-    photo d'ouverture et sa légende de crédit, puis le texte."""
+         body_before: str = "", links=(), video: str = "") -> str:
+    """Une page : l'en-tête (photo déclarée pour le partage), puis le titre, la photo
+    d'ouverture et sa légende de crédit, la vidéo, puis le texte et ses liens."""
     head = f"<title>{title}</title>"
     if photo:
         head += f'<meta property="og:image" content="{photo}">'
@@ -45,9 +54,12 @@ def page(title: str, photo: str = "", credit: str = "", site: str = "", extra_he
     head += extra_head
     fig = (f'<figure><img src="{photo}"><figcaption><strong>Image Credits:</strong>{credit}</figcaption>'
            "</figure>") if credit else ""
+    vid = f'<video autoplay muted><source src="{video}" type="video/mp4"></video>' if video else ""
+    para = "".join(f'<p>Read <a href="{u}">{t}</a> for more.</p>' for u, t in links)
     return (f"<!doctype html><html><head>{head}</head><body><nav>Home · AI · Apps</nav>{body_before}"
-            f"<article><h1>{title}</h1>{fig}<p>A real article about something new, written for everyone. "
-            "It explains what changed and who can use it today.</p></article></body></html>")
+            f"<article><h1>{title}</h1>{fig}{vid}<p>A real article about something new, written for everyone. "
+            f"It explains what changed and who can use it today.</p>{para}</article>"
+            "<footer><p><a href='https://www.ziffdavis.com/privacy'>Terms</a></p></footer></body></html>")
 
 
 def jpeg(width: int = 1200, height: int = 675, color=(40, 90, 160), fmt: str = "JPEG", mode: str = "RGB",
@@ -93,15 +105,39 @@ class Images:
         return self.files.get(url)
 
 
-class Checker:
-    """Le regard de Claude sur la photo (writer.photo_is_usable)."""
+class Videos:
+    """Remplace le téléchargement des vidéos : le contenu d'un fichier par adresse."""
 
-    def __init__(self, *answers) -> None:
+    def __init__(self, files: dict[str, bytes] | None = None) -> None:
+        self.files = dict(files or {})
+        self.urls: list[str] = []
+
+    def __call__(self, url: str, dest: Path) -> bool:
+        self.urls.append(url)
+        if url not in self.files:
+            return False
+        Path(dest).write_bytes(self.files[url])
+        return True
+
+
+class Checker:
+    """Ce que Claude décide : le lien de la source officielle, puis le regard sur la photo
+    et sur l'extrait vidéo (writer.pick_official_link / photo_is_usable / video_is_usable)."""
+
+    def __init__(self, *answers, video=(True, "fine"), official=(BLOG, META, LAB)) -> None:
         self.answers = list(answers) or [(True, "fine")]
+        self.video_answer = video
+        self.official = set(official)
         self.calls: list[dict] = []
+        self.video_calls: list[dict] = []
+        self.picks: list[list[str]] = []
+
+    def pick_official_link(self, headline, post, links):
+        self.picks.append([u for u, _ in links])
+        return next((i for i, (u, _) in enumerate(links, start=1) if u in self.official), 0)
 
     def photo_is_usable(self, path, headline: str = "", post: str = "", credit: str = "",
-                        official: bool = False):
+                        official: bool = True):
         self.calls.append({"path": Path(path), "exists": Path(path).is_file(), "headline": headline,
                            "post": post, "credit": credit, "official": official})
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
@@ -109,22 +145,58 @@ class Checker:
             raise answer
         return answer
 
+    def video_is_usable(self, frames, headline: str = "", post: str = "", credit: str = "",
+                        official: bool = True):
+        self.video_calls.append({"frames": [Path(f) for f in frames], "exist": all(Path(f).is_file() for f in frames),
+                                 "headline": headline, "post": post, "credit": credit})
+        if isinstance(self.video_answer, Exception):
+            raise self.video_answer
+        return self.video_answer
+
+
+def pages_world() -> dict[str, str]:
+    """Le web simulé : TC et The Verge renvoient vers la page officielle d'OpenAI."""
+    return {TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch",
+                     links=[("https://x.com/OpenAI/status/1", "said on X"),
+                            ("https://www.businessinsider.com/ai-agents-2026-11", "blocking AI agents"),
+                            (BLOG, "launched a new wallet feature")]),
+            VERGE: page(TITLES[VERGE], VERGE_PHOTO, "Jane Doe / The Verge", "The Verge",
+                        links=[(BLOG, "announced today")]),
+            BLOG: page(TITLES[BLOG], BLOG_PHOTO, "", "OpenAI"),
+            META: page(TITLES[META], META_PHOTO, "", "Meta Newsroom", video=META_VIDEO),
+            LAB: page(TITLES[LAB], LAB_PHOTO, "Cecilie Ryberg / Aarhus University", "Aarhus University")}
+
 
 @pytest.fixture
 def web(monkeypatch):
     from bot import sources
-    w = Web({TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch"),
-             VERGE: page(TITLES[VERGE], VERGE_PHOTO, "Jane Doe / The Verge", "The Verge"),
-             BLOG: page(TITLES[BLOG], BLOG_PHOTO, "", "OpenAI")})
+    w = Web(pages_world())
     monkeypatch.setattr(sources, "default_http_get", w)
     return w
 
 
 @pytest.fixture
 def images(monkeypatch):
-    imgs = Images({TC_PHOTO: jpeg(), VERGE_PHOTO: jpeg(), BLOG_PHOTO: jpeg(fmt="PNG")})
+    imgs = Images({TC_PHOTO: jpeg(), VERGE_PHOTO: jpeg(), BLOG_PHOTO: jpeg(fmt="PNG"), META_PHOTO: jpeg(),
+                   LAB_PHOTO: jpeg()})
     monkeypatch.setattr(visuals, "fetch_image_bytes", imgs)
     return imgs
+
+
+FFMPEG = visuals.ffmpeg_exe()
+needs_ffmpeg = pytest.mark.skipif(not FFMPEG, reason="ffmpeg absent (paquet imageio-ffmpeg)")
+
+
+def make_video(path: Path, seconds: float = 3, size: str = "640x360", audio: bool = True) -> Path:
+    """Une vraie petite vidéo, fabriquée sur place par ffmpeg (aucun réseau)."""
+    import subprocess
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size={size}:rate=25"]
+    if audio:
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100"]
+    cmd += ["-t", str(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    cmd += ["-c:a", "aac"] if audio else []
+    subprocess.run(cmd + [str(path)], check=True, capture_output=True, timeout=120)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -311,33 +383,156 @@ class TestCreditProblem:
         assert "média lui-même" in visuals.credit_problem("TechCrunch staff photo", "", TC)
 
 
-class TestFindStoryPhoto:
-    def test_photo_credit_and_site(self):
-        w = Web({TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch")})
-        found = visuals.find_story_photo(TC, TITLES[TC], http_get=w)
-        assert found == visuals.PagePhoto(image_url=TC_PHOTO, credit="OpenAI", site="TechCrunch")
-        assert w.urls == [TC]
+class TestSourceUrls:
+    @pytest.mark.parametrize("url", [BLOG, META, LAB, "https://www.eurekalert.org/news-releases/1151530",
+                                     "https://blog.google/products/gemini/a", "https://store.google.com/p"])
+    def test_official_pages_can_be_sources(self, url):
+        assert visuals.is_source_url(url)
 
-    def test_site_falls_back_to_the_domain_and_title_to_the_page(self):
-        w = Web({TC: page("", TC_PHOTO, extra_head=f'<meta property="og:title" content="{TITLES[TC]}">')})
-        found = visuals.find_story_photo(TC, http_get=w)
-        assert found.site == "techcrunch.com" and found.credit == ""
+    @pytest.mark.parametrize("url", [TC, VERGE, "https://www.businessinsider.com/a", "https://news.sky.com/a",
+                                     "https://x.com/a/status/1", "https://t.co/xyz", "https://www.youtube.com/watch?v=1",
+                                     "https://youtu.be/abc", "https://doi.org/10.1002/x", "https://www.nature.com/a",
+                                     "https://www.amazon.com/dp/1", "https://en.wikipedia.org/wiki/A",
+                                     "https://www.instagram.com/p/1", "https://bit.ly/abc", "ftp://site.com/a", ""])
+    def test_never_a_news_site_social_network_journal_or_shop(self, url):
+        assert not visuals.is_source_url(url)
 
-    @pytest.mark.parametrize("pages", [{}, {TC: ""}, {TC: page(TITLES[TC])}])
-    def test_no_page_or_no_photo(self, pages):
-        assert visuals.find_story_photo(TC, TITLES[TC], http_get=Web(pages)) is None
 
-    def test_never_x_and_never_raises(self):
-        w = Web({XPOST: page("x", TC_PHOTO)})
-        assert visuals.find_story_photo(XPOST, http_get=w) is None and w.urls == []
-        assert visuals.find_story_photo("not a url", http_get=w) is None
+class TestArticleLinks:
+    def test_only_links_written_in_the_article_that_could_be_the_source(self):
+        html = pages_world()[TC]
+        assert visuals.article_links(html, TC) == [(BLOG, "launched a new wallet feature")]
+
+    def test_relative_same_site_duplicate_and_fragment_links(self):
+        html = ("<article><p><a href='/2026/11/other-story/'>our story</a> "
+                "<a href='https://openai.example/index/a#top'>blog post</a> "
+                "<a href='https://openai.example/index/a'>again</a> "
+                "<a href='mailto:tips@techcrunch.com'>tips</a> <a>no address</a></p>"
+                "<nav><p><a href='https://partner.example/'>menu</a></p></nav></article>")
+        assert visuals.article_links(html, TC) == [("https://openai.example/index/a", "blog post")]
+
+    def test_links_outside_paragraphs_are_ignored(self):
+        html = "<ul><li><a href='https://openai.example/a'>menu</a></li></ul><div><a href='https://b.example/'>x</a></div>"
+        assert visuals.article_links(html, TC) == []
+
+    def test_at_most_max_links(self):
+        html = "<p>" + "".join(f"<a href='https://site{i}.example/a'>s{i}</a>" for i in range(50)) + "</p>"
+        assert len(visuals.article_links(html, TC)) == visuals.MAX_LINKS
+
+    def test_broken_html(self):
+        assert visuals.article_links("<p><a href='https://a.example/x'>unclosed", TC) == []
+        assert visuals.article_links("", TC) == []
+
+
+class TestReadPage:
+    def test_page_or_nothing_never_x(self):
+        w = Web({TC: "<html>ok</html>", XPOST: "<html>x</html>"})
+        assert visuals.read_page(TC, http_get=w) == "<html>ok</html>"
+        assert visuals.read_page(XPOST, http_get=w) == "" and visuals.read_page("nope", http_get=w) == ""
+        assert visuals.read_page(VERGE, http_get=w) == ""                     # 404
+        assert w.urls == [TC, VERGE]
 
         def boom(url):
             raise TimeoutError("slow")
-        assert visuals.find_story_photo(TC, http_get=boom) is None
+        assert visuals.read_page(TC, http_get=boom) == ""
 
     def test_reads_pages_with_the_article_reader_by_default(self, web):
-        assert visuals.find_story_photo(TC, TITLES[TC]).image_url == TC_PHOTO and web.urls == [TC]
+        assert visuals.read_page(BLOG).startswith("<!doctype html>") and web.urls == [BLOG]
+
+
+class TestSourcePages:
+    def test_press_article_leads_to_the_official_page_never_its_own(self):
+        w, checker = Web(pages_world()), Checker()
+        pages = visuals.source_pages(photo_draft(), checker, http_get=w, post="the post")
+        assert [p.url for p in pages] == [BLOG]
+        assert checker.picks == [[BLOG]]                    # X et Business Insider ne sont pas proposés
+        assert w.urls == [TC, BLOG]
+        assert pages[0].title == TITLES[TC] and pages[0].site == "OpenAI" and pages[0].meta["og:image"] == BLOG_PHOTO
+
+    def test_official_feed_item_is_its_own_source(self):
+        w, checker = Web(pages_world()), Checker()
+        pages = visuals.source_pages(photo_draft(META, cited=(META,), official=(META,)), checker, http_get=w)
+        assert [p.url for p in pages] == [META] and checker.picks == [] and w.urls == [META]
+
+    def test_the_same_official_page_once(self):
+        w = Web(pages_world())
+        pages = visuals.source_pages(photo_draft(TC, cited=(TC, VERGE)), Checker(), http_get=w)
+        assert [p.url for p in pages] == [BLOG] and w.urls == [TC, BLOG, VERGE]
+
+    def test_no_official_link_or_no_answer(self):
+        w = Web(pages_world())
+        assert visuals.source_pages(photo_draft(), Checker(official=()), http_get=w) == []
+        assert visuals.source_pages(photo_draft(), object(), http_get=w) == []           # pas de Claude
+        assert w.urls == [TC, TC]
+
+    def test_a_news_site_is_never_taken_as_the_source_even_if_designated(self):
+        world = pages_world()
+        world[TC] = page(TITLES[TC], TC_PHOTO, links=[(BLOG, "blog")])
+        w = Web(world)
+
+        class Liar(Checker):
+            def pick_official_link(self, headline, post, links):
+                return 1
+        assert [p.url for p in visuals.source_pages(photo_draft(), Liar(), http_get=w)] == [BLOG]
+        # …et un flux « officiel » mal réglé qui pointe vers un média n'est pas une source non plus.
+        assert visuals.source_pages(photo_draft(VERGE, cited=(VERGE,), official=(VERGE,)), Checker(official=()),
+                                    http_get=Web(pages_world())) == []
+
+    def test_picker_failures(self):
+        w = Web(pages_world())
+
+        class Broken(Checker):
+            def pick_official_link(self, headline, post, links):
+                raise RuntimeError("down")
+        assert visuals.source_pages(photo_draft(), Broken(), http_get=w) == []
+
+        class OutOfRange(Checker):
+            def pick_official_link(self, headline, post, links):
+                return 7
+        assert visuals.source_pages(photo_draft(), OutOfRange(), http_get=w) == []
+
+    def test_unreadable_pages(self):
+        world = pages_world()
+        del world[BLOG]
+        assert visuals.source_pages(photo_draft(), Checker(), http_get=Web(world)) == []
+        assert visuals.source_pages(photo_draft(), Checker(), http_get=Web({})) == []
+
+    def test_bounded_in_time(self):
+        w = Web(pages_world())
+        assert visuals.source_pages(photo_draft(), Checker(), http_get=w, deadline=0) == [] and w.urls == []
+
+
+class TestLeadVideo:
+    @pytest.mark.parametrize("head, body, found", [
+        ('<meta property="og:video" content="https://cdn.example/v.mp4">', "", "https://cdn.example/v.mp4"),
+        ('<meta property="og:video:secure_url" content="https://cdn.example/s.mp4">'
+         '<meta property="og:video" content="http://cdn.example/s.mp4">', "", "https://cdn.example/s.mp4"),
+        ('<meta property="og:video" content="https://cdn.example/play?id=1">'
+         '<meta property="og:video:type" content="video/mp4">', "", "https://cdn.example/play?id=1"),
+        ('<meta name="twitter:player:stream" content="https://cdn.example/t.mp4">', "", "https://cdn.example/t.mp4"),
+        ("", '<video src="/media/hero.webm" autoplay></video>', "https://www.example.org/media/hero.webm"),
+        ("", '<video><source src="https://cdn.example/a.mov?x=1" type="video/quicktime"></video>',
+         "https://cdn.example/a.mov?x=1"),
+        ("", '<script type="application/ld+json">{"contentUrl": "https:\\/\\/cdn.example\\/ld.mp4"}</script>',
+         "https://cdn.example/ld.mp4"),
+    ])
+    def test_video_files_published_by_the_page(self, head, body, found):
+        html = f"<html><head>{head}</head><body>{body}</body></html>"
+        assert visuals.lead_video_url(visuals.page_meta(html), html, "https://www.example.org/news/a") == found
+
+    @pytest.mark.parametrize("head, body", [
+        ('<meta property="og:video" content="https://www.youtube.com/embed/r8sv2JxnUKw">', ""),
+        ('<meta property="og:video:url" content="https://player.vimeo.com/video/1">', ""),
+        ("", '<video src="https://cdn.example/live/index.m3u8"></video>'),
+        ("", '<video><source src="https://cdn.example/manifest.mpd" type="application/dash+xml"></video>'),
+        ("", '<video src="https://cdn.ex.co/transformations/ad.mp4"></video>'),
+        ("", '<video src="https://video.twimg.com/ext_tw_video/1/a.mp4"></video>'),
+        ("", '<iframe src="https://www.youtube.com/embed/r8sv2JxnUKw"></iframe>'),
+        ("", "<p>no video here</p>"),
+    ])
+    def test_never_youtube_streams_ads_or_x(self, head, body):
+        html = f"<html><head>{head}</head><body>{body}</body></html>"
+        assert visuals.lead_video_url(visuals.page_meta(html), html, "https://www.example.org/news/a") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +573,9 @@ def net(monkeypatch):
         return hosts[host]
 
     def get(url, timeout=None, headers=None, stream=False, allow_redirects=True):
-        assert stream and not allow_redirects and timeout == visuals.PHOTO_TIMEOUT_S
-        assert "image/" in headers["Accept"]
+        assert stream and not allow_redirects and timeout in (visuals.PHOTO_TIMEOUT_S, visuals.VIDEO_TIMEOUT_S)
+        assert ("image/" in headers["Accept"]) == (timeout == visuals.PHOTO_TIMEOUT_S)
+        assert ("video/" in headers["Accept"]) == (timeout == visuals.VIDEO_TIMEOUT_S)
         calls.append(url)
         return routes.get(url) or FakeResponse(404)
     monkeypatch.setattr(visuals, "_resolve", resolve)
@@ -521,9 +717,9 @@ class TestDownloadPhoto:
 # ---------------------------------------------------------------------------
 # Quelle photo pour CE post
 # ---------------------------------------------------------------------------
-class TestPhotoCandidates:
+class TestStoryCandidates:
     def urls(self, draft):
-        return [it.url for it in visuals.photo_candidates(draft)]
+        return [it.url for it in visuals.story_candidates(draft)]
 
     def test_designated_story_first_then_the_other_cited_stories(self):
         assert self.urls(photo_draft(VERGE, cited=(TC, VERGE, BLOG))) == [VERGE, TC, BLOG]
@@ -539,80 +735,65 @@ class TestPhotoCandidates:
         assert self.urls(Draft(kind="news", texts=["x"], visual=Visual("photo", TC))) == []
 
 
-class TestPhotoVisual:
-    def run(self, settings, draft, writer, web=None, images=None, tag="news_2026-11-14"):
-        return visuals._photo_visual(settings, draft, writer, tag,
-                                     http_get=web or Web({TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch")}),
-                                     fetch=images or Images({TC_PHOTO: jpeg()}))
+class TestStoryMedia:
+    def run(self, settings, draft, checker, web=None, images=None, videos=None, tag="news_2026-11-14"):
+        return visuals._story_media(settings, draft, checker, tag, http_get=web or Web(pages_world()),
+                                    fetch=images or Images({BLOG_PHOTO: jpeg(fmt="PNG"), META_PHOTO: jpeg(),
+                                                            LAB_PHOTO: jpeg(), TC_PHOTO: jpeg()}),
+                                    fetch_video=videos or Videos())
 
-    def test_the_photo_of_the_story_is_used(self, settings):
-        checker = Checker((True, "fine"))
-        path, kind = self.run(settings, photo_draft(), checker)
-        assert kind == "photo" and Path(path).is_file()
+    def test_the_photo_comes_from_the_official_page_never_from_the_article(self, settings):
+        imgs, checker = Images({TC_PHOTO: jpeg(), BLOG_PHOTO: jpeg(fmt="PNG")}), Checker()
+        path, kind = self.run(settings, photo_draft(), checker, images=imgs)
+        assert kind == "photo" and Path(path).is_file() and imgs.urls == [BLOG_PHOTO]
         assert Path(path).parent == utils.MEDIA_DIR / "photos" and Path(path).name.startswith("news_2026-11-14_")
         call = checker.calls[0]
-        assert call["exists"] and call["headline"] == TITLES[TC] and call["credit"] == "OpenAI"
-        assert call["post"] == "ChatGPT can now shop for you." and call["official"] is False
+        assert call["exists"] and call["headline"] == TITLES[TC] and call["credit"] == "" and call["official"]
+        assert call["post"] == "ChatGPT can now shop for you."
+
+    def test_text_only_when_the_article_leads_to_no_official_page(self, settings):
+        imgs = Images({TC_PHOTO: jpeg()})
+        assert self.run(settings, photo_draft(), Checker(official=()), images=imgs) == (None, None)
+        assert imgs.urls == []                              # la photo de l'article n'est jamais prise
+
+    def test_university_photo_with_its_own_credit(self, settings):
+        checker = Checker()
+        path, kind = self.run(settings, photo_draft(LAB, cited=(LAB,), official=(LAB,)), checker)
+        assert kind == "photo" and checker.calls[0]["credit"] == "Cecilie Ryberg / Aarhus University"
+
+    def test_agency_photo_on_the_official_page_is_refused_without_download(self, settings):
+        world = pages_world()
+        world[BLOG] = page(TITLES[BLOG], BLOG_PHOTO, "Jane Doe/Getty Images", "OpenAI")
+        imgs, checker = Images({BLOG_PHOTO: jpeg()}), Checker()
+        assert self.run(settings, photo_draft(), checker, web=Web(world), images=imgs) == (None, None)
+        assert imgs.urls == [] and checker.calls == []
 
     def test_photos_disabled(self, settings):
-        settings.photos_enabled = False
-        checker, imgs = Checker(), Images({TC_PHOTO: jpeg()})
-        assert self.run(settings, photo_draft(), checker, images=imgs) == (None, None)
-        assert checker.calls == [] and imgs.urls == []
+        settings.photos_enabled = settings.videos_enabled = False
+        w = Web(pages_world())
+        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None) and w.urls == []
 
     def test_never_used_without_claudes_look(self, settings):
-        imgs = Images({TC_PHOTO: jpeg()})
+        imgs = Images({BLOG_PHOTO: jpeg()})
         assert self.run(settings, photo_draft(), object(), images=imgs) == (None, None)
         assert imgs.urls == []
 
-    def test_agency_photo_skipped_without_download_then_next_story(self, settings):
-        w = Web({TC: page(TITLES[TC], TC_PHOTO, "Getty Images", "TechCrunch"),
-                 VERGE: page(TITLES[VERGE], VERGE_PHOTO, "Google", "The Verge")})
-        imgs = Images({TC_PHOTO: jpeg(), VERGE_PHOTO: jpeg()})
-        checker = Checker()
-        path, kind = self.run(settings, photo_draft(TC, cited=(TC, VERGE)), checker, w, imgs)
-        assert kind == "photo" and imgs.urls == [VERGE_PHOTO]
-        assert [c["credit"] for c in checker.calls] == ["Google"]
+    @pytest.mark.parametrize("answer", [(False, "blurry"), ("yes", ""), (1, ""), RuntimeError("API down")])
+    def test_text_only_unless_claude_clearly_says_yes(self, settings, answer):
+        assert self.run(settings, photo_draft(), Checker(answer)) == (None, None)
+        assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))
 
-    def test_outlets_own_photo_is_skipped(self, settings):
-        w = Web({VERGE: page(TITLES[VERGE], VERGE_PHOTO, "Jane Doe / The Verge", "The Verge")})
-        imgs = Images({VERGE_PHOTO: jpeg()})
-        assert self.run(settings, photo_draft(VERGE, cited=(VERGE,)), Checker(), w, imgs) == (None, None)
-        assert imgs.urls == []
-
-    def test_official_page_is_said_to_be_official(self, settings):
-        w = Web({BLOG: page(TITLES[BLOG], BLOG_PHOTO, "", "OpenAI")})
-        checker = Checker()
-        path, kind = self.run(settings, photo_draft(BLOG, cited=(BLOG,), official=(BLOG,)), checker, w,
-                              Images({BLOG_PHOTO: jpeg(fmt="PNG")}))
-        assert kind == "photo" and checker.calls[0]["official"] is True
-
-    def test_refused_photo_is_deleted_and_the_next_story_tried(self, settings):
-        w = Web({TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch"),
-                 BLOG: page(TITLES[BLOG], BLOG_PHOTO, "", "OpenAI")})
-        checker = Checker((False, "a news outlet's logo"), (True, "ok"))
-        path, kind = self.run(settings, photo_draft(TC, cited=(TC, BLOG)), checker, w,
-                              Images({TC_PHOTO: jpeg(), BLOG_PHOTO: jpeg()}))
+    def test_refused_photo_is_deleted_and_the_next_official_page_tried(self, settings):
+        checker = Checker((False, "a logo only"), (True, "ok"))
+        draft = photo_draft(TC, cited=(TC, LAB), official=(LAB,))
+        path, kind = self.run(settings, draft, checker)
         assert kind == "photo" and len(checker.calls) == 2
         assert not checker.calls[0]["path"].exists() and Path(path) == checker.calls[1]["path"]
 
-    @pytest.mark.parametrize("answer", [(False, "blurry"), ("yes", ""), (1, ""), RuntimeError("API down")])
-    def test_text_only_unless_claude_clearly_says_yes(self, settings, answer):
-        checker = Checker(answer)
-        assert self.run(settings, photo_draft(), checker) == (None, None)
-        assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))
-
-    def test_page_or_download_failure_moves_on(self, settings):
-        w = Web({VERGE: page(TITLES[VERGE], VERGE_PHOTO, "Google", "The Verge"),
-                 BLOG: page(TITLES[BLOG], BLOG_PHOTO, "", "OpenAI")})   # TC : 404
-        imgs = Images({BLOG_PHOTO: jpeg()})                              # VERGE : photo introuvable
-        path, kind = self.run(settings, photo_draft(TC, cited=(TC, VERGE, BLOG)), Checker(), w, imgs)
-        assert kind == "photo" and w.urls == [TC, VERGE, BLOG] and imgs.urls == [VERGE_PHOTO, BLOG_PHOTO]
-
     def test_search_is_bounded_in_time(self, settings, monkeypatch):
-        monkeypatch.setattr(visuals, "PHOTO_SEARCH_MAX_S", -1)
-        w = Web({TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch")})
-        assert self.run(settings, photo_draft(), Checker(), w) == (None, None) and w.urls == []
+        monkeypatch.setattr(visuals, "MEDIA_SEARCH_MAX_S", -1)
+        w = Web(pages_world())
+        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None) and w.urls == []
 
     def test_old_photos_are_cleaned_up(self, settings, monkeypatch):
         monkeypatch.setattr(visuals, "PHOTOS_KEEP", 2)
@@ -623,6 +804,54 @@ class TestPhotoVisual:
         self.run(settings, photo_draft(), Checker())
         assert len(list(folder.iterdir())) == 2
 
+    # --- La vidéo officielle passe avant la photo -------------------------------------
+    @needs_ffmpeg
+    def test_official_video_clip_comes_first(self, settings, tmp_path):
+        vids = Videos({META_VIDEO: make_video(tmp_path / "src.mp4", seconds=4).read_bytes()})
+        checker = Checker()
+        path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker, videos=vids)
+        assert kind == "video" and Path(path).suffix == ".mp4" and Path(path).parent == utils.MEDIA_DIR / "videos"
+        assert vids.urls == [META_VIDEO] and checker.calls == []           # la photo n'a pas servi
+        call = checker.video_calls[0]
+        assert len(call["frames"]) == 3 and call["exist"] and call["headline"] == TITLES[META]
+        info = visuals.probe_video(FFMPEG, Path(path))
+        assert 3.5 <= info.duration <= 4.5 and info.audio
+        assert not list((utils.MEDIA_DIR / "videos").glob("xbot-video-*"))  # dossier de travail effacé
+
+    @needs_ffmpeg
+    def test_refused_video_falls_back_to_the_photo(self, settings, tmp_path):
+        vids = Videos({META_VIDEO: make_video(tmp_path / "src.mp4").read_bytes()})
+        checker = Checker(video=(False, "a TV news report"))
+        path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker, videos=vids)
+        assert kind == "photo" and len(checker.video_calls) == 1
+        assert not list((utils.MEDIA_DIR / "videos").glob("*.mp4"))
+
+    def test_video_download_failure_or_unreadable_file_falls_back_to_the_photo(self, settings):
+        for vids in (Videos(), Videos({META_VIDEO: b"not a video at all"})):
+            checker = Checker()
+            path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker,
+                                  videos=vids)
+            assert kind == "photo" and checker.video_calls == []
+
+    def test_videos_disabled_or_without_ffmpeg(self, settings, monkeypatch):
+        vids = Videos({META_VIDEO: b"x"})
+        settings.videos_enabled = False
+        assert self.run(settings, photo_draft(META, cited=(META,), official=(META,)), Checker(),
+                        videos=vids)[1] == "photo"
+        settings.videos_enabled = True
+        monkeypatch.setattr(visuals, "ffmpeg_exe", lambda: None)
+        assert self.run(settings, photo_draft(META, cited=(META,), official=(META,)), Checker(),
+                        videos=vids)[1] == "photo"
+        assert vids.urls == []
+
+    def test_agency_credit_also_blocks_the_video(self, settings):
+        world = pages_world()
+        world[META] = page(TITLES[META], META_PHOTO, "Reuters", "Meta Newsroom", video=META_VIDEO)
+        vids = Videos({META_VIDEO: b"x"})
+        assert self.run(settings, photo_draft(META, cited=(META,), official=(META,)), Checker(), web=Web(world),
+                        videos=vids) == (None, None)
+        assert vids.urls == []
+
 
 # ---------------------------------------------------------------------------
 # Point d'entrée : prepare()
@@ -632,10 +861,11 @@ def ai_draft(prompt: str) -> Draft:
 
 
 class TestPrepare:
-    def test_photo_of_the_story(self, settings, web, images):
+    def test_photo_of_the_story_taken_at_its_source(self, settings, web, images, monkeypatch):
+        monkeypatch.setattr(visuals, "fetch_video_file", Videos())
         checker = Checker()
         path, kind = visuals.prepare(settings, photo_draft(), checker, "news_2026-11-14")
-        assert kind == "photo" and images.urls == [TC_PHOTO] and web.urls == [TC]
+        assert kind == "photo" and images.urls == [BLOG_PHOTO] and web.urls == [TC, BLOG]
 
     def test_old_screenshot_drafts_now_get_a_photo(self, settings, web, images):
         d = photo_draft()
@@ -673,14 +903,16 @@ class TestPrepare:
 
         def boom(*a, **k):
             raise RuntimeError("unexpected")
-        monkeypatch.setattr(visuals, "_photo_visual", boom)
+        monkeypatch.setattr(visuals, "_story_media", boom)
         assert visuals.prepare(settings, photo_draft(), Checker(), "t") == (None, None)
 
-    def test_tests_never_reach_the_internet(self, settings):
-        """Sans les faux de ce fichier, la page n'est pas lue et la photo pas téléchargée."""
+    def test_tests_never_reach_the_internet(self, settings, tmp_path):
+        """Sans les faux de ce fichier, la page n'est pas lue, ni la photo ni la vidéo téléchargées."""
         assert visuals.prepare(settings, photo_draft(), Checker(), "t") == (None, None)
         with pytest.raises(AssertionError, match="accès réseau interdit"):
             visuals.fetch_image_bytes(TC_PHOTO)
+        assert visuals.fetch_video_file(META_VIDEO, tmp_path / "v.mp4") is False      # coupé net, rien laissé
+        assert not (tmp_path / "v.mp4").exists()
 
 
 class TestSelfTest:
@@ -700,6 +932,113 @@ class TestSelfTest:
     def test_without_pillow(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "PIL", None)
         assert visuals.self_test() == (False, "Pillow n'est pas installé")
+
+    @needs_ffmpeg
+    def test_video_success(self):
+        assert visuals.video_self_test() == (True, "")
+
+    def test_video_without_ffmpeg(self, monkeypatch):
+        monkeypatch.setattr(visuals, "ffmpeg_exe", lambda: None)
+        assert visuals.video_self_test() == (False, "ffmpeg absent (paquet imageio-ffmpeg)")
+
+    @needs_ffmpeg
+    def test_video_failure_gives_the_reason(self, monkeypatch):
+        monkeypatch.setattr(visuals, "make_clip", lambda src, out, exe=None: "découpage impossible (x)")
+        assert visuals.video_self_test() == (False, "découpage impossible (x)")
+
+
+# ---------------------------------------------------------------------------
+# L'extrait vidéo : téléchargement (requests simulé) et découpage (vrai ffmpeg)
+# ---------------------------------------------------------------------------
+class TestFetchVideo:
+    URL = "https://cdn.example.com/v.mp4"
+
+    def test_a_video_file_is_streamed_to_disk(self, net, tmp_path):
+        net.routes[self.URL] = FakeResponse(200, {"Content-Type": "video/mp4"}, b"MP4DATA" * 1000)
+        dest = tmp_path / "v.mp4"
+        assert visuals.fetch_video_file(self.URL, dest) and dest.read_bytes() == b"MP4DATA" * 1000
+
+    @pytest.mark.parametrize("response", [
+        FakeResponse(200, {"Content-Type": "text/html"}, b"<html>"),
+        FakeResponse(200, {"Content-Type": "image/jpeg"}, b"jpeg"),
+        FakeResponse(200, {"Content-Type": "video/mp4", "Content-Length": str(300 * 2**20)}, b"x"),
+        FakeResponse(404),
+        FakeResponse(200, {"Content-Type": "video/mp4"}, b""),
+    ])
+    def test_refused_and_nothing_left_behind(self, net, tmp_path, response):
+        net.routes[self.URL] = response
+        dest = tmp_path / "v.mp4"
+        assert not visuals.fetch_video_file(self.URL, dest) and not dest.exists()
+
+    def test_never_from_x_nor_a_private_address(self, net, tmp_path):
+        for target in ("https://video.twimg.com/a.mp4", "https://internal.example.com/a.mp4"):
+            assert not visuals.fetch_video_file(target, tmp_path / "v.mp4")
+        assert net.calls == []
+
+    def test_network_failure_is_a_no_never_an_error(self, net, tmp_path, monkeypatch):
+        import requests
+
+        def cut(*a, **k):
+            raise requests.ConnectionError("reset")
+        monkeypatch.setattr(requests, "get", cut)
+        dest = tmp_path / "v.mp4"
+        assert visuals.fetch_video_file(self.URL, dest) is False and not dest.exists()
+
+    def test_too_heavy_while_streaming(self, net, tmp_path, monkeypatch):
+        monkeypatch.setattr(visuals, "VIDEO_MAX_BYTES", 5000)
+        net.routes[self.URL] = FakeResponse(200, {"Content-Type": "video/mp4"}, b"x" * 6000)
+        dest = tmp_path / "v.mp4"
+        assert not visuals.fetch_video_file(self.URL, dest) and not dest.exists()
+
+
+@needs_ffmpeg
+class TestClip:
+    def test_first_30_seconds_in_a_format_x_plays_everywhere(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(visuals, "CLIP_MAX_S", 2)
+        src = make_video(tmp_path / "src.mp4", seconds=5, size="1920x1080")
+        out = tmp_path / "clip.mp4"
+        assert visuals.make_clip(src, out) is None
+        info = visuals.probe_video(FFMPEG, out)
+        assert 1.8 <= info.duration <= 2.2 and (info.width, info.height) == (1280, 720) and info.audio
+        import subprocess
+        err = subprocess.run([FFMPEG, "-hide_banner", "-i", str(out)], capture_output=True, text=True).stderr
+        assert "h264 (High)" in err and "yuv420p" in err and "aac" in err
+        assert out.read_bytes()[:64].find(b"ftyp") >= 0 and b"moov" in out.read_bytes()[:4096]   # lecture immédiate
+
+    def test_portrait_video_keeps_its_shape_and_silent_video_stays_silent(self, tmp_path):
+        src = make_video(tmp_path / "src.mp4", seconds=3, size="720x1280", audio=False)
+        out = tmp_path / "clip.mp4"
+        assert visuals.make_clip(src, out) is None
+        info = visuals.probe_video(FFMPEG, out)
+        assert (info.width, info.height) == (720, 1280) and not info.audio
+
+    @pytest.mark.parametrize("seconds, size, why", [(1, "640x360", "trop courte"), (3, "1600x320", "format")])
+    def test_too_short_or_strange_shape(self, tmp_path, seconds, size, why):
+        src = make_video(tmp_path / "src.mp4", seconds=seconds, size=size)
+        out = tmp_path / "clip.mp4"
+        assert why in visuals.make_clip(src, out) and not out.exists()
+
+    def test_unreadable_file(self, tmp_path):
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"not a video")
+        assert visuals.make_clip(src, tmp_path / "clip.mp4") == "fichier vidéo illisible"
+        assert visuals.probe_video(FFMPEG, src) is None
+
+    def test_three_frames_for_claude(self, tmp_path):
+        clip = make_video(tmp_path / "clip.mp4", seconds=4)
+        frames = visuals.clip_frames(clip, tmp_path)
+        assert [f.name for f in frames] == ["frame0.jpg", "frame1.jpg", "frame2.jpg"]
+        from PIL import Image
+        with Image.open(frames[1]) as im:
+            assert im.width == 768
+        assert visuals.clip_frames(tmp_path / "missing.mp4", tmp_path) == []
+
+    def test_ffmpeg_never_reads_the_network(self, tmp_path, monkeypatch):
+        """Le fichier téléchargé est lu tel quel : une liste de lecture qui pointerait vers
+        Internet ou vers le serveur lui-même n'est jamais suivie."""
+        playlist = tmp_path / "src.mp4"
+        playlist.write_text("#EXTM3U\n#EXTINF:10,\nhttp://169.254.169.254/latest/meta-data\n")
+        assert visuals.make_clip(playlist, tmp_path / "clip.mp4") is not None
 
 
 class TestAIImages:
@@ -811,20 +1150,27 @@ class TestAIImages:
 # Claude regarde la photo (le contrat avec writer.photo_is_usable)
 # ---------------------------------------------------------------------------
 class TestPhotoCheckByClaude:
-    def test_real_writer_sees_the_photo_the_story_the_post_and_the_credit(self, settings, state, web, images):
+    def test_real_writer_finds_the_source_then_looks_at_its_photo(self, settings, state, web, images,
+                                                                  monkeypatch):
         from bot.writer import Writer
         from tests.fakes import FakeLLM
-        llm = FakeLLM({"photo-check": {"ok": False, "issue": "Getty Images watermark"}})
+        monkeypatch.setattr(visuals, "fetch_video_file", Videos())
+        llm = FakeLLM({"source-link": {"pick": 1, "reason": "billet de blog d'OpenAI"},
+                       "photo-check": {"ok": False, "issue": "Getty Images watermark"}})
         assert visuals.prepare(settings, photo_draft(), Writer(settings, llm, state), "t") == (None, None)
-        call = llm.calls[0]
-        assert len(call["images"]) == 1 and Path(call["images"][0]).suffix == ".jpg"
-        assert TITLES[TC] in call["user"] and "ChatGPT can now shop for you." in call["user"]
-        assert 'credit line on the page: "OpenAI"' in call["user"]
+        assert llm.labels() == ["source-link", "photo-check"]
+        link_call, photo_call = llm.calls
+        assert f"[1] launched a new wallet feature — {BLOG}" in link_call["user"]
+        assert "x.com" not in link_call["user"] and "businessinsider" not in link_call["user"]
+        assert len(photo_call["images"]) == 1 and Path(photo_call["images"][0]).suffix == ".jpg"
+        assert TITLES[TC] in photo_call["user"] and "ChatGPT can now shop for you." in photo_call["user"]
+        assert images.urls == [BLOG_PHOTO]
 
     def test_no_answer_means_no_photo(self, settings, state, web, images):
         from bot.writer import Writer
         from tests.fakes import FakeLLM
         assert visuals.prepare(settings, photo_draft(), Writer(settings, FakeLLM({}), state), "t") == (None, None)
+        assert images.urls == []
 
     def test_llm_builds_an_image_block(self, tmp_path):
         from PIL import Image

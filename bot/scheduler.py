@@ -89,6 +89,10 @@ class NullTelegram:
         log.info("[Telegram absent] photo %s", path)
         return None
 
+    def send_video(self, path: str, caption: str = "") -> int | None:
+        log.info("[Telegram absent] vidéo %s", path)
+        return None
+
     def edit(self, message_id: int, text: str, buttons=None) -> bool:
         return False
 

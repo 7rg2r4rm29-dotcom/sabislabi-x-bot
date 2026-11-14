@@ -86,6 +86,28 @@ class Telegram:
             log.warning("Telegram sendPhoto : %s", type(e).__name__)
         return None
 
+    def send_video(self, path: str, caption: str = "") -> int | None:
+        """L'extrait vidéo joint à un post (50 Mo au plus pour un bot Telegram)."""
+        try:
+            with open(path, "rb") as f:
+                r = self.session.post(f"{self.api}/sendVideo",
+                                      data={"chat_id": self.chat_id, "caption": caption[:1000],
+                                            "parse_mode": "HTML", "supports_streaming": "true"},
+                                      files={"video": f}, timeout=120)
+            data = r.json()
+            if data.get("ok"):
+                return int(data["result"]["message_id"])
+            log.warning("Telegram sendVideo : %s", str(data.get("description"))[:200])
+        except (OSError, requests.RequestException, ValueError) as e:
+            log.warning("Telegram sendVideo : %s", type(e).__name__)
+        return None
+
+    def send_media(self, path: str, caption: str = "") -> int | None:
+        """Photo ou extrait vidéo, selon le fichier."""
+        if str(path).lower().endswith((".mp4", ".m4v", ".mov", ".webm")):
+            return self.send_video(path, caption)
+        return self.send_photo(path, caption)
+
     def edit(self, message_id: int, text: str, buttons: list[list[dict]] | None = None) -> bool:
         payload: dict[str, Any] = {
             "chat_id": self.chat_id, "message_id": message_id, "text": text[:MAX_TEXT],

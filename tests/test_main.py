@@ -144,6 +144,7 @@ def _check(settings, **kw):
     kw.setdefault("telegram", FakeTelegram())
     kw.setdefault("x", FakeXMe())
     kw.setdefault("llm", FakeLLM({"check": {"ok": True}}))
+    kw.setdefault("videos", lambda: (True, ""))      # le vrai découpage a ses propres tests
     code = bmain.run_check(settings, out=lines.append, **kw)
     return code, "\n".join(lines), kw
 
@@ -189,7 +190,7 @@ class TestCheck:
         assert code == 0 and "✅ Images : la mise au propre des photos fonctionne" in out
         assert "capture" not in out.lower()                     # plus de captures d'écran
         assert "carte" not in out.lower()                       # plus de cartes dessinées
-        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok"
+        assert out.splitlines()[-1].startswith("PARTS telegram=ok x=ok claude=ok images=ok videos=")
 
     def test_check_really_tries_a_photo(self, secret_settings, monkeypatch):
         """Par défaut, --check passe une photo d'essai par la mise au propre de bot/visuals.py."""
@@ -201,7 +202,7 @@ class TestCheck:
         assert calls == [1]
         assert code == 0
         assert "⚠️ Images : la mise au propre des photos ne marche pas (Pillow n'est pas installé)" in out
-        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
+        assert out.splitlines()[-1].startswith("PARTS telegram=ok x=ok claude=ok images=bad videos=")
 
     def test_images_impossible_is_a_warning_not_a_failure(self, secret_settings):
         """Sans photo possible, le bot publie quand même (texte seul) : on prévient, on ne bloque pas."""
@@ -210,7 +211,23 @@ class TestCheck:
         assert "⚠️ Images : la mise au propre des photos ne marche pas (cannot write mode RGBA as JPEG)" in out
         assert "partiraient SANS image" in out
         assert "pip install Pillow" in out and "tout est OK" in out
-        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
+        assert out.splitlines()[-1].startswith("PARTS telegram=ok x=ok claude=ok images=bad videos=")
+
+    def test_video_clips_are_checked_too_and_never_block(self, secret_settings):
+        code, out, _ = _check(secret_settings, images=lambda: (True, ""), videos=lambda: (True, ""))
+        assert code == 0 and "✅ Vidéos : le découpage des extraits fonctionne" in out
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok videos=ok"
+        code, out, _ = _check(secret_settings, images=lambda: (True, ""), videos=lambda: (False, "ffmpeg absent"))
+        assert code == 0 and "⚠️ Vidéos : le découpage des extraits ne marche pas (ffmpeg absent)" in out
+        assert "garderaient la photo" in out and "pip install imageio-ffmpeg" in out
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok videos=bad"
+
+    def test_check_really_cuts_a_test_clip(self, secret_settings, monkeypatch):
+        from bot import visuals
+        calls: list[int] = []
+        monkeypatch.setattr(visuals, "video_self_test", lambda: calls.append(1) or (True, ""))
+        _check(secret_settings, images=lambda: (True, ""), videos=None)
+        assert calls == [1]
 
         def boom():
             raise RuntimeError("no display")
@@ -320,10 +337,11 @@ class TestMain:
 
     def test_config_summary_speaks_of_photos(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
-        assert "Images : photo de l'actu oui" in txt and "photos IA non" in txt
-        assert "carte" not in txt and "capture" not in txt
-        settings.photos_enabled = False
-        assert "Images : photo de l'actu non" in "\n".join(bmain.config_summary(settings))
+        assert "Images (prises à la source officielle) : vidéo oui" in txt and "photo oui" in txt
+        assert "photos IA non" in txt and "carte" not in txt and "capture" not in txt
+        settings.photos_enabled = settings.videos_enabled = False
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "vidéo non" in txt and "photo non" in txt
 
     def test_post_labels_follow_the_new_line(self):
         assert bmain.KIND_FR["tip"] == "le futur arrive"

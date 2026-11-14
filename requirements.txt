@@ -6,6 +6,9 @@ feedparser>=6.0.11
 python-dotenv>=1.0.1
 # Pillow : la photo de l'actu, remise en JPEG propre avant d'être jointe au post.
 Pillow>=11.0
+# imageio-ffmpeg : ffmpeg tout prêt (rien à installer à la main) pour tirer l'extrait de la
+# vidéo officielle de l'actu.
+imageio-ffmpeg>=0.5.1
 tzdata
 pytest>=8
 # Optionnel : photos IA (openai). Sans lui, le bot fonctionne normalement.

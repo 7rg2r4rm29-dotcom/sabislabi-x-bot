@@ -19,11 +19,13 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   d'alertes info, le post dit le fait directement. Jamais le nom du site, du journal ou du forum où le bot
   l'a lue (« TechCrunch reports », « according to The Verge » : refusé). Qui a fait l'annonce ou qui l'a
   dit reste nommé (« OpenAI says »).
-- **Image** : la **photo officielle de l'actu** (le produit, le robot, l'appli, le visuel de
-  l'entreprise), prise sur la page de l'article cité, jamais une photo d'agence (Getty, Reuters, AP,
-  AFP…) ni du média lui-même. **Plus de capture d'écran d'article** (abandonnée le 14/11/2026 : montrer
-  la page d'un autre média, c'est dire que ce sont eux qui informent). Aucune maquette, aucune carte
-  dessinée. Sans photo propre, le post part en texte seul.
+- **Image prise À LA SOURCE** (décision du propriétaire, 14/11/2026 : « nous sommes la référence ») :
+  un **extrait de 30 s de la vidéo officielle** de l'actu, sinon sa **photo officielle**, prises sur la
+  page de l'entreprise, du labo ou de l'université qui annonce la nouvelle. **Jamais** l'image d'un
+  journal, d'un site ou d'une autre personne, jamais une capture d'écran d'article (abandonnée le
+  14/11/2026), jamais une photo d'agence (Getty, Reuters, AP, AFP…). Vidéos : seulement des FICHIERS
+  publiés par la source ; pas YouTube (téléchargement interdit par YouTube). Aucune maquette, aucune
+  carte dessinée. Sans image sûre, le post part en texte seul.
 - **Mode** : `APPROVAL_MODE=auto`, donc les posts partent sans validation humaine. Telegram sert aux
   rapports et aux commandes.
 - **Historique** :
@@ -32,8 +34,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - v3 : cartes dessinées (`0d04a7e`) ;
   - v4 (novembre 2026) : captures façon téléphone, ligne grand public, garde-fous renforcés
     (`7bb6b1b`, `e153686`, `7d5e462`) ;
-  - v5 (14/11/2026) : photo officielle de l'actu au lieu des captures, et le compte donne la nouvelle
-    lui-même (aucun média cité).
+  - v5 (14/11/2026) : image prise à la source (extrait vidéo, sinon photo officielle) au lieu des
+    captures, et le compte donne la nouvelle lui-même (aucun média cité, jamais de lien).
 
 ## 2. Où sont les choses
 
@@ -43,8 +45,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Serveur** (DigitalOcean) : `ssh botuser@178.128.194.190`. La clé SSH est sur le Mac du propriétaire.
   - Application : `~/x-degen-bot`, avec son environnement Python `.venv`.
   - Réglages : `config/.env` (clés : ne JAMAIS l'afficher), `config/settings.json`, `config/content.json`.
-  - Données : état `state/state.json`, médias `media/` (photos de l'actu dans `media/photos/` ; les
-    anciennes captures dans `media/shots/`).
+  - Données : état `state/state.json`, médias `media/` (extraits vidéo dans `media/videos/`, photos dans
+    `media/photos/` ; les anciennes captures dans `media/shots/`).
   - Service systemd : `x-degen-bot`. Commandes utiles :
     - `sudo -n systemctl status x-degen-bot` / `sudo -n systemctl restart x-degen-bot` ;
     - journal : `sudo -n journalctl -u x-degen-bot -n 200 --no-pager`.
@@ -97,7 +99,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - une relecture affirmation par affirmation (`Writer._factcheck`).
 - Le compte donne la nouvelle lui-même : jamais le nom du média qui l'a racontée (consigne `NEWS_VOICE`,
   doublée côté code par `filters.news_outlet_cited`, qui couvre toutes les sources de `news_feeds`).
-- Pas de lien, de hashtag ni de @mention dans les posts. 260 caractères pondérés au maximum.
+- **Jamais de lien externe** dans les posts (consigne du propriétaire, 14/11/2026 ; même un lien YouTube
+  vers une vidéo officielle), ni hashtag ni @mention. 260 caractères pondérés au maximum.
+- Les images ne viennent jamais d'un article d'un autre site, journal ou personne (voir « Image »).
 
 ## 4. Architecture (détails dans `DESIGN.md`)
 
@@ -115,12 +119,16 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - relecture par affirmation (`_factcheck`) ;
   - consignes : `AUDIENCE`, `INTRIGUE`, `PLAYBOOK`, `NEWS_VOICE`, `PICKS`, `TRUTH`, `PHOTO_RULES`,
     `EDITOR_PROMPT`, `FACTCHECK_PROMPT`, `PHOTO_CHECK_PROMPT`.
-- `bot/visuals.py` (photo de l'actu) :
-  - photo d'ouverture déclarée par la page citée (`og:image`) et son crédit (`photo_credit`) ;
-  - crédit d'agence, de banque d'images ou du média lui-même : refusée d'office (`credit_problem`) ;
-  - téléchargement borné, jamais X ni une adresse privée (`fetch_image_bytes`, `public_host`), puis JPEG
-    propre sans métadonnées (`normalize_photo`) ;
-  - Claude la regarde avec son crédit (`Writer.photo_is_usable`) ; sinon actu suivante, puis texte seul.
+- `bot/visuals.py` (image prise à la source) :
+  - pages officielles de l'histoire (`source_pages`) : flux officiel, ou lien de l'article de presse que
+    Claude désigne (`article_links`, `is_source_url`, `Writer.pick_official_link`) ; jamais un média ;
+  - vidéo d'abord (`lead_video_url`, fichier seulement) : téléchargée (`fetch_video_file`), extrait de
+    30 s par ffmpeg du paquet imageio-ffmpeg (`make_clip`), trois images regardées par Claude
+    (`clip_frames`, `Writer.video_is_usable`) ; publiée par `XClient.upload_video` (envoi par morceaux) ;
+  - sinon la photo de la page officielle (`lead_image_url`, `photo_credit`, `credit_problem`, JPEG
+    propre, `Writer.photo_is_usable`) ;
+  - crédit d'agence : refusé d'office ; téléchargements bornés, jamais X ni une adresse privée
+    (`public_host`) ; au moindre doute, texte seul.
 - Les autres modules :
   - `bot/scheduler.py` : créneaux, posts « à chaud », 🔄 nouvelle version ;
   - `bot/approvals.py` : Telegram ;
@@ -141,9 +149,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 ## 5. Commandes utiles
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
-  Telegram sont simulés (pages et photos aussi) ; 1178 tests au 14/11/2026.
+  Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
+  une vidéo fabriquée sur place) ; 1273 tests au 14/11/2026.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
-  - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre ;
+  - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;
   - `--report` : les chiffres ;
   - `--once <plan|publish|comments|radar|reactive|metrics|daily|weekly|poll>` : une seule étape.
@@ -169,7 +178,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 5. Réglages modifiés à la main sur le serveur : ils sont gardés, et la nouvelle version est posée à côté
    (`….nouveau`). Exception : `news_feeds`, toujours mis à jour (la liste va avec la ligne éditoriale).
 6. Après l'installation, vérifier `--check`, le journal du service et le premier post publié (texte et
-   photo).
+   image).
 
 ## 7. Travailler avec le propriétaire
 
@@ -197,8 +206,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 ## 8. État au 14/11/2026, limites connues, pistes
 
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
-  au lieu de l'heure de rédaction), puis le 14/11 la v5 : photo officielle de l'actu au lieu des captures,
-  et aucun média cité dans les posts.
+  au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
+  prise à la source (extrait vidéo, sinon photo officielle). Envoi vidéo à X vérifié pour de vrai le
+  14/11 (vidéo d'essai envoyée sans être publiée : initialize → append → finalize → STATUS).
 - **Bilan du 13/11** : `--check` au vert, aucune erreur depuis le 28/10, aucun créneau sauté du 10 au 13/11.
   Aperçu réel de la v4 : deux posts corrects, captures TechCrunch propres (abandonnées depuis).
   Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et
@@ -209,14 +219,15 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
   le radar.
 - **À surveiller les premiers jours** :
-  - la qualité des posts et des photos (et la part des posts en texte seul) ;
+  - la qualité des posts et des images (et la part des posts en texte seul) ;
   - les créneaux sautés (normal s'il n'y a pas d'histoire assez forte, à creuser si c'est fréquent) ;
   - le coût de Claude (`/budget`).
 - **Limites connues** :
   - l'audience est héritée de l'ancienne période NFT du compte ;
   - pas encore de vraies statistiques sur la nouvelle ligne ;
-  - beaucoup d'actus n'ont pas de photo officielle (photo d'agence, logo du site) : le post part alors en
-    texte seul ;
+  - beaucoup d'actus n'ont pas d'image à la source : l'article ne renvoie pas vers la page officielle
+    (annonce faite sur X seulement), la source bloque les robots (openai.com, EurekAlert : jamais forcés),
+    ou la vidéo est sur YouTube. Le post part alors en texte seul ;
   - la limite de 40 s par téléchargement est approximative, mais le relevé des flux est coupé au bout de
     120 s.
 - **Pistes** :

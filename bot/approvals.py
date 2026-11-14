@@ -47,7 +47,9 @@ THREAD_GENRES_FR = {"timely": "l'histoire que personne ne réalise", "future": "
                     # anciens genres (items créés avant novembre 2026)
                     "tutorial": "pas à pas", "beginner": "l'IA au quotidien", "practical": "pratique",
                     "mindset": "mindset", "story": "histoire vraie"}
-IMAGE_KINDS_FR = {"photo": "photo de l'actu", "shot": "capture d'écran", "ai": "image IA"}
+IMAGE_KINDS_FR = {"video": "vidéo de l'actu", "photo": "photo de l'actu", "shot": "capture d'écran",
+                  "ai": "image IA"}
+VIDEO_EXTS = (".mp4", ".m4v", ".mov", ".webm")
 
 # Statuts dans lesquels chaque bouton a encore un sens.
 _ACTIONABLE = {
@@ -297,6 +299,12 @@ class Approvals:
         self._send_card(item)
         return item
 
+    def _send_media(self, path: str, caption: str) -> int | None:
+        """La photo, ou l'extrait vidéo, joint au post."""
+        if str(path).lower().endswith(VIDEO_EXTS) and callable(getattr(self.tg, "send_video", None)):
+            return self.tg.send_video(path, caption=caption)
+        return self.tg.send_photo(path, caption=caption)
+
     def _send_card(self, item: dict, photo: bool = False) -> int | None:
         if self.tg is None:
             return None
@@ -306,7 +314,7 @@ class Approvals:
             if photo and path and Path(path).is_file():
                 emoji, label = self._label(item)
                 what = IMAGE_KINDS_FR.get(str(item.get("image_kind") or ""), "image")
-                self.tg.send_photo(path, caption=f"{emoji} {esc(label)} — {what} jointe à ce post")
+                self._send_media(path, f"{emoji} {esc(label)} — {what} jointe à ce post")
             text, buttons = self._render(item)
             mid = self.tg.send(text, buttons=buttons or None, silent=silent)
             if mid is None:
@@ -441,6 +449,8 @@ class Approvals:
                 lines.append("⚠️ Sondage + image : X n'accepte pas les deux, l'image ne sera pas publiée")
             elif item.get("image_kind") == "ai":
                 lines.append("🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)")
+            elif item.get("image_kind") == "video":
+                lines.append("🎬 Extrait de la vidéo officielle de l'actu joint (au-dessus)")
             elif item.get("image_kind") == "photo":
                 lines.append("📷 Photo de l'actu jointe (au-dessus)")
             elif item.get("image_kind") == "shot":
@@ -969,7 +979,7 @@ class Approvals:
             try:
                 emoji, label = self._label(item)
                 what = IMAGE_KINDS_FR.get(str(kind or ""), "image")
-                self.tg.send_photo(path, caption=f"{emoji} {esc(label)} — nouvelle {what} (nouvelle version)")
+                self._send_media(path, f"{emoji} {esc(label)} — nouvelle {what} (nouvelle version)")
             except Exception as e:  # noqa: BLE001
                 log.warning("Item %s : nouvelle image non envoyée sur Telegram (%s)", item.get("id"), type(e).__name__)
 

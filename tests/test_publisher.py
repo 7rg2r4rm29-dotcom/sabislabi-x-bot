@@ -246,6 +246,26 @@ def test_missing_or_refused_image_posts_without_it(pub, state, fake_x, tmp_path)
     assert fake_x.posts[-1]["media_ids"] is None and fake_x.posts[-1]["made_with_ai"] is False
 
 
+def test_video_is_uploaded_as_a_video(pub, state, fake_x, tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake mp4")
+    item = approved(state, image_path=str(clip), image_kind="video")
+    assert pub.publish_due() == 1
+    assert fake_x.calls[0] == ("upload_video", str(clip))
+    assert fake_x.posts[0]["media_ids"] == ["1000"] and fake_x.posts[0]["made_with_ai"] is False
+    assert item["status"] == "published"
+
+
+@pytest.mark.parametrize("kind", ["invalid", "not_found", "forbidden", "server"])
+def test_video_refused_by_x_never_holds_the_post_back(pub, state, fake_x, tmp_path, kind):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake mp4")
+    item = approved(state, image_path=str(clip), image_kind="video")
+    fake_x.fail_next = [XError(kind, "video problem", 400)]
+    assert pub.publish_due() == 1
+    assert item["status"] == "published" and fake_x.posts[0]["media_ids"] is None
+
+
 def test_upload_rate_limited_retries_whole_post(pub, state, fake_x, tmp_path):
     img = tmp_path / "img.png"
     img.write_bytes(b"x")

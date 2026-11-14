@@ -205,6 +205,53 @@ class XClient:
             raise XError("invalid", f"Upload sans identifiant : {str(data)[:200]}")
         return media_id
 
+    VIDEO_CHUNK = 4 * 1024 * 1024
+    VIDEO_PROCESSING_MAX_S = 240
+
+    def upload_video(self, path: Path, *, sleep=time.sleep) -> str:
+        """Envoi d'une vidéo MP4 par morceaux (initialize → append → finalize), puis attente
+        de son traitement par X. Un envoi n'a aucun effet public tant que la vidéo n'est
+        pas jointe à un post : il peut être refait sans risque. Traitement refusé ou trop
+        long → XError("invalid") : le Publisher publie alors le texte seul."""
+        if self.dry_run:
+            log.info("[DRY_RUN] upload vidéo %s", path)
+            return self._dry_id()
+        if not self.budget.can_spend_essential(0.01):
+            raise XError("budget", "Budget mensuel API X atteint")
+        size = Path(path).stat().st_size
+        init = self._req("POST", "/2/media/upload/initialize", retry=True,
+                         json_body={"media_type": "video/mp4", "total_bytes": size,
+                                    "media_category": "tweet_video"})
+        media_id = str((init.get("data") or {}).get("id") or "")
+        if not media_id:
+            raise XError("invalid", f"Envoi vidéo sans identifiant : {str(init)[:200]}")
+        with open(path, "rb") as f:
+            index = 0
+            while True:
+                chunk = f.read(self.VIDEO_CHUNK)
+                if not chunk:
+                    break
+                self._req("POST", f"/2/media/upload/{media_id}/append", retry=True,
+                          files={"media": ("chunk", chunk, "application/octet-stream")},
+                          data={"segment_index": str(index)})
+                index += 1
+        done = self._req("POST", f"/2/media/upload/{media_id}/finalize", retry=True)
+        self.budget.record("media")
+        info = (done.get("data") or {}).get("processing_info") or {}
+        deadline = time.monotonic() + self.VIDEO_PROCESSING_MAX_S
+        while str(info.get("state") or "") in ("pending", "in_progress"):
+            if time.monotonic() > deadline:
+                raise XError("invalid", "Vidéo : traitement trop long chez X")
+            log.info("Vidéo %s : traitement chez X (%s %%)", media_id, info.get("progress_percent", 0))
+            sleep(min(max(int(info.get("check_after_secs") or 2), 1), 10))
+            status = self._req("GET", "/2/media/upload", params={"command": "STATUS", "media_id": media_id})
+            info = (status.get("data") or {}).get("processing_info") or {}
+        if str(info.get("state") or "") == "failed":
+            err = info.get("error") or {}
+            raise XError("invalid", f"Vidéo refusée par X : {err.get('message') or err.get('name') or 'échec'}")
+        log.info("Vidéo envoyée à X (%d Ko, %d morceau(x)) : %s", size // 1024, index, media_id)
+        return media_id
+
     def post(self, text: str, *, reply_to: str | None = None, media_ids: list[str] | None = None,
              poll: dict | None = None, made_with_ai: bool = False) -> str:
         """Publie et retourne l'id du post. Lève XError en cas d'échec."""

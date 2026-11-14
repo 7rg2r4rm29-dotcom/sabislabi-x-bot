@@ -1779,7 +1779,7 @@ class TestPhotoCheck:
         assert call["label"] == "photo-check" and call["images"] == ["a.jpg"] and call["effort"] == "low"
         assert call["system"] == wmod.PHOTO_CHECK_PROMPT
         assert set(call["schema"]["properties"]) == {"ok", "issue"}
-        assert call["user"] == ("No credit line was found for the picture.\n"
+        assert call["user"] == ("No credit line was found on the official page.\n"
                                 "Can this picture go out with the post on X?")
 
     def test_story_post_and_credit_are_given(self, settings, state):
@@ -1789,14 +1789,12 @@ class TestPhotoCheck:
         user = llm.calls[0]["user"]
         assert user.startswith('The story\'s headline: "Voice mode is free"\n')
         assert f'The post it will go with: """{NEWS_TEXT}"""\n' in user
-        assert 'The picture\'s credit line on the page: "OpenAI"\n' in user
+        assert 'The credit line on the official page: "OpenAI"\n' in user
         assert user.endswith("Can this picture go out with the post on X?")
 
-    def test_official_page(self, settings, state):
-        w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
-        w.photo_is_usable("p.jpg", credit="Getty", official=True)
-        user = llm.calls[0]["user"]
-        assert "comes from the company's own page" in user and "Getty" not in user
+    def test_the_picture_always_comes_from_the_official_page(self):
+        assert "taken from the official page" in wmod.PHOTO_CHECK_PROMPT
+        assert "official video published on the page" in wmod.VIDEO_CHECK_PROMPT
 
     def test_long_headline_post_and_credit_are_cut(self, settings, state):
         w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
@@ -1815,6 +1813,61 @@ class TestPhotoCheck:
         w2, llm2 = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
         assert w2.photo_is_usable("a.jpg", headline=42) == (False, "erreur de vérification")
         assert llm2.calls == []
+
+
+class TestVideoCheck:
+    def test_frames_story_post_and_credit(self, settings, state):
+        w, llm = make_writer(settings, state, {"video-check": [{"ok": True, "issue": ""},
+                                                               {"ok": False, "issue": "a TV news report"}]})
+        assert w.video_is_usable(["f0.jpg", "f1.jpg", "f2.jpg"], headline="Muse gets a voice", post=NEWS_TEXT,
+                                 credit="Meta") == (True, "vidéo bonne")
+        call = llm.calls[0]
+        assert call["label"] == "video-check" and call["images"] == ["f0.jpg", "f1.jpg", "f2.jpg"]
+        assert call["system"] == wmod.VIDEO_CHECK_PROMPT and call["effort"] == "low"
+        assert 'The credit line on the official page: "Meta"' in call["user"]
+        assert call["user"].endswith("These are 3 frames of the clip. Can this clip go out with the post on X?")
+        assert w.video_is_usable(["f.jpg"]) == (False, "a TV news report")
+
+    def test_no_frames_no_answer_or_failure_mean_no_video(self, settings, state):
+        w, llm = make_writer(settings, state, {"video-check": {"ok": True, "issue": ""}})
+        assert w.video_is_usable([]) == (False, "aucune image de l'extrait") and llm.calls == []
+        w2, _ = make_writer(settings, state, {})
+        assert w2.video_is_usable(["f.jpg"]) == (False, "vérification de la vidéo indisponible")
+
+        def boom(*a):
+            raise RuntimeError("down")
+        w3, _ = make_writer(settings, state, {"video-check": boom})
+        assert w3.video_is_usable(["f.jpg"])[0] is False
+
+
+class TestOfficialLink:
+    LINKS = [("https://www.au.dk/en/crj@chem.au.dk/", "Cecilie Ryberg"),
+             ("https://www.eurekalert.org/news-releases/1151530", "said in a profile"),
+             ("https://inano.au.dk/research/stadler-brigitte/", "Brigitte Städler")]
+
+    def test_claude_designates_the_official_page(self, settings, state):
+        w, llm = make_writer(settings, state, {"source-link": {"pick": 2, "reason": "communiqué"}})
+        assert w.pick_official_link("A robot frog swims with no motor", NEWS_TEXT, self.LINKS) == 2
+        call = llm.calls[0]
+        assert call["label"] == "source-link" and call["system"] == wmod.OFFICIAL_LINK_PROMPT
+        assert call["effort"] == "low" and set(call["schema"]["properties"]) == {"pick", "reason"}
+        assert "[2] said in a profile — https://www.eurekalert.org/news-releases/1151530" in call["user"]
+        assert call["user"].startswith('The story: "A robot frog swims with no motor"')
+
+    @pytest.mark.parametrize("answer", [{"pick": 0, "reason": "aucun"}, {"pick": 9, "reason": ""},
+                                        {"pick": True, "reason": ""}, {"pick": "2", "reason": ""}, None])
+    def test_nothing_fits_or_nonsense(self, settings, state, answer):
+        w, _ = make_writer(settings, state, {"source-link": answer} if answer else {})
+        assert w.pick_official_link("story", "", self.LINKS) == 0
+
+    def test_no_links_no_call(self, settings, state):
+        w, llm = make_writer(settings, state, {"source-link": {"pick": 1, "reason": ""}})
+        assert w.pick_official_link("story", "", []) == 0 and llm.calls == []
+
+    def test_prompt_never_lets_a_news_site_be_the_source(self):
+        p = wmod.OFFICIAL_LINK_PROMPT
+        assert "never from a news site" in p and "EurekAlert" in p and "answer 0" in p
+        assert "social media" in p and "scientific paper" in p
 
 
 # ---------------------------------------------------------------------------

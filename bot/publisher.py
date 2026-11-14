@@ -281,11 +281,14 @@ class Publisher:
         if not p.is_file():
             log.warning("Item %s : image %s introuvable, publication sans image", item["id"], p.name)
             return [], False
+        video = item.get("image_kind") == "video"
         try:
-            media_id = self.x.upload_image(p)
+            media_id = self.x.upload_video(p) if video else self.x.upload_image(p)
         except XError as e:
-            if e.kind in ("invalid", "not_found"):
-                log.warning("Item %s : image refusée par X (%s), publication sans image", item["id"], e)
+            # Une vidéo refusée ou bloquée chez X ne doit jamais retenir le post : il part en texte.
+            if e.kind in ("invalid", "not_found") or (video and e.kind in ("forbidden", "server")):
+                log.warning("Item %s : %s refusée par X (%s), publication sans image", item["id"],
+                            "vidéo" if video else "image", e)
                 return [], False
             raise
         except OSError as e:

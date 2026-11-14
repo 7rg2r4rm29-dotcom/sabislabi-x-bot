@@ -107,6 +107,14 @@ def test_refresh_remembers_format_from_item(an, state, fake_x):
     assert f2["genre"] == "future" and f2["tweets"] == 3 and f2["media"] == "text"
 
 
+def test_video_posts_are_their_own_format(an, state, fake_x):
+    it = state.new_item("news", ["t"], image_path="/tmp/clip.mp4", image_kind="video", meta={})
+    pub(state, "1", "news", "news", item_id=it["id"])
+    fake_x.recent_posts = [api_tweet("1", 10)]
+    an.refresh_metrics()
+    assert state.data["published"][0]["fmt"]["media"] == "video"
+
+
 class _MeX(FakeX):
     def __init__(self, followers=1000, fail=False):
         super().__init__()
