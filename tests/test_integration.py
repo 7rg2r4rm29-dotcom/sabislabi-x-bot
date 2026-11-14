@@ -40,6 +40,10 @@ ROBOT_TITLE = "A home robot now folds a whole basket of laundry on its own"
 SCAN_TITLE = "Doctors test a scanner that spots illness years before symptoms"
 ROBOT_FACT = "The robot needed about four minutes per shirt and never dropped a sock."
 SCAN_FACT = "The scan takes less time than a coffee break and uses no needles at all."
+# La photo d'ouverture de chaque article, et son crédit : l'entreprise de l'actu.
+ROBOT_PHOTO = "https://cdn.example.com/2026/10/home-robot.jpg"
+SCAN_PHOTO = "https://cdn.example.com/2026/10/scanner.jpg"
+PHOTOS = {ROBOT_TITLE: (ROBOT_PHOTO, "RoboHome"), SCAN_TITLE: (SCAN_PHOTO, "MedScan Labs")}
 FEED = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Future Daily</title><link>https://news.example.com/</link>
 <description>Tech and science news</description>
@@ -59,8 +63,13 @@ def _page(title: str, fact: str) -> str:
              "before showing it in public for the very first time this week.",
              "It is not in shops yet, and the people behind it say there is still a lot of work to do before "
              "anyone can buy one or use it every day."]
-    return ("<!doctype html><html><head><title>" + title + "</title></head><body><nav>Home · Tech</nav>"
-            "<article><h1>" + title + "</h1>" + "".join(f"<p>{t}</p>" for t in paras)
+    photo, credit = PHOTOS[title]
+    return ("<!doctype html><html><head><title>" + title + "</title>"
+            f'<meta property="og:image" content="{photo}"><meta property="og:site_name" content="Future Daily">'
+            "</head><body><nav>Home · Tech</nav>"
+            "<article><h1>" + title + "</h1>"
+            f"<figure><img src=\"{photo}\"><figcaption>Image Credits: {credit}</figcaption></figure>"
+            + "".join(f"<p>{t}</p>" for t in paras)
             + "</article></body></html>")
 
 
@@ -123,7 +132,7 @@ def responder(label, system, user, schema):
     if label == "factcheck":
         return {"claims": [{"claim": "the claim", "quote": "the story says so", "supported": True}],
                 "ok": True, "issues": "", "plain": True, "hard_words": ""}
-    if label == "screenshot-check":
+    if label == "photo-check":
         return {"ok": True, "issue": ""}
     if label == "comment-reply":
         return {"reply": True, "reason": "vraie question", "text": REPLY}
@@ -270,23 +279,25 @@ def test_simulated_day(feed_settings, state, budget, clock, web):
     assert state.items(kinds=("reactive",)) == []
 
 
-def test_auto_mode_day_every_post_goes_out_with_its_screenshot(feed_settings, state, budget, clock, monkeypatch,
-                                                                web):
-    """Le mode du serveur : personne ne valide. Chaque post est rédigé 45 min avant son heure,
-    la page de l'article qu'il raconte est capturée (ici : fausse capture, aucun navigateur),
-    Claude regarde la capture, puis le post part tout seul AVEC elle."""
+def _jpeg(width: int = 1200, height: int = 675) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (40, 90, 160)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def test_auto_mode_day_every_post_goes_out_with_the_photo_of_its_story(feed_settings, state, budget, clock,
+                                                                        monkeypatch, web):
+    """Le mode du serveur : personne ne valide. Chaque post est rédigé 45 min avant son heure ;
+    la photo d'ouverture de l'article qu'il raconte (crédit : l'entreprise de l'actu) est
+    téléchargée (ici : fausse photo, aucun réseau), Claude la regarde avec son crédit, puis le
+    post part tout seul AVEC elle. Jamais de capture d'écran."""
     from bot import visuals
     from bot.config import parse_post_slots
-    shots: list[tuple[str, str]] = []
-
-    def fake_capture(url, tag="post", timeout_s=visuals.CAPTURE_TIMEOUT_S):
-        shots.append((url, tag))
-        path = utils.MEDIA_DIR / "shots" / f"{tag}.jpg"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\xff\xd8\xff fake jpeg")
-        title = ROBOT_TITLE if url == ROBOT_URL else SCAN_TITLE
-        return path, f"{title}\nBy our science desk"       # le texte visible en haut de la page
-    monkeypatch.setattr(visuals, "capture_with_timeout", fake_capture)
+    downloads: list[str] = []
+    monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: downloads.append(url) or _jpeg())
     settings = feed_settings
     settings.approval_mode = "auto"
     settings.automated_label_ack = True
@@ -305,40 +316,38 @@ def test_auto_mode_day_every_post_goes_out_with_its_screenshot(feed_settings, st
     assert [p["text"] for p in x.posts] == [TIP, NEWS]
     assert all(p["media_ids"] and len(p["media_ids"]) == 1 for p in x.posts)      # une image par post
     assert len(x.uploads) == 2 and not any(p["made_with_ai"] for p in x.posts)
-    # La capture est celle de la page de l'actu que chaque post raconte.
-    assert shots == [(ROBOT_URL, "tip_2026-10-15"), (SCAN_URL, "news_2026-10-15")]
-    checks = [c for c in llm.calls if c["label"] == "screenshot-check"]
+    # La photo est celle de l'actu que chaque post raconte.
+    assert downloads == [ROBOT_PHOTO, SCAN_PHOTO]
+    checks = [c for c in llm.calls if c["label"] == "photo-check"]
     assert [len(c["images"]) for c in checks] == [1, 1]
     assert ROBOT_TITLE in checks[0]["user"] and TIP.splitlines()[0] in checks[0]["user"]
-    assert SCAN_TITLE in checks[1]["user"]
+    assert 'credit line on the page: "RoboHome"' in checks[0]["user"]
+    assert SCAN_TITLE in checks[1]["user"] and '"MedScan Labs"' in checks[1]["user"]
+    assert not [c for c in llm.calls if "screenshot" in c["label"]]
     items = sorted(state.items(statuses=("published",)), key=lambda i: i["publish_at"])
     assert [i["kind"] for i in items] == ["tip", "news"]
-    assert all(i["image_kind"] == "shot" and i["meta"]["auto"] and "card" not in i["meta"] for i in items)
+    assert all(i["image_kind"] == "photo" and i["meta"]["auto"] and "card" not in i["meta"] for i in items)
+    assert all(str(i["image_path"]).startswith(str(utils.MEDIA_DIR / "photos")) for i in items)
     assert [i["meta"]["hook"] for i in items] == ["IT CAN DO WHAT?", "MOST PEOPLE HAVE NO IDEA"]
     assert [[s["url"] for s in i["meta"]["sources"]] for i in items] == [[ROBOT_URL], [SCAN_URL]]
     assert len(tg.photos) == 2                                                    # l'image arrive aussi sur Telegram
-    assert all("capture d'écran jointe à ce post" in ph["caption"] for ph in tg.photos)
+    assert all("photo de l'actu jointe à ce post" in ph["caption"] for ph in tg.photos)
     # Rédigés au plus près de l'heure (45 min avant), publiés à l'heure (aléa de publication à 0).
     assert [utils.parse_iso(i["created_at"]).strftime("%H:%M") for i in items] == ["13:45", "18:15"]
     assert [utils.parse_iso(i["publish_at"]).strftime("%H:%M") for i in items] == ["14:30", "19:00"]
 
 
-def test_auto_mode_post_goes_out_as_text_when_claude_rejects_the_screenshot(feed_settings, state, budget,
-                                                                             clock, monkeypatch, web):
-    """Capture « pas assez propre » selon Claude : jamais publiée ; le post part en texte seul."""
+def test_auto_mode_post_goes_out_as_text_when_claude_rejects_the_photo(feed_settings, state, budget,
+                                                                       clock, monkeypatch, web):
+    """Photo refusée par Claude (logo d'un média, photo d'agence…) : jamais publiée ; le post
+    part en texte seul."""
     from bot import visuals
     from bot.config import parse_post_slots
-
-    def fake_capture(url, tag="post", timeout_s=visuals.CAPTURE_TIMEOUT_S):
-        path = utils.MEDIA_DIR / "shots" / f"{tag}.jpg"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\xff\xd8\xff fake jpeg")
-        return path, ROBOT_TITLE
-    monkeypatch.setattr(visuals, "capture_with_timeout", fake_capture)
+    monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: _jpeg())
 
     def picky(label, system, user, schema):
-        if label == "screenshot-check":
-            return {"ok": False, "issue": "a cookie banner hides the headline"}
+        if label == "photo-check":
+            return {"ok": False, "issue": "a news outlet's logo on the picture"}
         return responder(label, system, user, schema)
     settings = feed_settings
     settings.approval_mode = "auto"
@@ -357,7 +366,33 @@ def test_auto_mode_post_goes_out_as_text_when_claude_rejects_the_screenshot(feed
     assert x.posts[0]["media_ids"] is None and x.uploads == []
     item = state.items(statuses=("published",))[0]
     assert item["image_path"] is None and item["image_kind"] is None
-    assert not list((utils.MEDIA_DIR / "shots").glob("*.jpg"))                   # capture refusée : effacée
+    assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))                  # photo refusée : effacée
+
+
+def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, state, budget, clock, monkeypatch,
+                                                            web):
+    """Crédit Reuters / Getty : refusée d'office, sans même la télécharger ni la montrer à Claude."""
+    from bot import visuals
+    from bot.config import parse_post_slots
+    downloads: list[str] = []
+    monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: downloads.append(url) or _jpeg())
+    monkeypatch.setitem(PHOTOS, ROBOT_TITLE, (ROBOT_PHOTO, "Jane Doe/Reuters"))
+    web.pages[ROBOT_URL] = _page(ROBOT_TITLE, ROBOT_FACT)
+    settings = feed_settings
+    settings.approval_mode = "auto"
+    settings.automated_label_ack = True
+    settings.post_slots = parse_post_slots("tip@14:30")
+    settings.radar_enabled = settings.comments_enabled = settings.reactive_enabled = False
+    x, llm = FakeX(), FakeLLM({"": responder})
+    bot = Bot(settings, llm=llm, x=x, telegram=FakeTelegram(), state=state, budget=budget,
+              rng=random.Random(0))
+    t = clock(13, 40)
+    while t <= clock(14, 40):
+        utils.set_clock(t)
+        bot.tick()
+        t += timedelta(minutes=5)
+    assert [p["text"] for p in x.posts] == [TIP] and x.posts[0]["media_ids"] is None
+    assert downloads == [] and "photo-check" not in llm.labels()
 
 
 def test_auto_mode_requires_explicit_label_ack(settings):

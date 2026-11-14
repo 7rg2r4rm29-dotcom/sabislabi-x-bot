@@ -32,8 +32,6 @@ main() {
       return 1
     fi
     rm -f "$plog"
-    # Navigateur qui dessine les images (déjà là en général : la vérification le teste).
-    timeout 600 "$PY" -m playwright install chromium >/dev/null 2>&1 || true
   fi
   local extra=""
   if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?X_HANDLE=.' "$APP_DIR/config/.env" 2>/dev/null; then

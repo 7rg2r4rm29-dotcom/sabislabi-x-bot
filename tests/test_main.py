@@ -184,32 +184,32 @@ class TestCheck:
         code, out, _ = _check(secret_settings, llm=FakeLLM({}))
         assert code == 1 and "Claude" in out
 
-    def test_screenshot_browser_works(self, secret_settings):
+    def test_photo_preparation_works(self, secret_settings):
         code, out, _ = _check(secret_settings)
-        assert code == 0 and "✅ Images : le navigateur des captures d'écran fonctionne" in out
+        assert code == 0 and "✅ Images : la mise au propre des photos fonctionne" in out
+        assert "capture" not in out.lower()                     # plus de captures d'écran
         assert "carte" not in out.lower()                       # plus de cartes dessinées
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok"
 
-    def test_check_really_tries_the_screenshot_browser(self, secret_settings, monkeypatch):
-        """Par défaut, --check lance la capture d'essai de bot/visuals.py (plus bot/cards.py)."""
+    def test_check_really_tries_a_photo(self, secret_settings, monkeypatch):
+        """Par défaut, --check passe une photo d'essai par la mise au propre de bot/visuals.py."""
         from bot import visuals
         calls: list[int] = []
         monkeypatch.setattr(visuals, "self_test",
-                            lambda: calls.append(1) or (False, "Playwright n'est pas installé"))
+                            lambda: calls.append(1) or (False, "Pillow n'est pas installé"))
         code, out, _ = _check(secret_settings)
         assert calls == [1]
         assert code == 0
-        assert ("⚠️ Images : le navigateur des captures d'écran ne marche pas (Playwright n'est pas installé)"
-                in out)
+        assert "⚠️ Images : la mise au propre des photos ne marche pas (Pillow n'est pas installé)" in out
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
 
     def test_images_impossible_is_a_warning_not_a_failure(self, secret_settings):
-        """Sans navigateur, le bot publie quand même (sans image) : on prévient, on ne bloque pas."""
-        code, out, _ = _check(secret_settings, images=lambda: (False, "Executable doesn't exist"))
+        """Sans photo possible, le bot publie quand même (texte seul) : on prévient, on ne bloque pas."""
+        code, out, _ = _check(secret_settings, images=lambda: (False, "cannot write mode RGBA as JPEG"))
         assert code == 0
-        assert "⚠️ Images : le navigateur des captures d'écran ne marche pas (Executable doesn't exist)" in out
+        assert "⚠️ Images : la mise au propre des photos ne marche pas (cannot write mode RGBA as JPEG)" in out
         assert "partiraient SANS image" in out
-        assert "playwright install chromium" in out and "tout est OK" in out
+        assert "pip install Pillow" in out and "tout est OK" in out
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=bad"
 
         def boom():
@@ -318,12 +318,12 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert "gm 08:00" in txt and "mar. 15:00" in txt and "dim. 18:00" in txt
 
-    def test_config_summary_speaks_of_screenshots(self, settings):
+    def test_config_summary_speaks_of_photos(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
-        assert "Images : capture d'écran de l'article oui" in txt and "photos IA non" in txt
-        assert "carte" not in txt
-        settings.screenshots_enabled = False
-        assert "Images : capture d'écran de l'article non" in "\n".join(bmain.config_summary(settings))
+        assert "Images : photo de l'actu oui" in txt and "photos IA non" in txt
+        assert "carte" not in txt and "capture" not in txt
+        settings.photos_enabled = False
+        assert "Images : photo de l'actu non" in "\n".join(bmain.config_summary(settings))
 
     def test_post_labels_follow_the_new_line(self):
         assert bmain.KIND_FR["tip"] == "le futur arrive"
@@ -460,13 +460,13 @@ def _story(i: int, title: str):
 class TestPreview:
     def _run(self, settings, tmp_path, drafts, kinds="tip,news", **kw):
         lines: list[str] = []
-        img = tmp_path / "shot.jpg"
+        img = tmp_path / "photo.jpg"
         img.write_bytes(b"\xff\xd8\xff fake jpeg")
         visuals_seen: list[tuple] = []
 
         def fake_visual(s, draft, writer, tag):
             visuals_seen.append((draft.kind, tag))
-            return (str(img), "shot") if getattr(draft, "visual", None) else (None, None)
+            return (str(img), "photo") if getattr(draft, "visual", None) else (None, None)
         tg = kw.pop("telegram", FakeTelegram())
         writer = PreviewWriter(drafts)
         news = kw.pop("news", PreviewNews(["n1", "n2"]))
@@ -491,7 +491,7 @@ class TestPreview:
         store.remember_text("tip", "an older post")
         before = real.read_text()
         drafts = {"tip": Draft(kind="tip", texts=["A robot just folded a whole basket of laundry, alone."],
-                               visual=Visual("shot", SHOT_URL), reason="le robot", hook="IT CAN DO WHAT?"),
+                               visual=Visual("photo", SHOT_URL), reason="le robot", hook="IT CAN DO WHAT?"),
                   "news": Draft(kind="news", texts=["Which one would you trust?"],
                                 poll={"options": ["A robot", "A human"], "duration_minutes": 1440})}
         code, out, tg, writer, news, visuals_seen = self._run(settings, tmp_path, drafts)
@@ -500,14 +500,14 @@ class TestPreview:
         assert "--- le futur arrive ---" in out and "--- l'histoire du jour ---" in out
         assert "A robot just folded" in out and "pourquoi : le robot" in out
         assert "[sondage] A robot · A human" in out
-        assert f"capture : {tmp_path / 'shot.jpg'} (shot)" in out
-        assert out.count("capture : aucune (le post partirait sans image)") == 1     # le sondage
+        assert f"photo : {tmp_path / 'photo.jpg'} (photo)" in out
+        assert out.count("photo : aucune (le post partirait en texte seul)") == 1     # le sondage
         assert "carte" not in out                                      # plus de cartes dessinées
         assert all(c["use_x"] is False for c in news.calls)            # jamais de lecture payante de X
         assert writer.calls[0] == ("tip", 2, ("I tested voice mode while cooking",))
         assert visuals_seen == [("tip", "apercu_tip"), ("news", "apercu_news")]
         assert len(tg.photos) == 1 and "APERÇU" in tg.photos[0]["caption"]
-        assert tg.photos[0]["path"] == str(tmp_path / "shot.jpg")
+        assert tg.photos[0]["path"] == str(tmp_path / "photo.jpg")
         assert len(tg.sent) == 2 and all("rien n'est publié" in m["text"] for m in tg.sent)
         assert "📊 A robot · A human" in tg.sent[1]["text"]
         assert real.read_text() == before                              # l'état du bot en service n'a pas bougé
@@ -539,7 +539,7 @@ class TestPreview:
     def test_thread_and_breaking_news(self, settings, tmp_path, clock):
         from bot.models import Draft, Visual
         drafts = {"thread": Draft(kind="thread", texts=["Hook tweet", "Second tweet"],
-                                  visual=Visual("shot", SHOT_URL))}
+                                  visual=Visual("photo", SHOT_URL))}
         code, out, tg, writer, _news, _ = self._run(settings, tmp_path, drafts, kinds="thread, reactive")
         assert code == 0 and "1/ Hook tweet" in out and "2/ Second tweet" in out
         assert "--- ça vient de tomber : rien, dans l'actu fraîche, ne mérite un post à chaud" in out
@@ -564,7 +564,7 @@ class TestPreview:
                                                  news=PreviewNews(fail=True), telegram=None,
                                                  state_path=tmp_path / "nowhere" / "state.json")
         assert code == 0 and "0 actus lues" in out and writer.calls == [("tip", 0, ())]
-        assert "capture : aucune (le post partirait sans image)" in out
+        assert "photo : aucune (le post partirait en texte seul)" in out
         assert not (tmp_path / "nowhere").exists()
 
     def test_kinds_parsing(self, settings, tmp_path):

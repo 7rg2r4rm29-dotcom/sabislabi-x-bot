@@ -35,6 +35,9 @@ def _env(monkeypatch, tmp_path):
         raise AssertionError(f"accès réseau interdit pendant les tests : {url}")
 
     monkeypatch.setattr(sources, "default_http_get", _no_network)
+    # Les photos d'actu non plus : sans résolution de nom, aucun téléchargement ne part.
+    from bot import visuals
+    monkeypatch.setattr(visuals, "_resolve", _no_network)
     yield
     utils.set_clock(None)
 

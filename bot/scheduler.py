@@ -9,7 +9,7 @@ jamais la boucle) :
   3. statistiques (~toutes les 3 h), récap du matin, bilan de la semaine,
      ménage quotidien de l'état ;
   4. de nouveau Telegram + publication : un ✅ tapé pendant une étape longue
-     (rédaction Claude, capture de page) part sans attendre le tour suivant.
+     (rédaction Claude, photo de l'actu) part sans attendre le tour suivant.
 
 Rien n'est publié sans ta validation sur Telegram (sauf APPROVAL_MODE=auto,
 verrouillé par la config) ; le radar ne publie jamais rien.
@@ -212,7 +212,7 @@ class Bot:
         finally:
             self.writer.regen_item_id = None
         if draft is not None and getattr(draft, "texts", None):
-            # L'image va avec le texte : nouvelle version, nouvelle capture.
+            # L'image va avec le texte : nouvelle version, nouvelle photo.
             path, image_kind = self._visual(draft, f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
             try:
                 draft.image_path, draft.image_kind = path, image_kind
@@ -575,8 +575,8 @@ class Bot:
         return self.writer.draft_post(kind, news, notes, perf)
 
     def _visual(self, draft, tag: str) -> tuple[str | None, str | None]:
-        """Image du post : la capture, façon téléphone, de la page de l'actu dont il
-        parle. Un sondage n'a pas d'image ; un post sans source non plus."""
+        """Image du post : la photo de l'actu dont il parle (jamais une capture d'écran),
+        sinon texte seul. Un sondage n'a pas d'image ; un post sans source non plus."""
         if getattr(draft, "poll", None) or getattr(draft, "visual", None) is None:
             return None, None
         fn = self._prepare_visual

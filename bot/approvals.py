@@ -47,7 +47,7 @@ THREAD_GENRES_FR = {"timely": "l'histoire que personne ne réalise", "future": "
                     # anciens genres (items créés avant novembre 2026)
                     "tutorial": "pas à pas", "beginner": "l'IA au quotidien", "practical": "pratique",
                     "mindset": "mindset", "story": "histoire vraie"}
-IMAGE_KINDS_FR = {"shot": "capture d'écran", "ai": "image IA"}
+IMAGE_KINDS_FR = {"photo": "photo de l'actu", "shot": "capture d'écran", "ai": "image IA"}
 
 # Statuts dans lesquels chaque bouton a encore un sens.
 _ACTIONABLE = {
@@ -441,6 +441,8 @@ class Approvals:
                 lines.append("⚠️ Sondage + image : X n'accepte pas les deux, l'image ne sera pas publiée")
             elif item.get("image_kind") == "ai":
                 lines.append("🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)")
+            elif item.get("image_kind") == "photo":
+                lines.append("📷 Photo de l'actu jointe (au-dessus)")
             elif item.get("image_kind") == "shot":
                 lines.append("📱 Capture d'écran jointe : la page de l'actu, comme sur un téléphone (au-dessus)")
             else:
@@ -953,7 +955,7 @@ class Approvals:
         return True
 
     def _swap_image(self, item: dict, meta: dict, result: Any) -> None:
-        """🔄 : l'image (la capture de la page de l'actu du post) suit la nouvelle
+        """🔄 : l'image (la photo de l'actu du post) suit la nouvelle
         version. Sans nouvelle image, l'ancienne est retirée : elle parlerait d'autre
         chose. Un résultat sans champ `image_path` (ancien format) ne touche à rien."""
         if not hasattr(result, "image_path"):

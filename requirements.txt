@@ -4,10 +4,9 @@ requests>=2.32
 requests-oauthlib>=2.0
 feedparser>=6.0.11
 python-dotenv>=1.0.1
+# Pillow : la photo de l'actu, remise en JPEG propre avant d'être jointe au post.
 Pillow>=11.0
 tzdata
 pytest>=8
-# Optionnels : captures de vraies pages (playwright + Chromium) et photos IA (openai).
-# Sans eux, le bot fonctionne et publie simplement sans image.
-playwright>=1.49
+# Optionnel : photos IA (openai). Sans lui, le bot fonctionne normalement.
 openai>=1.50

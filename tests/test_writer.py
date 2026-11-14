@@ -15,7 +15,7 @@ import pytest
 
 from bot import sources
 from bot import writer as wmod
-from bot.filters import _normalize_words, off_limits_term, publish_problem
+from bot.filters import _normalize_words, news_outlet_cited, off_limits_term, publish_problem
 from bot.models import Draft, NewsItem, Visual
 from bot.utils import iso, now_local
 from bot.writer import Writer
@@ -199,7 +199,7 @@ class TestEditorPick:
         w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, source_ids=[2], visual_url="[2]"),
                                                    picks=(4, 1)))
         d = w.draft_post("news", items, [], "")
-        assert d is not None and d.sources == [items[0]] and d.visual == Visual("shot", items[0].url)
+        assert d is not None and d.sources == [items[0]] and d.visual == Visual("photo", items[0].url)
         user = llm.calls[1]["user"]
         assert "[1] The Verge" in user and "[2] OpenAI · OFFICIAL" in user
         assert user.index(items[3].title) < user.index(items[0].title)
@@ -254,7 +254,7 @@ class TestArticleReading:
         user = llm.calls[1]["user"]
         assert "Article: OpenAI made voice chat free" in user
         assert f"Summary: {items[2].summary}" in user
-        assert "(a post on X: it can't be used for the screenshot)" in user
+        assert "(a post on X: its picture can't be used)" in user
 
     def test_articles_are_read_between_the_pick_and_the_writing(self, settings, state, items):
         labels_when_read = []
@@ -353,7 +353,7 @@ class TestPostWriting:
         assert isinstance(d, Draft) and d.kind == "news" and d.texts == [NEWS_TEXT]
         assert d.sources == [items[0]] and d.reason == "voix gratuite pour tous"
         assert d.hook == "THE NUMBER"
-        assert d.visual == Visual("shot", items[0].url)
+        assert d.visual == Visual("photo", items[0].url)
         assert d.poll is None and not d.from_fallback and d.used_notes == []
         assert llm.labels() == ["pick-news", "post-news", "factcheck"]
         write = llm.calls[1]
@@ -375,7 +375,7 @@ class TestPostWriting:
         d = w.draft_post("tip", items, [], "")
         assert d is not None and d.kind == "tip" and d.texts == [TIP_TEXT]
         assert d.sources == [items[3]] and d.reason == "le futur arrive"
-        assert d.visual == Visual("shot", items[3].url)
+        assert d.visual == Visual("photo", items[3].url)
         assert llm.labels() == ["pick-tip", "post-tip", "factcheck"]
         user = llm.calls[1]["user"]
         assert "This post: THE FUTURE IS COMING" in user and "POLL (optional)" in user
@@ -545,25 +545,25 @@ class TestScreenshotTarget:
             "news", post_resp(NEWS_TEXT, source_ids=source_ids, visual_url=visual_url), picks=(1, 2, 3)))
         d = w.draft_post("news", items, [], "")
         assert d is not None
-        assert d.visual == (None if expected is None else Visual("shot", items[expected].url))
+        assert d.visual == (None if expected is None else Visual("photo", items[expected].url))
 
-    def test_screenshots_disabled(self, settings, state, items):
-        settings.screenshots_enabled = False
+    def test_photos_disabled(self, settings, state, items):
+        settings.photos_enabled = False
         w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)))
         d = w.draft_post("news", items, [], "")
         assert d is not None and d.visual is None
-        assert 'SCREENSHOT: not available right now — visual_url must be "".' in llm.calls[1]["user"]
-        settings.screenshots_enabled = True
+        assert 'PHOTO: not available right now — visual_url must be "".' in llm.calls[1]["user"]
+        settings.photos_enabled = True
         d2 = w.draft_post("news", items, [], "")
-        assert d2.visual == Visual("shot", items[0].url)
-        assert "SCREENSHOT: not available" not in [c for c in llm.calls if c["label"] == "post-news"][1]["user"]
+        assert d2.visual == Visual("photo", items[0].url)
+        assert "PHOTO: not available" not in [c for c in llm.calls if c["label"] == "post-news"][1]["user"]
 
     def test_url_helpers(self):
-        assert wmod.is_capturable_url("https://www.theverge.com/a")
-        assert wmod.is_capturable_url("http://someblog.dev/post")
+        assert wmod.is_page_url("https://www.theverge.com/a")
+        assert wmod.is_page_url("http://someblog.dev/post")
         for bad in ("https://x.com/a/status/1", "https://mobile.twitter.com/a", "ftp://openai.com/x", "",
                     "openai.com", None):
-            assert not wmod.is_capturable_url(bad), bad
+            assert not wmod.is_page_url(bad), bad
         assert wmod.is_x_url("https://twitter.com/a") and wmod.is_x_url("https://www.x.com/a")
         assert not wmod.is_x_url("https://openai.com") and not wmod.is_x_url("https://notx.com/a")
 
@@ -834,7 +834,7 @@ class TestPolls:
         assert w.polls_left() == 0
         d = w.draft_post("tip", items, [], "")
         assert d is not None and d.poll is None
-        assert d.visual == Visual("shot", items[0].url)      # plus de sondage : la capture revient
+        assert d.visual == Visual("photo", items[0].url)      # plus de sondage : la capture revient
         assert "POLL: not available" in llm.calls[1]["user"]
         assert len(state.data["poll_dates"]) == 2
 
@@ -878,13 +878,13 @@ class TestPolls:
     def test_invalid_poll_options_ignored(self, settings, state, items, opts):
         w, _ = self._writer(settings, state, self.TEXTS[0], poll_options=opts)
         d = w.draft_post("tip", items, [], "")
-        assert d is not None and d.poll is None and d.visual == Visual("shot", items[0].url)
+        assert d is not None and d.poll is None and d.visual == Visual("photo", items[0].url)
         assert state.data.get("poll_dates", []) == []
 
     def test_news_never_has_a_poll(self, settings, state, items):
         w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, poll_options=["Yes", "No"])))
         d = w.draft_post("news", items, [], "")
-        assert d.poll is None and d.visual == Visual("shot", items[0].url)
+        assert d.poll is None and d.visual == Visual("photo", items[0].url)
         assert "POLL" not in llm.calls[1]["user"]
         assert "poll_options" not in llm.calls[1]["schema"]["properties"]
         assert state.data.get("poll_dates", []) == []
@@ -979,6 +979,20 @@ class TestFiltersAndRetry:
         assert d is not None and d.texts == [NEWS_TEXT]
         assert "261 weighted characters, max 260" in llm.calls[2]["user"]
 
+    @pytest.mark.parametrize("cites", [
+        "ChatGPT will now talk with you out loud, for free, TechCrunch reports.\nWould you try it tonight?",
+        "According to The Verge, ChatGPT now talks with you out loud, for free.\nWould you try it tonight?",
+        "ChatGPT will now talk with you out loud, for free.\n→ 211 points on Hacker News\nWould you try it?",
+    ])
+    def test_the_account_gives_the_news_itself(self, settings, state, items, cites):
+        """Jamais « TechCrunch reports » : le compte donne la nouvelle lui-même ; le second
+        essai sait pourquoi le premier a été refusé."""
+        w, llm = make_writer(settings, state, flow("news", post_resp(cites), post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [NEWS_TEXT]
+        assert "this account gives the news itself" in llm.calls[2]["user"]
+        assert llm.labels().count("factcheck") == 1            # le texte refusé n'est même pas relu
+
     def test_anti_repetition_against_recent_posts(self, settings, state, items):
         state.remember_text("tip", TIP_TEXT)
         near_copy = TIP_TEXT.replace("in?", "in!")
@@ -1020,14 +1034,14 @@ class TestFiltersAndRetry:
         def boom(*a):
             raise RuntimeError("network down")
         w2, _ = make_writer(settings, state, {"pick-": boom, "post-": boom, "thread-": boom, "factcheck": boom,
-                                               "judge": boom, "comment-": boom, "radar-": boom, "screenshot-": boom})
+                                               "judge": boom, "comment-": boom, "radar-": boom, "photo-": boom})
         assert w2.draft_post("news", items, [], "") is None
         assert w2.draft_post("gm", [], [], "") is None
         assert w2.draft_thread(items, [], "") is None
         assert w2.draft_reactive(items, [], "") is None
         assert w2.draft_comment_reply("my post", "bob", "how would I try this at home?") is None
         assert w2.draft_radar_reply("sama", "a long enough post about building robots at home", 5, 50) is None
-        assert w2.screenshot_is_clean("capture.jpg") == (False, "vérification de l'image indisponible")
+        assert w2.photo_is_usable("photo.jpg") == (False, "vérification de l'image indisponible")
 
     def test_internal_crash_never_escapes(self, settings, state, items, monkeypatch):
         w, _ = make_writer(settings, state)
@@ -1123,7 +1137,7 @@ class TestReactive:
                                                    picks=(1, 2)), reader=reader)
         d = w.draft_reactive(items + [stale, blocked], NOTES, "")
         assert isinstance(d, Draft) and d.kind == "reactive" and d.texts == [REACT_TEXT]
-        assert d.sources == [items[0]] and d.visual == Visual("shot", items[0].url)
+        assert d.sources == [items[0]] and d.visual == Visual("photo", items[0].url)
         assert d.reason == "ça vient de tomber" and d.hook == "IT CAN DO WHAT?" and d.poll is None
         assert llm.labels() == ["pick-reactive", "post-reactive", "factcheck"]
         assert reader.urls == [items[0].url]
@@ -1255,7 +1269,7 @@ class TestThreads:
         assert d is not None and d.kind == "thread" and d.angle == "future"
         assert d.texts == thread_tweets("future")
         assert d.sources == [items[1]]                         # l'actu 1 est déjà prise par le 1er candidat
-        assert d.visual == Visual("shot", items[1].url) and d.poll is None
+        assert d.visual == Visual("photo", items[1].url) and d.poll is None
         assert d.reason.startswith("raison future · choisi parmi 2") and "le plus parlant" in d.reason
         assert llm.labels() == ["pick-thread-timely", "thread-timely", "factcheck",
                                 "pick-thread-future", "thread-future", "factcheck", "judge"]
@@ -1494,7 +1508,7 @@ class TestThreads:
         w, _ = make_writer(settings, state, thread_flow(
             {"timely": thread_resp("timely", source_ids=[2, 1], visual_url="[2]")}, picks=(1, 3)))
         only(w, "timely")
-        assert w.draft_thread(items, [], "").visual == Visual("shot", items[0].url)
+        assert w.draft_thread(items, [], "").visual == Visual("photo", items[0].url)
         w2, _ = make_writer(settings, state, thread_flow({"timely": thread_resp("timely", visual_url="[1]")},
                                                          picks=(3,)))
         only(w2, "timely")
@@ -1530,7 +1544,7 @@ class TestThreads:
     def test_thread_prompt(self, settings, state, items):
         settings.evergreen_topics = ["plain topic A", "FUTURE — robots at home", "plain topic B",
                                      "FUTURE — cars without a driver"]
-        settings.screenshots_enabled = False
+        settings.photos_enabled = False
         w, llm = make_writer(settings, state, thread_flow())
         only(w, "future")
         d = w.draft_thread(items, [], "")
@@ -1541,7 +1555,7 @@ class TestThreads:
         for fut in ("FUTURE — robots at home", "FUTURE — cars without a driver"):
             assert part.index(fut) < part.index("plain topic A") and part.index(fut) < part.index("plain topic B")
         assert wmod.THREAD_ANGLES["future"] in user
-        assert 'SCREENSHOT: not available right now — visual_url must be "".' in user
+        assert 'PHOTO: not available right now — visual_url must be "".' in user
         assert "Write the thread now: 4 to 7 tweets." in user
 
     def test_topics_for_kind(self, settings, state):
@@ -1752,44 +1766,54 @@ class TestRadar:
 # ---------------------------------------------------------------------------
 # Capture « smartphone » : Claude la regarde avant qu'elle serve
 # ---------------------------------------------------------------------------
-class TestScreenshotCheck:
+class TestPhotoCheck:
     def test_verdicts(self, settings, state):
-        w, llm = make_writer(settings, state, {"screenshot-check": [
-            {"ok": True, "issue": ""}, {"ok": False, "issue": "cookie banner over the headline"},
+        w, llm = make_writer(settings, state, {"photo-check": [
+            {"ok": True, "issue": ""}, {"ok": False, "issue": "Getty Images watermark"},
             {"ok": "yes", "issue": ""}]})
-        assert w.screenshot_is_clean("a.jpg") == (True, "capture propre")
-        assert w.screenshot_is_clean("a.jpg") == (False, "cookie banner over the headline")
-        assert w.screenshot_is_clean("a.jpg") == (False, "capture pas assez propre")   # pas un vrai « oui »
-        assert w.screenshot_is_clean("a.jpg") == (False, "vérification de l'image indisponible")
+        assert w.photo_is_usable("a.jpg") == (True, "photo bonne")
+        assert w.photo_is_usable("a.jpg") == (False, "Getty Images watermark")
+        assert w.photo_is_usable("a.jpg") == (False, "photo pas utilisable")   # pas un vrai « oui »
+        assert w.photo_is_usable("a.jpg") == (False, "vérification de l'image indisponible")
         call = llm.calls[0]
-        assert call["label"] == "screenshot-check" and call["images"] == ["a.jpg"] and call["effort"] == "low"
-        assert call["system"] == wmod.SCREENSHOT_CHECK_PROMPT
+        assert call["label"] == "photo-check" and call["images"] == ["a.jpg"] and call["effort"] == "low"
+        assert call["system"] == wmod.PHOTO_CHECK_PROMPT
         assert set(call["schema"]["properties"]) == {"ok", "issue"}
-        assert call["user"] == "Is this phone screenshot clean enough to be shown on an image posted on X?"
+        assert call["user"] == ("No credit line was found for the picture.\n"
+                                "Can this picture go out with the post on X?")
 
-    def test_headline_and_post_are_given(self, settings, state):
-        w, llm = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": "fine"}})
-        assert w.screenshot_is_clean("shot.jpg", headline="  Voice mode is free  ", post=NEWS_TEXT) == (True, "fine")
+    def test_story_post_and_credit_are_given(self, settings, state):
+        w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": "fine"}})
+        assert w.photo_is_usable("p.jpg", headline="  Voice mode is free  ", post=NEWS_TEXT,
+                                 credit="  OpenAI ") == (True, "fine")
         user = llm.calls[0]["user"]
-        assert user.startswith('The article\'s headline: "Voice mode is free"\n')
+        assert user.startswith('The story\'s headline: "Voice mode is free"\n')
         assert f'The post it will go with: """{NEWS_TEXT}"""\n' in user
-        assert user.endswith("posted on X?")
+        assert 'The picture\'s credit line on the page: "OpenAI"\n' in user
+        assert user.endswith("Can this picture go out with the post on X?")
 
-    def test_long_headline_and_post_are_cut(self, settings, state):
-        w, llm = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": ""}})
-        w.screenshot_is_clean("shot.jpg", headline="H" * 400, post="P" * 700)
+    def test_official_page(self, settings, state):
+        w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
+        w.photo_is_usable("p.jpg", credit="Getty", official=True)
+        user = llm.calls[0]["user"]
+        assert "comes from the company's own page" in user and "Getty" not in user
+
+    def test_long_headline_post_and_credit_are_cut(self, settings, state):
+        w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
+        w.photo_is_usable("p.jpg", headline="H" * 400, post="P" * 700, credit="C" * 200)
         user = llm.calls[0]["user"]
         assert '"' + "H" * 300 + '"\n' in user and "H" * 301 not in user
         assert '"""' + "P" * 600 + '"""\n' in user and "P" * 601 not in user
+        assert '"' + "C" * 120 + '"\n' in user and "C" * 121 not in user
 
     def test_failures_mean_no_image(self, settings, state):
         def boom(*a):
             raise RuntimeError("API down")
-        w, _ = make_writer(settings, state, {"screenshot-check": boom})
-        assert w.screenshot_is_clean("a.jpg", headline="x", post="y") == \
+        w, _ = make_writer(settings, state, {"photo-check": boom})
+        assert w.photo_is_usable("a.jpg", headline="x", post="y") == \
             (False, "vérification de l'image indisponible")
-        w2, llm2 = make_writer(settings, state, {"screenshot-check": {"ok": True, "issue": ""}})
-        assert w2.screenshot_is_clean("a.jpg", headline=42) == (False, "erreur de vérification")
+        w2, llm2 = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
+        assert w2.photo_is_usable("a.jpg", headline=42) == (False, "erreur de vérification")
         assert llm2.calls == []
 
 
@@ -1799,7 +1823,8 @@ class TestScreenshotCheck:
 class TestPrompts:
     def test_writing_prompts_carry_the_editorial_line(self):
         shared = (wmod.AUDIENCE, wmod.INTRIGUE, wmod.PLAIN_WORDS, wmod.TRUTH, wmod.GROUNDING, wmod.OFF_LIMITS,
-                  wmod.GROWTH, wmod.TONE, wmod.PERSONAL_FACTS, wmod.SHOT_RULES, wmod.FORMAT_RULES)
+                  wmod.GROWTH, wmod.TONE, wmod.PERSONAL_FACTS, wmod.PHOTO_RULES, wmod.FORMAT_RULES,
+                  wmod.NEWS_VOICE)
         for prompt in (wmod.SYSTEM_PROMPT, wmod.THREAD_SYSTEM_PROMPT):
             assert "the future is arriving faster than people think" in prompt
             for block in shared:
@@ -1817,7 +1842,23 @@ class TestPrompts:
         assert "claims: fill this FIRST" in wmod.FACTCHECK_PROMPT and "PLAIN-LANGUAGE CHECK" in wmod.FACTCHECK_PROMPT
         assert "empty greeting" in wmod.GM_SYSTEM_PROMPT and "max 200 characters" in wmod.GM_SYSTEM_PROMPT
         assert "copypasta" in wmod.RADAR_REPLY_PROMPT and "Muslim" in wmod.RADAR_REPLY_PROMPT
-        assert "headline" in wmod.SCREENSHOT_CHECK_PROMPT and '"Read next"' in wmod.SCREENSHOT_CHECK_PROMPT
+        assert "news outlet" in wmod.PHOTO_CHECK_PROMPT and "Getty" in wmod.PHOTO_CHECK_PROMPT
+        assert "NOT a screenshot of an article" in wmod.PHOTO_CHECK_PROMPT
+
+    def test_the_account_gives_the_news_itself(self):
+        """Plus de capture d'article, et jamais le nom du site qui a raconté l'histoire."""
+        for name in ("SYSTEM_PROMPT", "THREAD_SYSTEM_PROMPT", "EDITOR_PROMPT", "FACTCHECK_PROMPT"):
+            p = getattr(wmod, name)
+            assert "screenshotted" not in p and "SCREENSHOT —" not in p, name
+        assert "the Guardian reports" not in wmod.TRUTH and "never the news site" in wmod.TRUTH
+        assert "never names news sites" in wmod.FACTCHECK_PROMPT
+        for brief in wmod.PICK_BRIEFS.values():
+            assert "screenshot" not in brief
+        # Les exemples donnés à Claude ne citent jamais un média.
+        for name in ("AUDIENCE", "INTRIGUE", "PLAYBOOK", "PICKS", "TRUTH", "TONE", "PHOTO_RULES", "THREAD_GROWTH"):
+            assert news_outlet_cited(getattr(wmod, name)) is None, name
+        for key, text in list(wmod.THREAD_ANGLES.items()) + list(wmod.PICK_BRIEFS.items()):
+            assert news_outlet_cited(text) is None, key
 
     def test_no_more_drawn_cards(self):
         for name in ("SYSTEM_PROMPT", "THREAD_SYSTEM_PROMPT", "GM_SYSTEM_PROMPT", "EDITOR_PROMPT",
@@ -1827,8 +1868,8 @@ class TestPrompts:
 
     def test_prompt_examples_respect_their_own_rules(self):
         """Les exemples donnés à Claude ne contiennent ni lien ni sujet interdit."""
-        for name in ("AUDIENCE", "INTRIGUE", "PLAIN_WORDS", "PLAYBOOK", "PICKS", "TRUTH", "TONE", "SHOT_RULES",
-                     "THREAD_GROWTH"):
+        for name in ("AUDIENCE", "INTRIGUE", "PLAIN_WORDS", "PLAYBOOK", "PICKS", "TRUTH", "TONE", "PHOTO_RULES",
+                     "THREAD_GROWTH", "NEWS_VOICE"):
             block = getattr(wmod, name)
             assert not off_limits_term(block), (name, off_limits_term(block))
             assert not contains_url(block), name

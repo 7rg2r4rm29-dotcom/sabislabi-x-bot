@@ -31,8 +31,8 @@ class NewsItem:
 
 @dataclass
 class Visual:
-    kind: str                # "shot" (capture de la page de l'actu, façon téléphone) | "ai"
-    target: str              # URL de la page (shot) ou description de photo (ai)
+    kind: str                # "photo" (la photo de l'actu citée) | "ai" ; « shot » : ancien nom
+    target: str              # URL de la page de l'actu (photo) ou description de photo (ai)
 
 
 @dataclass
@@ -48,6 +48,6 @@ class Draft:
     from_fallback: bool = False
     used_notes: list[str] = field(default_factory=list)   # notes perso (/note) utilisées
     # Renseignés par le planificateur quand l'image est prête (🔄 Autre version) :
-    # la capture montre la page de l'actu du NOUVEAU texte, pas celle de l'ancien.
+    # la photo est celle de l'actu du NOUVEAU texte, pas celle de l'ancien.
     image_path: str | None = None
-    image_kind: str | None = None        # "shot" | "ai"
+    image_kind: str | None = None        # "photo" | "ai" ("shot" : capture, avant le 14/11/2026)

@@ -12,8 +12,11 @@ Rédaction en deux temps :
     relecture séparée (« factcheck ») vérifie chaque fait et la simplicité des
     mots ; en cas d'échec, un second essai avec les problèmes signalés, sinon
     rien (le créneau est sauté plutôt que rempli avec un texte creux).
-L'image du post : la capture d'écran, façon téléphone, de la page d'une actu
-citée (bot/visuals.py) ; Claude la regarde avant qu'elle serve. JAMAIS x.com.
+Le compte donne la nouvelle LUI-MÊME, comme un compte d'alertes info : jamais le
+nom du site qui l'a racontée (NEWS_VOICE, doublé côté code par
+filters.news_outlet_cited). L'image du post : la photo de l'actu, officielle,
+jamais une capture d'écran (bot/visuals.py) ; Claude la regarde avant qu'elle
+serve (photo_is_usable). JAMAIS x.com.
 Tout fait vient des histoires citées (source_ids) ; le cadrage (« incroyable »,
 « un peu inquiétant ») est une opinion permise, l'exagération jamais.
 Gardé des versions précédentes :
@@ -81,10 +84,9 @@ HOOK_SHAPES = ("IT CAN DO WHAT?", "THE FUTURE SCENE", "NO X, NO Y", "SCIENCE FIC
                "SOMEBODY SAID IT", "MOST PEOPLE HAVE NO IDEA")
 
 # ---------------------------------------------------------------------------
-# Capture d'écran : la page d'une actu citée, JAMAIS x.com / twitter.com
-# (aucune capture de post X depuis la v2).
+# Pages d'actu : lues (texte, photo) en HTTP, JAMAIS x.com / twitter.com.
 # ---------------------------------------------------------------------------
-BLOCKED_SCREENSHOT_DOMAINS = ("x.com", "twitter.com")
+BLOCKED_PAGE_DOMAINS = ("x.com", "twitter.com")
 
 
 def _host(url: str) -> str:
@@ -106,13 +108,13 @@ def _norm_url(url: str) -> str:
 
 
 def is_x_url(url: str) -> bool:
-    return _host_in(_host(url), BLOCKED_SCREENSHOT_DOMAINS)
+    return _host_in(_host(url), BLOCKED_PAGE_DOMAINS)
 
 
-def is_capturable_url(url: str) -> bool:
-    """Page dont on peut faire la capture : http(s), jamais un post X."""
+def is_page_url(url: str) -> bool:
+    """Page d'actu qu'on peut lire (texte, photo) : http(s), jamais un post X."""
     host = _host(url)
-    return bool(host) and not _host_in(host, BLOCKED_SCREENSHOT_DOMAINS)
+    return bool(host) and not _host_in(host, BLOCKED_PAGE_DOMAINS)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +180,7 @@ Variety is part of the job: look at your recent posts in the message, and never 
 The quoted sentences in this prompt are illustrations: never reuse their wording (words taken from the article itself are always fine).
 Bad hooks: "[Company] releases version 5.2 with improved reasoning." / "AI is changing everything." / "Big news in tech today." / anything a press release would say / anything that sneers ("they said it was impossible", "[an industry] is dead").
 
-SHAPE OF A POST — short wins: aim for 120 to 220 characters (hard cap 260). With a screenshot, two or three lines are often enough: the image carries the news. Blank line between blocks. Never the same skeleton as your previous post. Four that work:
+SHAPE OF A POST — short wins: aim for 120 to 220 characters (hard cap 260). Two or three lines are often enough. Blank line between blocks. Never the same skeleton as your previous post. Four that work:
 - the two-line punch: the whole story in one sentence, then the one detail that proves it is real;
 - hook, two facts, a question;
 - hook, a quote from the article, your one-line take;
@@ -188,7 +190,7 @@ Whatever the skeleton:
 - The last line is something people can answer or argue with. On about half of the posts: your own one-line take or a kicker ("No mouse, no keyboard." / "It still can't open a door." / "Handy. And a little creepy."). On the other half, when the story divides people: ONE question, 8 words or fewer, that a stranger answers in one to five words and where both answers are respectable ("Would you get in?" / "Cool or creepy?" / "Right call, or too late?" / "What's the first chore you'd give it?" / "In your home in 2 years, 10 years, or never?" / "What would you need to see to believe it?").
 - Never end on a date, a price, a caveat or an explanation. A question is a closing line, never line 1. Never a generic "Thoughts?".
 - If you run out of room, cut the second detail, then shorten the last line (3 to 6 words are enough) — never cut the hook or the honest limit.
-- The image already shows the article's headline: line 1 must not be that headline reworded. Say what it means.
+- Line 1 is the news in your own words, never an article's headline copied or reworded.
 
 WHICH STORY — you are given a few stories chosen by the editor. Tell the one with the strongest "wait, WHAT?", the one you can tell truthfully in a few plain lines; between two, the one that touches the reader's own life (home, phone, photos, car, school, job). If two of them are about the same thing, use both as sources. For the launch of a new AI or product by a name everybody knows: say what it can now DO that a normal person can picture and, if the article says so, what its own maker warns about — incredible and unsettling in the same post. If the article gives neither, tell another story."""
 
@@ -218,7 +220,7 @@ TRUTH = """TRUE, ALWAYS — the intrigue comes from real facts, never from exagg
 - A forecast belongs to the person who made it: "[Name], the boss of [company], says…". Never predict in your own voice with a date or a scale.
 - Numbers: copy the figure, its unit and what it measures exactly as the source gives them. Never round up, never add a comparison the source doesn't make.
 - Careful with "only", "all", "never", "first": a short sentence must not say more than the source does.
-- When the claim is big, say who says it or who reports it ("Amazon says", "the Guardian reports"): three words that make the post believable. When a date or an ability comes from the company, say so once ("its boss says", "the company aims for"), and use the article's verb: if it says the AI "suggests", write suggests, not "picks" or "decides".
+- When the claim is big, say who says it ("Amazon says", "its maker says", "the researchers say"): three words that make the post believable — the company, the person or the lab, never the news site that reported it. When a date or an ability comes from the company, say so once ("its boss says", "the company aims for"), and use the article's verb: if it says the AI "suggests", write suggests, not "picks" or "decides".
 - Never turn "helps doctors" into "replaces doctors", "a prototype" into "you can buy it", or "one company says" into "it's proven".
 - No doom: never announce that people will lose their jobs, or worse, unless the source says exactly that — and then say who says it.
 - If a story can't be told truthfully in a few short lines, pick another story."""
@@ -249,8 +251,13 @@ FORMAT_RULES = """X FORMAT RULES:
 - Lists: one item per line starting with "→". No other bullet characters, no "1/".
 - Hard cap: 260 characters per post (and per tweet in a thread)."""
 
-# L'image : la capture d'écran de la page d'une actu citée, façon téléphone.
-SHOT_RULES = """SCREENSHOT — the post goes out with a phone screenshot of the page of ONE news item you cite: the headline and the photo of the article, exactly as if you had just screenshotted it on your phone. Put that item's number in visual_url as "[n]". Choose the cited item whose headline best backs up your post, in plain words. Items that are posts on X can't be used. A poll has no image."""
+# Le compte donne la nouvelle lui-même (doublé côté code par filters.news_outlet_cited).
+NEWS_VOICE = """YOU GIVE THE NEWS — people learn it from this account, the way they learn it from a news-alert account: state what happened, directly, as the one telling them.
+- Never name, quote or credit the website, newspaper, magazine, blog or forum that reported it: no "TechCrunch reports", "according to The Verge", "via Engadget", "Wired found", "a report says", "media reports", "points on Hacker News". The stories you are given are where YOU learned it; your readers learn it from you.
+- Who made it, announced it, said it or studied it: that you name, because it is part of the facts ("OpenAI says", "Google's boss says", "researchers in Zurich found"). When a news site ran its own test or investigation, write "in a test" or "an investigation found", without the site's name."""
+
+# L'image : la photo de l'actu (jamais une capture d'écran d'article).
+PHOTO_RULES = """PHOTO — the post goes out with the photo of the story when a clean one exists: the picture that came with the announcement (the product, the robot, the device, the app, the official image). Never a screenshot of an article. Put in visual_url, as "[n]", the cited item whose story your post tells — its photo is the one used. The photo is checked before it is used; when none fits, the post goes out as text, so the post must stand on its own. Items that are posts on X can't be used. A poll has no image."""
 
 TONE = """TONE — the friend who always knows the craziest thing happening in tech, and tells it straight:
 - Wide-eyed but honest. Excited, never salesy. Sometimes a little scared, never a prophet of doom.
@@ -271,6 +278,8 @@ SYSTEM_PROMPT = """You run an international X account, in English, with one prom
 
 """ + PLAYBOOK + """
 
+""" + NEWS_VOICE + """
+
 """ + PLAIN_WORDS + """
 
 """ + TRUTH + """
@@ -289,7 +298,7 @@ ENGAGEMENT:
 
 """ + PERSONAL_FACTS + """
 
-""" + SHOT_RULES + """
+""" + PHOTO_RULES + """
 
 """ + FORMAT_RULES + """
 
@@ -298,7 +307,7 @@ OUTPUT — fill every field of the JSON schema:
 - text: the post. Its first line is the best of the five: the one a stranger would stop for.
 - source_ids: numbers of the stories your post relies on (at least one).
 - used_note_ids: numbers of the owner's notes you used ([] if none).
-- visual_url: "[n]", the cited item whose page will be screenshotted ("" for a poll).
+- visual_url: "[n]", the cited item whose photo goes with the post ("" for a poll).
 - poll_options, when the schema has it: see the POLL line of the message ([] when unused).
 - hook: the name of the hook shape you used, exactly as written in the HOOKS list (for example "THE NUMBER"); "" if none of them.
 - reason: one short line in FRENCH (150 characters at most) for the account owner: the story, and why it will intrigue people who don't follow tech.
@@ -348,6 +357,8 @@ THREAD_SYSTEM_PROMPT = """You write threads on X for an international account, i
 
 """ + INTRIGUE + """
 
+""" + NEWS_VOICE + """
+
 """ + PLAIN_WORDS + """
 
 """ + TRUTH + """
@@ -373,8 +384,8 @@ RULES FOR EVERY THREAD (the message gives the angle and its structure):
 
 """ + PERSONAL_FACTS + """
 
-""" + SHOT_RULES + """
-For a thread, the screenshot goes on tweet 1.
+""" + PHOTO_RULES + """
+For a thread, the photo goes on tweet 1.
 
 """ + FORMAT_RULES + """
 
@@ -382,7 +393,7 @@ OUTPUT — fill every field of the JSON schema:
 - tweets: 4 to 7 tweets. Do NOT number them inside the text (X shows the order).
 - source_ids: numbers of the stories the thread relies on (at least one).
 - used_note_ids: numbers of the owner's notes you used ([] if none).
-- visual_url: "[n]", the cited item whose page will be screenshotted.
+- visual_url: "[n]", the cited item whose photo goes on tweet 1.
 - reason: one short line in FRENCH (150 characters at most) for the account owner: the story, and why it will intrigue people who don't follow tech.
 
 Hard rules:
@@ -470,7 +481,8 @@ The account is ALLOWED to be intriguing. Do NOT flag:
 - emotional framing and opinions, including the author's own one-line reaction ("Handy. And a little creepy.", "I can't decide if I want one."): "incredible", "terrifying", "scary", "wild", "most people have no idea", "nobody is ready for this";
 - questions, jokes, and what it could mean for the reader, when clearly framed as a possibility ("soon", "could", "one day", "imagine");
 - a future scene ("Soon, you won't need a controller to play video games") WHEN a cited item shows the thing already exists as a product, a prototype, a demo or a test doing exactly that;
-- the owner's personal facts and notes listed in the message.
+- the owner's personal facts and notes listed in the message;
+- the news site that reported the story not being named: this account gives the news itself and never names news sites. The speaker to keep is the company, the person or the organization behind a claim; for a news site's own test or investigation, "in a test" or "an investigation found" is enough.
 DO flag:
 - the future stated as a certainty, or with a date, a price or a scale ("everyone will", "by next year") that no item gives;
 - a demo, a prototype, a test or a study presented as something people can already buy or use — or the reverse;
@@ -511,13 +523,13 @@ OUTPUT — picks: the numbers of the stories to use, best first (the message say
 PICK_BRIEFS: dict[str, str] = {
     "news": ("Post to prepare: THE STORY OF THE DAY. Pick up to {m} different stories from the last day, the "
              "most intriguing first. Prefer what is fresh. If another site tells the SAME story as your first "
-             "pick, add that headline right after it ({n} numbers at most): its page may give a better "
-             "screenshot."),
+             "pick, add that headline right after it ({n} numbers at most): it gives the writer more facts, "
+             "and another photo of the story."),
     "tip": ("Post to prepare: THE FUTURE IS COMING. Pick up to {m} different stories that show something in "
             "daily life about to change: how people will play, drive, work, talk, shop, learn or see. They can "
             "be a few days old: a great story from three days ago beats a lukewarm one from this morning. If "
             "another site tells the SAME story as your first pick, add that headline right after it ({n} "
-            "numbers at most): its page may give a better screenshot."),
+            "numbers at most): it gives the writer more facts, and another photo of the story."),
     "reactive": ("Extra post, RIGHT NOW? Only for a story that people who don't follow tech will be talking "
                  "about today: a big reveal from a name everybody knows, a first ever shown for real, something "
                  "that changes daily life for millions. Rumors, leaks and opinion pieces: no. Most of the time "
@@ -590,20 +602,17 @@ How to reply:
 OUTPUT — reply: true or false; reason: one short line in FRENCH for the owner; text: the reply ("" when reply is false)."""
 
 # ---------------------------------------------------------------------------
-# Vérification d'une capture d'écran
+# Vérification de la photo de l'actu
 # ---------------------------------------------------------------------------
-SCREENSHOT_CHECK_PROMPT = """You review a screenshot of a news article as seen on a phone. It will be posted on X exactly as it is, as if the account owner had screenshotted the article while scrolling and cropped off the clock and the battery. Be strict: a sloppy screenshot hurts the account, and the post simply goes out without an image when you say no.
+PHOTO_CHECK_PROMPT = """You check a picture before it goes out with a post on an X account that gives tech news itself, the way a news-alert account does: the post states the news, the picture shows what it is about. Be strict: when you say no, the post simply goes out as text — and a wrong picture hurts the account more than no picture.
 Answer ok=true ONLY if ALL of these are true:
-- the article's headline is fully visible and readable (not cut at the top or on the sides);
-- nothing covers the content: no cookie or consent banner, newsletter or login pop-up, ad, chat bubble, "open in app" bar, video overlay or dark overlay;
-- the page is not blank, broken, still loading, or a "subscribe to read" / "verify you are human" wall;
-- no empty box where an ad or a picture failed to load, and no big blank area (more than about a third of the image);
-- no line of text sliced in half at the top or bottom edge, and no text printed on top of other text (a photo cut by the bottom edge is fine: that is what scrolling looks like);
-- it looks like a normal article on a phone: one column, large readable text, not a desktop page shrunk down;
-- no text closer than a few pixels to the top edge (it would look cut).
-When the message gives the article's headline and the post: ok=false if the big headline in the image is not that article's headline, or if what the image shows clearly contradicts the post. A photo or a caption about another part of the same article is fine.
-NOT a defect (stay ok=true): the site's own small icons on the photo (a round "i" caption button, a play triangle), a photo credit or caption line, thin separator lines, an author photo, share icons, small links beside the byline.
-A defect even when it covers nothing: a newsletter or sign-up box, a "Read next" / "Related" card, an "Advertisement" label.
+- It shows what the post is about: the product, the robot, the device, the vehicle, the app, the official image of the announcement, or the person or place the story is about. Not a generic picture that could illustrate any story.
+- It is a photo or an official visual. NOT a screenshot of an article or of a website page, not a collage of headlines, not a chart or a table full of small text, not a meme.
+- No news outlet's name, logo, watermark or headline on it (TechCrunch, The Verge, Wired, BBC, CNN, Reuters, Getty Images…). The company's own logo, product name or official title card is fine.
+- It comes from the company or the organization behind the news. When the message gives the picture's credit line: ok=false if it names a news agency or a photo library (Getty, Reuters, AP, AFP, Bloomberg, Shutterstock, Alamy…), a photographer, or the news site itself or its staff; fine when it names the company, the lab or the organization of the story, or says courtesy, handout or press image. With no credit line: ok=false for a picture that looks like a news or stock photo (people at an event, a stage, a street, a building, an office); fine for an official product image, a render, a logo, an app screen or a press visual. When the message says the picture comes from the company's own page, it is official.
+- Clean at phone size: sharp, not tiny, not mostly empty, no big black bars, no text cut off at the edges.
+- Nothing this account never shows: violence, weapons, the military, the police, alcohol, gambling, nudity or anything suggestive, crypto.
+- Nothing in it contradicts the post.
 Otherwise ok=false and say in a few words what is wrong (issue)."""
 
 # ---------------------------------------------------------------------------
@@ -635,6 +644,9 @@ _FEEDBACK_EN = (
                                   "you would explain it to a neighbour"),
     (r"^trop technique : (.*)", "an everyday reader would stumble on: {0}. Rewrite those parts with "
                                 "plain, short words (no jargon, no insider references)"),
+    (r"^cite un média \((.*)\)", "it pointed to the news site or the report it came from (\"{0}\"): this "
+                                 "account gives the news itself — state the facts directly, and name only "
+                                 "who made, announced or said it"),
     (r"^formule toute faite \((.*)\)", "it used a stock phrase that sounds like an ad or a machine "
                                           "(\"{0}\"): say the fact itself instead"),
     (r"^trop de chiffres", "it had too many numbers: keep the one or two that people will repeat"),
@@ -942,7 +954,7 @@ class Writer:
             elif it.summary:
                 lines.append(f"    Summary: {it.summary.strip()[:600]}")
             if it.url:
-                note = " (a post on X: it can't be used for the screenshot)" if is_x_url(it.url) else ""
+                note = " (a post on X: its picture can't be used)" if is_x_url(it.url) else ""
                 lines.append(f"    Page: {it.url}{note}")
         return "\n".join(lines)
 
@@ -986,7 +998,7 @@ class Writer:
         """Lit le texte des articles retenus (au mieux, en parallèle, délai borné) :
         de quoi vraiment raconter l'histoire, au lieu des trois lignes du flux. Un
         article illisible garde simplement son résumé."""
-        todo = [it for it in stories if not it.body and is_capturable_url(it.url)]
+        todo = [it for it in stories if not it.body and is_page_url(it.url)]
         if not todo:
             return
         fn = self.read_article
@@ -1037,11 +1049,11 @@ class Writer:
         body = "\n".join(f"- {r.strip()[:280]}" for r in recent)
         return f"{title}\n{body}\n\n"
 
-    def _shot_line(self) -> str:
-        """Captures coupées (SCREENSHOTS_ENABLED=false) : le post partira en texte seul."""
-        if getattr(self.settings, "screenshots_enabled", True):
+    def _photo_line(self) -> str:
+        """Photos coupées (PHOTOS_ENABLED=false) : le post partira en texte seul."""
+        if getattr(self.settings, "photos_enabled", True):
             return ""
-        return "SCREENSHOT: not available right now — visual_url must be \"\".\n\n"
+        return "PHOTO: not available right now — visual_url must be \"\".\n\n"
 
     @staticmethod
     def _feedback(previous: str, problem: str) -> str:
@@ -1077,19 +1089,19 @@ class Writer:
         low = (text or "").lower()
         return any(k and k in low for k in (self.settings.blacklist_keywords or []))
 
-    # ---- Cartes --------------------------------------------------------
-    def _shot_visual(self, obj: dict, items: list[NewsItem], cited: list[NewsItem]) -> Visual | None:
-        """La capture du post : la page d'une actu CITÉE (celle que Claude désigne par
-        « [n] » ou par son adresse, sinon la première), jamais un post X. None si
-        aucune page n'est montrable ou si les captures sont coupées."""
-        if not getattr(self.settings, "screenshots_enabled", True):
+    # ---- Photo de l'actu -------------------------------------------------
+    def _photo_visual(self, obj: dict, items: list[NewsItem], cited: list[NewsItem]) -> Visual | None:
+        """La photo du post : celle de l'actu CITÉE que Claude désigne par « [n] » ou par
+        son adresse (sinon la première), jamais un post X. None si aucune actu citée
+        n'a de page, ou si les photos sont coupées."""
+        if not getattr(self.settings, "photos_enabled", True):
             return None
-        target = self._shot_target(_s(obj, "visual_url"), items, cited)
-        return Visual("shot", target) if target else None
+        target = self._photo_target(_s(obj, "visual_url"), items, cited)
+        return Visual("photo", target) if target else None
 
     @staticmethod
-    def _shot_target(url: str, items: list[NewsItem], cited: list[NewsItem]) -> str | None:
-        pages = [c.url for c in cited if is_capturable_url(c.url)]
+    def _photo_target(url: str, items: list[NewsItem], cited: list[NewsItem]) -> str | None:
+        pages = [c.url for c in cited if is_page_url(c.url)]
         if not pages:
             return None
         wanted = (url or "").strip().strip("\"'<>").rstrip(").,;")
@@ -1282,7 +1294,7 @@ class Writer:
         return ("POLL (optional): when the story splits people (\"Exciting or terrifying?\", \"Would you use "
                 "it?\"), you may make the post a poll: the text tells the story and ends with the question, and "
                 "poll_options holds 2 to 4 short answers (max 25 characters each, no emojis needed). A poll has "
-                "no screenshot: visual_url = \"\". Otherwise poll_options = []. Keep it for a debate everyone "
+                "no photo: visual_url = \"\". Otherwise poll_options = []. Keep it for a debate everyone "
                 "already has an opinion on (school, privacy at home, kids and screens): the account allows two "
                 "polls a week at most.\n\n")
 
@@ -1330,7 +1342,7 @@ class Writer:
             "STORIES chosen by the editor (numbered — your ONLY source of facts; they are written for tech "
             "people: find the \"wait, WHAT?\" and tell it in plain words, never copy their sentences):\n"
             f"{self._items_block(items)}\n\n"
-            f"{notes_b}{perf_b}{recent_b}{poll_b}{self._shot_line()}"
+            f"{notes_b}{perf_b}{recent_b}{poll_b}{self._photo_line()}"
             "Write ONE post now. Line 1 must stop someone who doesn't follow tech. Every fact must be in the "
             "stories you cite. Fill every field of the JSON."
         )
@@ -1380,7 +1392,7 @@ class Writer:
                 elif not verdict:
                     problem = self._after_review(issues, attempt, f"Post {kind}")
             if problem is None:
-                log.info("Post %s rédigé (essai %d) : %r | sources=%d | notes=%d | capture=%s | sondage=%s",
+                log.info("Post %s rédigé (essai %d) : %r | sources=%d | notes=%d | photo=%s | sondage=%s",
                          kind, attempt, cand.texts[0][:120], len(cand.sources), len(cand.used_notes),
                          "oui" if cand.visual else "non", "oui" if cand.poll else "non")
                 return Draft(kind=kind, texts=cand.texts, visual=cand.visual, poll=cand.poll,
@@ -1423,7 +1435,7 @@ class Writer:
             log.info("Post %s : sondage proposé mais quota hebdo atteint (%d / 7 jours), ignoré",
                      kind, POLL_MAX_PER_WEEK)
         if cand.poll is None and kind != "gm":
-            cand.visual = self._shot_visual(obj, items, cited)
+            cand.visual = self._photo_visual(obj, items, cited)
         return cand, None
 
     # ==================================================================
@@ -1545,7 +1557,7 @@ class Writer:
             f"{topics_b}\n\n"
             f"{self._notes_block(notes)}{self._perf_block(perf)}{recent_b}"
             f"{THREAD_ANGLES[genre]}\n\n"
-            f"{self._shot_line()}"
+            f"{self._photo_line()}"
             f"Write the thread now: {THREAD_MIN_TWEETS} to {THREAD_MAX_TWEETS} tweets. Tweet 1 must work as a "
             "complete, striking post on its own (only tweet 1 reaches non-followers). Fill every field of "
             "the JSON."
@@ -1615,7 +1627,7 @@ class Writer:
             figure = ungrounded_number(tw, cited, used)
             if figure:
                 return cand, f"tweet {n} : chiffre absent des sources ({figure})"
-        cand.visual = self._shot_visual(obj, items, cited)
+        cand.visual = self._photo_visual(obj, items, cited)
         return cand, None
 
     def _judge(self, candidates: list[_Candidate], items: list[NewsItem],
@@ -1833,26 +1845,33 @@ class Writer:
         return None
 
     # ==================================================================
-    # Capture « smartphone » : Claude la regarde avant qu'elle serve
+    # Photo de l'actu : Claude la regarde avant qu'elle serve
     # ==================================================================
-    def screenshot_is_clean(self, image_path, headline: str = "", post: str = "") -> tuple[bool, str]:
-        """Claude REGARDE la capture de la page (vue mobile) : titre entier et
-        lisible, rien qui la masque (bandeau cookies, pub, pop-up), pas coupée en
-        haut — et, quand on les lui donne, le bon article pour CE post. En cas de
-        doute ou de panne : la capture n'est pas utilisée."""
+    def photo_is_usable(self, image_path, headline: str = "", post: str = "", credit: str = "",
+                        official: bool = False) -> tuple[bool, str]:
+        """Claude REGARDE la photo de l'actu, avec sa ligne de crédit : ce dont parle le
+        post, une photo ou un visuel officiel (pas une capture d'article), sans logo ni
+        titre de média, venant de l'entreprise ou de l'organisation de l'actu (jamais
+        une agence photo). En cas de doute ou de panne : la photo n'est pas utilisée."""
         try:
             context = ""
             if (headline or "").strip():
-                context += f"The article's headline: \"{headline.strip()[:300]}\"\n"
+                context += f"The story's headline: \"{headline.strip()[:300]}\"\n"
             if (post or "").strip():
                 context += f"The post it will go with: \"\"\"{post.strip()[:600]}\"\"\"\n"
-            obj = self._ask("screenshot-check", SCREENSHOT_CHECK_PROMPT,
-                            context + "Is this phone screenshot clean enough to be shown on an image posted on X?",
+            if official:
+                context += "The picture comes from the company's own page about this news.\n"
+            elif (credit or "").strip():
+                context += f"The picture's credit line on the page: \"{credit.strip()[:120]}\"\n"
+            else:
+                context += "No credit line was found for the picture.\n"
+            obj = self._ask("photo-check", PHOTO_CHECK_PROMPT,
+                            context + "Can this picture go out with the post on X?",
                             schema({"ok": BOOL, "issue": STR}), effort="low", images=[image_path])
             if obj is None:
                 return False, "vérification de l'image indisponible"
             ok = obj.get("ok") is True
-            return ok, (_s(obj, "issue")[:120] or ("capture propre" if ok else "capture pas assez propre"))
+            return ok, (_s(obj, "issue")[:120] or ("photo bonne" if ok else "photo pas utilisable"))
         except Exception as e:  # noqa: BLE001
-            log.exception("screenshot_is_clean a planté : %s", e)
+            log.exception("photo_is_usable a planté : %s", e)
             return False, "erreur de vérification"

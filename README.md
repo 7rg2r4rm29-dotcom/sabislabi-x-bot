@@ -8,7 +8,9 @@ Plus de navigateur qui se fait passer pour toi sur x.com, plus de réponses ni d
 M. et Mme Tout-le-monde, pas aux passionnés de tech : chaque post raconte, avec des mots simples, une
 nouveauté qui fait dire « attends, quoi ? » (un robot à la maison, une IA qui fait ce que seuls les humains
 faisaient, un geste de tous les jours qui va disparaître) — incroyable, parfois un peu inquiétant, toujours
-vrai. Et chaque post part avec **une capture d'écran de l'article, comme prise au téléphone**.
+vrai. **Le compte donne la nouvelle lui-même**, comme un compte d'alertes info : jamais « d'après tel
+site ». Et chaque post part, quand elle existe, avec **la photo officielle de l'actu** (le produit, le
+robot, l'appli), jamais une capture d'écran d'article.
 
 > Guide écrit pour être suivi sans connaissances techniques. Les commandes sont à copier-coller telles quelles.
 
@@ -87,7 +89,10 @@ que pour une chose : ce qui leur fait dire **« attends, quoi ? »**. Donc :
   bot, et une seconde lecture de Claude vérifie qu'un lecteur qui n'a jamais ouvert ChatGPT comprend tout ;
 - **intriguer, jamais inventer** : chaque fait vient de l'article cité. Une démonstration reste « une
   démonstration », un prototype « un prototype » ; pas de date, de prix ni de catastrophe que la source
-  n'annonce pas.
+  n'annonce pas ;
+- **c'est nous qui donnons la nouvelle** : le post dit le fait directement, sans jamais nommer le site, le
+  journal ou le blog où le bot l'a lue (« TechCrunch reports », « according to The Verge » sont refusés
+  d'office). Celui qui a fait l'annonce ou qui l'a dit, lui, est nommé : « OpenAI says ».
 
 **Comment une histoire est choisie.** Le bot lit une quarantaine de sources (robots, jeux vidéo, réalité
 virtuelle, gadgets, IA, voitures, espace…). Trois étapes à chaque post :
@@ -106,21 +111,24 @@ recommence jamais deux posts de suite par les mêmes mots.
 
 S'il n'y a rien d'assez fort, le créneau est sauté : mieux vaut pas de post qu'un post tiède.
 
-**L'image : une capture d'écran, comme la tienne.** La page de l'article est ouverte comme sur un iPhone,
-puis recadrée comme tu le fais toi-même : on enlève le haut (l'heure, le réseau, la batterie, la barre du
-navigateur) et on coupe proprement en bas, entre deux lignes. On voit le titre de l'article, souvent sa
-photo et ses premières lignes. Pas de maquette de téléphone, pas de carte dessinée, rien d'ajouté.
+**L'image : la photo de l'actu, comme un compte d'alertes info.** Plus de capture d'écran d'article
+(depuis le 14 novembre 2026) : montrer la page d'un autre média, c'est dire « ce sont eux qui
+informent ». Le bot reprend la **photo officielle** publiée avec l'annonce : le produit, le robot, l'appli,
+le visuel de l'entreprise. Chaque photo est donc un peu différente.
 
-- Format : la largeur d'un écran d'iPhone (1170 px), en portrait 4:5 au plus — X l'affiche en entier dans le fil.
-- Avant de servir, les bandeaux de cookies, les publicités, les menus et les encarts « à lire aussi »
-  sont retirés, et **Claude regarde la capture** : titre coupé, bandeau, mur d'abonnement, page vide, ou
-  page qui n'est pas celle de l'article cité → elle est écartée.
-- Si la page n'est pas présentable, le bot essaie la page d'un autre site qui raconte la même histoire.
-  Si aucune ne convient, le post part **en texte seul** : jamais de capture ratée.
+- La photo vient de la page de l'article (la photo d'ouverture que le site déclare), avec sa ligne de
+  crédit (« Image Credits: OpenAI »).
+- **Jamais une photo d'agence** (Getty, Reuters, AP, AFP…) ni de banque d'images, ni une photo prise par
+  le média lui-même (« Photo : … / The Verge ») : ces photos appartiennent à quelqu'un qui peut faire
+  retirer le post, et des retraits répétés peuvent faire suspendre un compte. Seules les photos de
+  l'entreprise ou de l'organisation dont parle l'actu sont reprises.
+- Avant de servir, **Claude regarde la photo** : elle doit montrer ce dont parle le post, sans logo ni
+  titre d'un média, sans être une capture de page.
+- Si aucune photo ne convient, le post part **en texte seul** : jamais une photo douteuse.
+- Format : JPEG propre (2048 px au plus), sans les informations cachées du fichier (appareil, lieu).
 - Un sondage n'a pas d'image (X ne le permet pas).
-- Bon à savoir : la capture montre le titre, parfois la photo et quelques lignes d'un article de presse,
-  comme le font la plupart des comptes d'actu. Si un site ou un photographe s'en plaignait un jour, X te
-  préviendrait : il suffit alors de supprimer le post concerné.
+- Bon à savoir : même officielle, une photo reste celle de quelqu'un d'autre. Si une entreprise s'en
+  plaignait un jour, X te préviendrait : il suffit alors de supprimer le post concerné.
 
 - **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 2 ou 3 contenus
   dans la journée.
@@ -153,7 +161,7 @@ retard ne sert à rien.
 ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --preview'
 ```
 
-Tu reçois sur Telegram les deux posts du jour rédigés à l'instant, **avec leur capture d'écran**, marqués
+Tu reçois sur Telegram les deux posts du jour rédigés à l'instant, **avec leur photo** (s'il y en a une), marqués
 « APERÇU ». Rien n'est publié et le planning du bot n'est pas touché (`--preview tip,news,thread` pour
 voir aussi un thread).
 
@@ -200,7 +208,7 @@ Chaque note peut être utilisée 2 fois, pendant 14 jours, sans rien ajouter au-
   automatique).
 
 **Claude** : compte de l'ordre de **25 $ par mois** avec le modèle par défaut (Opus 5.5). Chaque post demande
-quatre appels : choisir l'histoire, écrire, relire, regarder la capture. À surveiller sur
+quatre appels : choisir l'histoire, écrire, relire, regarder la photo. À surveiller sur
 console.anthropic.com ; `/budget` affiche une estimation. Pour diviser la facture environ par deux, mets
 `LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
 
@@ -297,7 +305,7 @@ des sites d'actualité (`news_feeds`), qui va avec la ligne éditoriale, est tou
 | Ce que tu vois | Quoi faire |
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
-| Les posts partent **sans image** | De temps en temps, c'est normal : aucune page n'était présentable. Si c'est **tous** les posts, le navigateur du serveur ne marche plus. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
+| Les posts partent **sans image** | Souvent normal : beaucoup d'actus n'ont pas de photo officielle (photo d'agence, logo du site…). Si c'est **tous** les posts pendant des jours, quelque chose bloque. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
 | « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
 | « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
 | « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
@@ -337,7 +345,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
 | `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler |
 | `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
-| `SCREENSHOTS_ENABLED` | `true` | `false` = aucune capture d'écran : tous les posts partent en texte seul |
+| `PHOTOS_ENABLED` | `true` | `false` = aucune photo : tous les posts partent en texte seul (l'ancien nom `SCREENSHOTS_ENABLED` marche encore) |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |
@@ -355,12 +363,12 @@ science et tech ; `"filter": "tech"` ne garde d'un flux généraliste que ce qui
 - Architecture et choix techniques : [`DESIGN.md`](DESIGN.md).
 - Tests : `python -m pytest` (tous les appels à Claude, X et Telegram sont simulés ; une journée complète
   est rejouée dans `tests/test_integration.py`).
-- Vérification réelle de la configuration : `python -m bot.main --check` (prend aussi une capture d'essai).
+- Vérification réelle de la configuration : `python -m bot.main --check` (met aussi une photo d'essai au propre).
 - Aperçu sans publier : `python -m bot.main --preview [tip,news,thread,reactive]` ; chiffres :
   `python -m bot.main --report`.
-- Captures d'écran : `bot/visuals.py` (page chargée comme sur un iPhone par Chromium, nettoyée, cadrée
-  sur le titre, coupée entre deux lignes). Tests avec un vrai navigateur, sur une page locale :
-  `XBOT_REAL_BROWSER=1 python -m pytest tests/test_visuals.py`.
+- Photo de l'actu : `bot/visuals.py` (photo d'ouverture déclarée par la page, crédit vérifié,
+  téléchargement borné, JPEG propre, regard de Claude). Garde-fou « on donne la nouvelle » :
+  `filters.news_outlet_cited`.
 - Rédaction en deux temps : `bot/writer.py` (`_pick` : le choix de l'histoire sur les titres ;
   `_read_articles` + `sources.fetch_article_text` : le texte des articles ; puis rédaction et relecture).
 - Scripts d'installation : `deploy/` (testés dans `tests/test_deploy_scripts.py`).

@@ -354,6 +354,84 @@ def weighted_length(text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Le compte donne la nouvelle LUI-MÊME (novembre 2026)
+# ---------------------------------------------------------------------------
+# Comme un compte d'alertes info : le post dit le fait, il ne renvoie pas au site,
+# au journal ou au blog qui l'a raconté (« TechCrunch reports », « according to The
+# Verge »). Qui a fait l'annonce, qui l'a dit, qui a mené l'étude : ça, oui, c'est un
+# fait. Le nom d'un média reste permis quand il est le SUJET de l'histoire (« The BBC
+# will read the news with an AI voice ») : seule la citation est refusée.
+# Les noms sont écrits sans « The » (« the Verge » et « The Verge » sont reconnus) ;
+# ils sont lus avec leurs majuscules (« the verge of », « wired headphones » passent).
+NEWS_OUTLETS = (
+    "TechCrunch", "Verge", "Wired", "WIRED", "Ars Technica", "Engadget", "ZDNET", "ZDNet", "Guardian",
+    "BBC", "BBC News", "MIT Technology Review", "Technology Review", "TechRadar", "Tom's Guide",
+    "Tom’s Guide", "Tom's Hardware", "IEEE Spectrum", "Hacker News", "CNET", "Reuters", "Bloomberg",
+    "Axios", "Mashable", "9to5Mac", "9to5Google", "MacRumors", "VentureBeat", "Business Insider", "Insider",
+    "Forbes", "CNBC", "CNN", "Associated Press", "AP", "AFP", "New York Times", "NYT", "Washington Post",
+    "Wall Street Journal", "WSJ", "Financial Times", "FT", "Fast Company", "NPR", "PCMag", "PC Magazine",
+    "Lifehacker", "How-To Geek", "Android Authority", "Android Police", "Gizmodo", "Futurism", "New Scientist",
+    "Popular Science", "PopSci", "Live Science", "Interesting Engineering", "Digital Trends", "Electrek",
+    "Semafor", "Platformer", "Nikkei", "Sky News", "NBC News", "NBC", "CBS News", "ABC News", "Fox News",
+    "Daily Mail", "Quartz", "Vox", "Rest of World", "404 Media", "New Atlas", "ScienceAlert",
+    "Science Alert", "Dexerto", "UNILAD", "UNILAD Tech", "Singularity Hub", "ZME Science", "IGN",
+    "GamesRadar", "UploadVR", "Humanoids Daily", "DroneDJ", "Science News", "Kotaku", "Polygon",
+    "Eurogamer", "PC Gamer", "Road to VR", "InsideEVs", "TechSpot", "Neowin", "XDA", "Euronews",
+    "Independent", "Information", "Times", "Atlantic", "Register", "Debrief", "Decoder",
+)
+# Ceux-là ne désignent un média qu'avec leur « The » (« the information », « times »…).
+_OUTLETS_NEED_THE = frozenset({"Independent", "Information", "Times", "Atlantic", "Register", "Debrief",
+                               "Decoder", "Verge", "Guardian"})
+# (Pas « tests » : « AI can now pass AP tests » parle d'examens, pas d'un média.)
+_OUTLET_VERBS = (r"reports?|reported|reporting|found|finds|revealed|reveals|learned|learns|tested|"
+                 r"spotted|spots|confirmed|confirms|writes|wrote|notes|noted|says|said|broke(?: the)? news|"
+                 r"got (?:an? )?(?:look|demo|hands-on)|obtained|saw|reviewed|reviews|asked|explains|explained|"
+                 r"describes|described|estimates|estimated|first reported|has reported|has learned|has found")
+_OUTLET_NOUNS = (r"report|reporting|reporter|reporters|story|article|review|reviewer|test|tests|testing|"
+                 r"investigation|analysis|interview|editor|editors|journalist|journalists|team|video|podcast|"
+                 r"newsletter|coverage|scoop")
+_OUTLET_BEFORE = (r"according to|via|per|told|tells|telling|in an interview with|speaking to|speaking with|"
+                  r"spoke to|spoke with|talking to|reported by|first reported by|as reported by|cited by|"
+                  r"quoted by|confirmed to|(?:a|an|the) (?:new |recent )?(?:report|story|article|review|test|"
+                  r"investigation|interview|piece|video|analysis) (?:by|from|in|on)")
+
+
+def _outlet_name_re(name: str) -> str:
+    the = r"(?i:the)\s+" if name in _OUTLETS_NEED_THE else r"(?:(?i:the)\s+)?"
+    return the + re.escape(name).replace("\\ ", r"\s+") + r"(?![\w-])"
+
+
+_OUTLET_ALT = "|".join(_outlet_name_re(n) for n in sorted(set(NEWS_OUTLETS), key=len, reverse=True))
+_OUTLET_CITED_RES = (
+    # « according to The Verge », « told Reuters », « a report from Bloomberg »
+    re.compile(r"(?<![\w-])(?i:" + _OUTLET_BEFORE + r")\s+(?:" + _OUTLET_ALT + r")"),
+    # « TechCrunch reports », « The Verge has learned », « Wired first reported »
+    re.compile(r"(?<![\w-])(?:" + _OUTLET_ALT + r")\s+(?i:(?:has |have |first |just |also |now )?(?:"
+               + _OUTLET_VERBS + r"))(?![\w-])"),
+    # « The Verge's test », « Engadget's review »
+    re.compile(r"(?<![\w-])(?:" + _OUTLET_ALT + r")(?:'s|’s)\s+(?i:(?:own |new |latest )?(?:"
+               + _OUTLET_NOUNS + r"))(?![\w-])"),
+    # Sans nom : « according to a report », « media reports », « reports say »
+    re.compile(r"(?<![\w-])(?i:according to (?:a |an |the |one )?(?:new |recent |latest )?(?:media |news |press )?"
+               r"(?:report|reports|article|story|stories|outlet|newspaper|website|site|blog)"
+               r"|(?:media|press) reports?|news reports? (?:say|says|suggest|suggests|claim|claims)"
+               r"|reports (?:say|suggest|claim|indicate))(?![\w-])"),
+    # « 211 points on Hacker News » : la preuve vient d'un forum, pas du compte
+    re.compile(r"(?<![\w-])(?i:on|from)\s+Hacker\s+News(?![\w-])"),
+)
+
+
+def news_outlet_cited(text: str) -> str | None:
+    """Le passage où le post renvoie à un média (« TechCrunch reports », « according to a
+    report »), ou None. Le compte donne la nouvelle lui-même."""
+    for rx in _OUTLET_CITED_RES:
+        m = rx.search(text or "")
+        if m:
+            return re.sub(r"\s+", " ", m.group(0)).strip()
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Verdict global
 # ---------------------------------------------------------------------------
 def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int = MAX_WEIGHTED,
@@ -381,6 +459,9 @@ def publish_problem(text: str, *, sources: list[str] | None = None, max_len: int
         hype = find_hype(text)
         if hype:
             return f"formule toute faite ({hype})"
+        outlet = news_outlet_cited(text)
+        if outlet:
+            return f"cite un média ({outlet})"
     if check_numbers and too_many_numbers(text, allow_numbers):
         return "trop de chiffres"
     if weighted_length(text) > max_len:

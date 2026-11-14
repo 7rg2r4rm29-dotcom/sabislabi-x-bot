@@ -261,10 +261,10 @@ def config_summary(settings) -> list[str]:
               if s.weekly_report and s.weekly_report.weekday is not None else "désactivé")
     try:
         import importlib.util
-        has_pw = importlib.util.find_spec("playwright") is not None
+        has_pil = importlib.util.find_spec("PIL") is not None
         has_openai = importlib.util.find_spec("openai") is not None
     except (ImportError, ValueError):
-        has_pw = has_openai = False
+        has_pil = has_openai = False
     warn = [f"⚠️ {w}" for w in (getattr(s, "warnings", None) or [])]
     return warn + [
         f"Compte : @{s.handle or '?'} (X_USER_ID {_defined(s.x_user_id)})",
@@ -287,8 +287,8 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
-        f"Images : capture d'écran de l'article {'oui' if s.screenshots_enabled else 'non'}"
-        f"{'' if has_pw else ' (Playwright absent : aucune image)'} · "
+        f"Images : photo de l'actu {'oui' if s.photos_enabled else 'non'}"
+        f"{'' if has_pil else ' (Pillow absent : aucune image)'} · "
         f"photos IA {'oui' if s.image_ai_enabled else 'non'}"
         f"{'' if has_openai or not s.image_ai_enabled else ' (paquet openai absent)'}",
         f"Récap du matin {s.health_report_at:%H:%M} · bilan hebdo {weekly}",
@@ -422,7 +422,7 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
                 out(f"❌ Claude : pas de réponse valide (clé ANTHROPIC_API_KEY, crédits, ou modèle "
                     f"{settings.llm_model} indisponible ? voir logs/bot.log)")
                 ok = False
-        # --- Images : une vraie capture d'essai, sur une page locale (jamais bloquant)
+        # --- Images : une photo d'essai mise au propre, sans réseau (jamais bloquant)
         try:
             if images is None:
                 from . import visuals
@@ -432,12 +432,12 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
             drawn, why = False, type(e).__name__
         if drawn:
             parts["images"] = "ok"
-            out("✅ Images : le navigateur des captures d'écran fonctionne")
+            out("✅ Images : la mise au propre des photos fonctionne")
         else:
             parts["images"] = "bad"
-            out(f"⚠️ Images : le navigateur des captures d'écran ne marche pas ({why}). Les posts partiraient "
+            out(f"⚠️ Images : la mise au propre des photos ne marche pas ({why}). Les posts partiraient "
                 "SANS image. "
-                "Sur le serveur : .venv/bin/python -m playwright install chromium")
+                "Sur le serveur : .venv/bin/python -m pip install Pillow")
     finally:
         tmp.cleanup()
     out("=== Résultat : " + ("tout est OK ✅" if ok else "au moins un problème ❌") + " ===")
@@ -569,7 +569,7 @@ def preview_kinds(raw: str) -> list[str]:
 def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, llm=None, news=None,
                 writer=None, telegram=None, prepare_visual: Callable | None = None,
                 out: Callable[[str], None] = print) -> int:
-    """Rédige un post de chaque type demandé, prend sa capture d'écran et envoie le tout
+    """Rédige un post de chaque type demandé, cherche la photo de l'actu et envoie le tout
     sur Telegram, pour voir ce que le bot publierait MAINTENANT. Rien n'est publié, et
     l'état du bot en service n'est pas touché : tout se passe sur une copie jetable
     (lecture de l'actu gratuite ; seuls les appels à Claude sont payants)."""
@@ -654,7 +654,7 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                 out((f"{i}/ " if len(draft.texts) > 1 else "") + text)
             if getattr(draft, "poll", None):
                 out("[sondage] " + " · ".join(str(o) for o in draft.poll.get("options") or []))
-            out(f"capture : {path or 'aucune (le post partirait sans image)'}"
+            out(f"photo : {path or 'aucune (le post partirait en texte seul)'}"
                 + (f" ({image_kind})" if path else ""))
             if getattr(draft, "reason", ""):
                 out(f"pourquoi : {draft.reason}")

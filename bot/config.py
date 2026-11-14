@@ -31,8 +31,8 @@ POST_KINDS = ("gm", "tip", "news")
 # de toi dans la journée ne compte plus qu'à ×0,625 / ×0,44. Donc deux posts
 # soignés plutôt que cinq : 14 h 30 = matin aux États-Unis + après-midi en Europe
 # (« le futur arrive ») ; 19 h = midi aux États-Unis + soirée en Europe
-# (« l'histoire du jour »). Chaque post part avec une capture d'écran de l'article
-# qu'il raconte. Le « gm » (héritage crypto) n'est plus au planning ; le type
+# (« l'histoire du jour »). Chaque post part avec la photo de l'actu qu'il raconte
+# (jamais une capture d'écran), sinon en texte seul. Le « gm » (héritage crypto) n'est plus au planning ; le type
 # existe encore pour qui y tient.
 DEFAULT_POST_SLOTS = "tip@14:30,news@19:00"
 DEFAULT_THREAD_SLOTS = "tue@14:30,sun@16:00"
@@ -206,7 +206,7 @@ class Settings:
     x_budget_monthly_usd: float = 30.0
 
     # --- Visuels ---
-    screenshots_enabled: bool = True
+    photos_enabled: bool = True          # PHOTOS_ENABLED (ancien nom : SCREENSHOTS_ENABLED)
     image_ai_enabled: bool = False
     image_model: str = "gpt-image-1"
     image_size: str = "1024x1024"
@@ -364,7 +364,8 @@ def load_settings() -> Settings:
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
-        screenshots_enabled=_env_bool("SCREENSHOTS_ENABLED", True),
+        # L'ancien réglage SCREENSHOTS_ENABLED (« une image ou pas ») vaut encore, faute du nouveau.
+        photos_enabled=_env_bool("PHOTOS_ENABLED", _env_bool("SCREENSHOTS_ENABLED", True)),
         image_ai_enabled=_env_bool("IMAGE_AI_ENABLED", False),
         image_model=_env("IMAGE_MODEL", "gpt-image-1") or "gpt-image-1",
         image_size=_env("IMAGE_SIZE", "1024x1024") or "1024x1024",

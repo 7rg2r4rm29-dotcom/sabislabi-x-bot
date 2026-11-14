@@ -173,3 +173,68 @@ def test_gm_without_factcheck_is_flagged_in_telegram_mode(settings, state):
     w, _ = _gm_writer(settings, state)
     d = w.draft_post("gm", [], [], "")
     assert d is not None and "vérification des faits indisponible" in d.reason
+
+
+# ---------------------------------------------------------------------------
+# Le compte donne la nouvelle lui-même : jamais « TechCrunch reports » (novembre 2026)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text, cited", [
+    ("TechCrunch reports that OpenAI is testing ads.", "TechCrunch reports"),
+    ("According to The Verge, it ships in May.", "According to The Verge"),
+    ("It ships in May, according to the Verge.", "according to the Verge"),
+    ("The Verge has learned that Apple is ready.", "The Verge has learned"),
+    ("Wired first reported it last week.", "Wired first reported"),
+    ("Engadget's review says it lasts 9 hours.", "Engadget's review"),
+    ("OpenAI told Reuters it would wait.", "told Reuters"),
+    ("A report from Bloomberg says Apple is ready.", "A report from Bloomberg"),
+    ("Per TechCrunch, the price is $20.", "Per TechCrunch"),
+    ("The Information reports that Meta is ready.", "The Information reports"),
+    ("Tom's Guide tested it for a week.", "Tom's Guide tested"),
+    ("the AP says the robot is ready", "the AP says"),
+    ("According to a new report, Apple is ready.", "According to a new report"),
+    ("Media reports say the robot is ready.", "Media reports"),
+    ("Reports suggest it will cost $300.", "Reports suggest"),
+    ("→ 211 points on Hacker News", "on Hacker News"),
+])
+def test_news_outlet_cited(text, cited):
+    assert filters.news_outlet_cited(text) == cited
+    assert publish_problem(text, plain=True) == f"cite un média ({cited})"
+
+
+@pytest.mark.parametrize("text", [
+    "OpenAI says it will launch in May.",
+    "The BBC will read the news with an AI voice.",          # le média est le SUJET : permis
+    "AI can now pass AP tests.",
+    "Wired headphones are back, with a camera.",
+    "We're on the verge of robot butlers.",
+    "Insiders say the price will drop.",
+    "Google said on its blog the app is free.",
+    "Slate says its truck will cost $27,000.",
+    "A new study from Stanford found it works.",
+    "An AI that writes an article in seconds.",
+    "It has the information you need.",
+    "The report, from Stanford, says it works.",
+    "At times it says no.",
+    "Bloomberg terminals now talk back.",
+    "The guardian robot watches your kids.",
+])
+def test_everyday_sentences_are_not_taken_for_a_citation(text):
+    assert filters.news_outlet_cited(text) is None
+
+
+def test_every_news_site_the_bot_reads_is_recognized_when_cited():
+    """Une source ajoutée à config/settings.json doit être connue du garde-fou."""
+    import json
+    from pathlib import Path
+    feeds = json.loads((Path(__file__).resolve().parent.parent / "config" / "settings.json")
+                       .read_text(encoding="utf-8"))["news_feeds"]
+    names = {f["name"] for f in feeds if not f.get("official")} - {"Space.com"}   # un nom de domaine : déjà refusé
+    assert names
+    for name in names:
+        assert filters.news_outlet_cited(f"According to {name}, the robot is ready."), name
+        assert filters.news_outlet_cited(f"{name} reports that the robot is ready."), name
+
+
+def test_owner_edits_are_not_checked_for_citations():
+    """✏️ Modifier : le propriétaire écrit ce qu'il veut (publish_problem sans `plain`)."""
+    assert publish_problem("TechCrunch reports that OpenAI is testing ads.") is None

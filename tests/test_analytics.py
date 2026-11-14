@@ -404,12 +404,13 @@ def test_hook_note_needs_two_posts_per_shape(an, state, fake_x):
     assert "Hook shapes" not in an.performance_notes()
 
 
-def test_screenshot_posts_are_named_as_such_in_the_notes(an, state, fake_x):
+def test_image_posts_are_named_as_such_in_the_notes(an, state, fake_x):
+    """Photos de l'actu, et avant elles captures ou cartes : des « posts with an image »."""
     _hooked_week(state, fake_x)
     an.refresh_metrics()
     notes = an.performance_notes()
-    assert "Posts with a screenshot do " in notes and "text-only posts only" in notes
-    assert "posts with an image" not in notes
+    assert "Posts with an image do " in notes and "text-only posts only" in notes
+    assert "screenshot" not in notes
 
 
 def test_performance_notes_keep_their_promised_length(an, state, fake_x):

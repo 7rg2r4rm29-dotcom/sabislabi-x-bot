@@ -330,7 +330,7 @@ class Analytics:
 
         extra = []
         f_over, f_under = self._compare(perf["by_format"], ov)
-        names = {"image": "posts with a screenshot", "poll": "polls", "text": "text-only posts"}
+        names = {"image": "posts with an image", "poll": "polls", "text": "text-only posts"}
         for r, name, st in f_over[:1]:
             extra.append(f"{names.get(name, name)} do {r:.1f}x avg impressions (n={st['count']})")
         for r, name, st in f_under[:1]:
