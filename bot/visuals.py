@@ -1,32 +1,27 @@
-"""Image des posts : la vidéo ou la photo de l'actu, prise À LA SOURCE.
+"""Image des posts, comme un compte d'alertes info : la vidéo ou la photo de l'actu, postée
+comme la sienne, et parfois une 2e image à côté (le drapeau du pays, le logo de l'entreprise).
 
-Le compte est la référence : il donne la nouvelle lui-même, comme un compte d'alertes
-info. Son image vient donc de la page officielle de l'entreprise, du labo ou de
-l'organisation qui annonce la nouvelle — JAMAIS de la page d'un média (ni sa photo, ni
-une capture de son article), jamais de X, jamais un lien dans le post.
+Le compte donne la nouvelle lui-même : l'image ne montre jamais la page, le bandeau, le
+logo ou le titre d'un autre média, jamais de X, et jamais de lien dans le post.
 
-Comment (`prepare` → `_story_media`) :
-  1. Les pages officielles de l'histoire (`source_pages`) : pour chaque actu citée
-     (celle que Claude a désignée, puis les autres), soit l'actu vient d'un flux
-     officiel (blog de Google, newsroom de Meta…) et c'est sa page ; soit c'est un
-     article de presse, et on y relève les liens du texte (`article_links`) : Claude
-     désigne celui qui mène à la page officielle de l'organisation (communiqué, billet
-     de blog, page produit — `writer.pick_official_link`). Les sites de presse, les
-     réseaux sociaux, les revues scientifiques et les boutiques ne comptent jamais
-     comme source (`is_source_url`).
-  2. La vidéo d'abord : si la page officielle publie un FICHIER vidéo (pas YouTube,
-     pas un flux en direct), il est téléchargé (200 Mo et 3 min au plus), un extrait
-     de 30 s en est tiré (ffmpeg, MP4 H.264/AAC, 1280 px au plus) et Claude en regarde
-     trois images (`writer.video_is_usable`).
-  3. Sinon la photo : celle que la page officielle déclare (og:image), avec sa ligne
-     de crédit ; crédit d'agence ou de banque d'images → refusée d'office. Téléchargée
-     (10 Mo, 30 s), remise en JPEG propre sans métadonnées, regardée par Claude
-     (`writer.photo_is_usable`).
-  4. Rien de sûr : le post part en texte seul.
-Tous les téléchargements suivent les redirections une à une : jamais vers X, jamais
-vers une adresse privée du serveur.
+Comment (`prepare_media` → `_story_media`) :
+  1. Les pages officielles de l'histoire (`source_pages`) : la page d'une actu venue d'un
+     flux officiel, ou la page vers laquelle l'article de presse renvoie (Claude désigne le
+     lien : `writer.pick_official_link`). Puis, si le propriétaire l'accepte
+     (PRESS_MEDIA_ENABLED, oui par défaut, décision du 15/11/2026), les articles eux-mêmes.
+  2. La vidéo d'abord : un FICHIER vidéo (jamais YouTube, jamais un flux en direct) →
+     extrait de 30 s (ffmpeg), trois images regardées par Claude (`writer.video_is_usable`).
+  3. Sinon la photo de la page (og:image), remise en JPEG propre, regardée par Claude
+     (`writer.photo_is_usable`) : ce dont parle le post, sans marque d'un autre média.
+  4. La 2e image (`identity_image`) : le drapeau du pays ou le logo de l'entreprise, pris
+     sur Wikimedia (fichiers libres), quand Claude juge qu'elle dit tout de suite
+     de qui ou d'où on parle (`writer.identity_plan`, vérifiée par `writer.identity_is_right`).
+     Jamais avec une vidéo (X ne mélange pas vidéo et photos).
+  5. Rien de sûr : texte seul (ou la 2e image seule).
+Tous les téléchargements suivent les redirections une à une : jamais vers X, jamais vers
+une adresse privée du serveur.
 Photo IA (OpenAI) : facultative, désactivée par défaut.
-`prepare()` ne lève jamais d'exception : (None, None) = post en texte seul.
+`prepare()` / `prepare_media()` ne lèvent jamais d'exception : (None, None) = texte seul.
 """
 from __future__ import annotations
 
@@ -616,8 +611,17 @@ def story_candidates(draft) -> list:
     return out[:MAX_PAGES_TRIED]
 
 
+def _read_cached(url: str, http_get: Callable | None, cache: dict | None) -> str:
+    if cache is not None and url in cache:
+        return cache[url]
+    html = read_page(url, http_get)
+    if cache is not None:
+        cache[url] = html
+    return html
+
+
 def source_pages(draft, writer, *, http_get: Callable | None = None, post: str = "",
-                 deadline: float | None = None) -> list[SourcePage]:
+                 deadline: float | None = None, cache: dict | None = None) -> list[SourcePage]:
     """Les pages OFFICIELLES de l'histoire du post (jamais celle d'un média) : la page d'une
     actu venue d'un flux officiel, ou la page vers laquelle l'article de presse renvoie,
     désignée par Claude parmi les liens de l'article."""
@@ -631,7 +635,7 @@ def source_pages(draft, writer, *, http_get: Callable | None = None, post: str =
         if getattr(src, "official", False) and is_source_url(url):
             target, html = url, ""
         else:
-            article = read_page(url, http_get)
+            article = _read_cached(url, http_get, cache)
             links = article_links(article, url) if article else []
             if not links:
                 if article:
@@ -651,10 +655,26 @@ def source_pages(draft, writer, *, http_get: Callable | None = None, post: str =
         if key in seen or not is_source_url(target):
             continue
         seen.add(key)
-        html = html or read_page(target, http_get)
+        html = html or _read_cached(target, http_get, cache)
         if html:
             pages.append(SourcePage(url=target, title=title, html=html, meta=page_meta(html)))
             log.info("Image : source officielle %s (pour « %s »)", target[:100], title[:60])
+    return pages
+
+
+def article_pages(draft, *, http_get: Callable | None = None, cache: dict | None = None,
+                  deadline: float | None = None) -> list[SourcePage]:
+    """Les pages des articles cités eux-mêmes (jamais X), pour en reprendre la photo ou la
+    vidéo comme un compte d'alertes info (PRESS_MEDIA_ENABLED)."""
+    pages: list[SourcePage] = []
+    for src in story_candidates(draft):
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        url = str(src.url)
+        html = _read_cached(url, http_get, cache)
+        if html:
+            pages.append(SourcePage(url=url, title=str(getattr(src, "title", "") or ""), html=html,
+                                    meta=page_meta(html)))
     return pages
 
 
@@ -958,12 +978,13 @@ def self_test() -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Quelle image pour CE post : la vidéo, sinon la photo, de la source officielle
 # ---------------------------------------------------------------------------
-def _try_video(page: SourcePage, check, tag: str, post: str, fetch_video: Callable | None) -> str | None:
+def _try_video(page: SourcePage, check, tag: str, post: str, fetch_video: Callable | None,
+               strict: bool = True) -> str | None:
     vurl = lead_video_url(page.meta, page.html, page.url)
     if not vurl:
         return None
     credit = page.credit
-    why = credit_problem(credit, page.site, page.url)
+    why = credit_problem(credit, page.site, page.url) if strict else None
     if why:
         log.info("Vidéo écartée (%s) : %s", why, page.url[:100])
         return None
@@ -1000,13 +1021,14 @@ def _try_video(page: SourcePage, check, tag: str, post: str, fetch_video: Callab
     return None
 
 
-def _try_photo(page: SourcePage, check, tag: str, n: int, post: str, fetch: Callable | None) -> str | None:
+def _try_photo(page: SourcePage, check, tag: str, n: int, post: str, fetch: Callable | None,
+               strict: bool = True) -> str | None:
     image = lead_image_url(page.meta, page.url)
     if not image:
-        log.info("Photo : la page officielle n'en déclare aucune (%s)", host_of(page.url))
+        log.info("Photo : la page n'en déclare aucune (%s)", host_of(page.url))
         return None
     credit = page.credit
-    why = credit_problem(credit, page.site, page.url)
+    why = credit_problem(credit, page.site, page.url) if strict else None
     if why:
         log.info("Photo écartée (%s) : %s", why, page.url[:100])
         return None
@@ -1029,40 +1051,235 @@ def _try_photo(page: SourcePage, check, tag: str, n: int, post: str, fetch: Call
     return None
 
 
+# ---------------------------------------------------------------------------
+# La 2e image : le drapeau du pays ou le logo de l'entreprise (Wikimedia, fichiers libres)
+# ---------------------------------------------------------------------------
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+WIKIMEDIA_UA = "news-image-tool/1.0 (generic client)"   # aucune donnée personnelle
+IDENTITY_SIZE = 1200
+IDENTITY_PROPS = {"flag": "P41", "logo": "P154"}         # Wikidata : image du drapeau, logo
+
+
+WIKIMEDIA_PAUSE_S = 1.0          # entre deux requêtes : les API de Wikimedia freinent les rafales
+_wikimedia_last = [0.0]
+
+
+def _wikimedia_json(url: str, params: dict, *, sleep=time.sleep) -> dict:
+    """Une requête aux API publiques de Wikimedia (Wikidata, Commons), à un rythme poli : une
+    pause entre deux requêtes, et un seul nouvel essai après l'attente demandée (HTTP 429)."""
+    import requests
+    for attempt in (1, 2):
+        wait = _wikimedia_last[0] + WIKIMEDIA_PAUSE_S - time.monotonic()
+        if wait > 0:
+            sleep(wait)
+        r = requests.get(url, params=params, headers={"User-Agent": WIKIMEDIA_UA}, timeout=15)
+        _wikimedia_last[0] = time.monotonic()
+        if r.status_code == 429 and attempt == 1:
+            retry = str(r.headers.get("Retry-After") or "").strip()
+            sleep(min(float(retry) if retry.isdigit() else 5.0, 15.0))
+            continue
+        r.raise_for_status()
+        return r.json()
+    return {}
+
+
+WIKIMEDIA_FILE_HOSTS = ("upload.wikimedia.org", "thumb.wikimedia.org")
+
+
+def _free_license(meta: dict) -> bool:
+    """Commons n'héberge que des fichiers libres (domaine public, CC, Apache…) ; on écarte
+    quand même tout ce qui se dirait « non libre » ou « usage loyal »."""
+    terms = " ".join(str((meta.get(k) or {}).get("value") or "") for k in ("LicenseShortName", "UsageTerms",
+                                                                         "License")).lower()
+    return bool(terms.strip()) and not any(w in terms for w in ("non-free", "nonfree", "fair use", "all rights"))
+
+
+def identity_image_url(kind: str, name: str, wd_get: Callable | None = None) -> str:
+    """L'adresse (PNG, 1200 px) du drapeau du pays ou du logo de l'entreprise `name`, prise
+    sur Wikidata / Commons, sous licence libre ("" sinon)."""
+    prop = IDENTITY_PROPS.get(kind)
+    name = (name or "").strip()
+    if not prop or not name:
+        return ""
+    get = wd_get or _wikimedia_json
+    found = get(WIKIDATA_API, {"action": "wbsearchentities", "search": name[:100], "language": "en",
+                               "uselang": "en", "type": "item", "limit": 7, "format": "json"})
+    ids = [str(e.get("id")) for e in (found.get("search") or []) if e.get("id")]
+    if not ids:
+        return ""
+    data = get(WIKIDATA_API, {"action": "wbgetentities", "ids": "|".join(ids), "props": "claims",
+                              "format": "json"})
+    entities = data.get("entities") or {}
+    for qid in ids:                                   # dans l'ordre de pertinence de la recherche
+        claims = (entities.get(qid) or {}).get("claims") or {}
+        # Le logo ou le drapeau ACTUEL : marqué « préféré » d'abord ; jamais un ancien (qui a une
+        # date de fin, P582 : le vieux « FACEBOOK » de Meta, les drapeaux d'autrefois).
+        current = [c for c in claims.get(prop) or []
+                   if c.get("rank") != "deprecated" and "P582" not in (c.get("qualifiers") or {})]
+        current.sort(key=lambda c: c.get("rank") != "preferred")
+        for claim in current:
+            fname = (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value"))
+            if not isinstance(fname, str) or not fname:
+                continue
+            info = get(COMMONS_API, {"action": "query", "titles": f"File:{fname}", "prop": "imageinfo",
+                                     "iiprop": "url|extmetadata", "iiurlwidth": IDENTITY_SIZE,
+                                     "format": "json"})
+            for page in ((info.get("query") or {}).get("pages") or {}).values():
+                ii = (page.get("imageinfo") or [{}])[0]
+                if not _free_license(ii.get("extmetadata") or {}):
+                    log.info("2e image : %s n'est pas sous licence libre, ignorée", fname)
+                    continue
+                url = str(ii.get("thumburl") or ii.get("url") or "")
+                if url.startswith("https://") and _host_in(host_of(url), WIKIMEDIA_FILE_HOSTS):
+                    return url
+        if claims.get(prop):
+            return ""                                 # la bonne entité, mais pas d'image libre
+    return ""
+
+
+def compose_identity(raw: bytes, kind: str, out: Path) -> str | None:
+    """Le drapeau ou le logo, posé sur un carré (ce qu'X montre à côté de la photo) : le
+    drapeau en entier, sans rien couper ; le logo au centre, sur un fond clair, ou sombre
+    si le logo est clair. None si c'est fait, sinon la raison."""
+    try:
+        from PIL import Image, ImageStat
+        with Image.open(io.BytesIO(raw or b"")) as im:
+            im.load()
+            art = im.convert("RGBA")
+        size = IDENTITY_SIZE
+        if kind == "flag":
+            box_w, box_h, bg = size, size, (245, 245, 245)
+        else:
+            # Un logo clair (blanc sur transparent) disparaîtrait sur du blanc : fond sombre.
+            mask = art.getchannel("A").point(lambda a: 255 if a > 128 else 0)
+            light = bool(mask.getbbox()) and ImageStat.Stat(art.convert("L"), mask=mask).mean[0] > 200
+            box_w, box_h, bg = int(size * 0.74), int(size * 0.5), ((18, 18, 18) if light else (255, 255, 255))
+        scale = min(box_w / art.width, box_h / art.height)
+        art = art.resize((max(1, round(art.width * scale)), max(1, round(art.height * scale))),
+                         Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (size, size), bg)
+        canvas.paste(art, ((size - art.width) // 2, (size - art.height) // 2), art.getchannel("A"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(out, "JPEG", quality=92)
+    except Exception as e:  # noqa: BLE001
+        _safe_unlink(out)
+        return f"image illisible ({type(e).__name__})"
+    return None
+
+
+def identity_image(kind: str, name: str, out: Path, *, wd_get: Callable | None = None,
+                   fetch: Callable | None = None) -> Path | None:
+    """Le drapeau du pays ou le logo de l'entreprise, prêt à poster. None sinon. Ne lève jamais."""
+    try:
+        url = identity_image_url(kind, name, wd_get)
+    except Exception as e:  # noqa: BLE001 — Wikimedia injoignable : pas de 2e image
+        log.info("2e image : Wikimedia indisponible (%s)", type(e).__name__)
+        return None
+    if not url:
+        log.info("2e image : pas de %s libre pour « %s »", "drapeau" if kind == "flag" else "logo", name)
+        return None
+    try:
+        raw = (fetch or fetch_image_bytes)(url)
+    except Exception as e:  # noqa: BLE001
+        log.info("2e image : téléchargement impossible (%s)", type(e).__name__)
+        return None
+    if not raw:
+        return None
+    why = compose_identity(raw, kind, out)
+    if why:
+        log.info("2e image écartée (%s) : %s", why, url[:100])
+        return None
+    return out
+
+
+def _second_image(writer, tag: str, post: str, headline: str, photo: str | None, *,
+                  wd_get: Callable | None = None, fetch: Callable | None = None) -> str | None:
+    """La 2e image que Claude juge utile (drapeau ou logo), vérifiée par Claude. None sinon."""
+    plan = getattr(writer, "identity_plan", None)
+    check = getattr(writer, "identity_is_right", None)
+    if not (callable(plan) and callable(check)):
+        return None
+    try:
+        kind, name = plan(headline, post, photo)
+    except Exception as e:  # noqa: BLE001
+        log.info("2e image : choix impossible (%s)", type(e).__name__)
+        return None
+    if kind not in IDENTITY_PROPS or not name:
+        return None
+    folder = utils.MEDIA_DIR / "photos"
+    out = folder / f"{tag}-{kind}_{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+    path = identity_image(kind, name, out, wd_get=wd_get, fetch=fetch)
+    if not path:
+        return None
+    try:
+        ok, issue = check(path, kind, name)
+    except Exception as e:  # noqa: BLE001
+        ok, issue = False, f"vérification impossible ({type(e).__name__})"
+    if ok is True:
+        log.info("2e image prête : %s de %s (%s)", "drapeau" if kind == "flag" else "logo", name, path.name)
+        return str(path)
+    log.info("2e image écartée (%s) : %s de %s", issue or "pas la bonne", kind, name)
+    _safe_unlink(path)
+    return None
+
+
 def _story_media(settings, draft, writer, tag: str, *, http_get: Callable | None = None,
-                 fetch: Callable | None = None, fetch_video: Callable | None = None) -> tuple[str | None, str | None]:
+                 fetch: Callable | None = None, fetch_video: Callable | None = None,
+                 wd_get: Callable | None = None) -> tuple[str | None, str | None, str | None]:
+    """(chemin, "video" | "photo", 2e image ou None) ou (None, None, None)."""
     photos_on = bool(getattr(settings, "photos_enabled", False))
     videos_on = bool(getattr(settings, "videos_enabled", False))
+    press_on = bool(getattr(settings, "press_media_enabled", False))
+    second_on = bool(getattr(settings, "second_image_enabled", False))
     check_photo = getattr(writer, "photo_is_usable", None)
     check_video = getattr(writer, "video_is_usable", None)
     photos_on = photos_on and callable(check_photo)
     videos_on = videos_on and callable(check_video)
     if not (photos_on or videos_on):
         log.info("Image ignorée : photos et vidéos coupées, ou aucun contrôle par Claude possible")
-        return None, None
+        return None, None, None
     texts = getattr(draft, "texts", None) or [""]
     post = str(texts[0] or "") if isinstance(texts, list) and texts else ""
     deadline = time.monotonic() + MEDIA_SEARCH_MAX_S
-    pages = source_pages(draft, writer, http_get=http_get, post=post, deadline=deadline)
+    cache: dict[str, str] = {}
+    official = source_pages(draft, writer, http_get=http_get, post=post, deadline=deadline, cache=cache)
+    # Les pages officielles d'abord (rien à craindre), puis — comme un compte d'alertes info —
+    # les articles eux-mêmes, si le propriétaire l'accepte.
+    pages = [(page, True) for page in official]
+    if press_on:
+        seen = {page.url.rstrip("/").lower() for page in official}
+        pages += [(page, False) for page in article_pages(draft, http_get=http_get, cache=cache, deadline=deadline)
+                  if page.url.rstrip("/").lower() not in seen]
     if not pages:
-        log.info("Image : aucune page officielle de la source, le post part en texte seul")
-        return None, None
+        log.info("Image : aucune page lisible pour cette histoire")
     if videos_on:
-        for page in pages:
+        for page, is_official in pages:
             if time.monotonic() > deadline:
                 break
-            path = _try_video(page, check_video, tag, post, fetch_video)
+            path = _try_video(page, check_video, tag, post, fetch_video, strict=not press_on)
             if path:
-                return path, VIDEO_KIND
+                return path, VIDEO_KIND, None
+    photo = None
+    headline = pages[0][0].title if pages else str(getattr((story_candidates(draft) or [None])[0], "title", "")
+                                                    or "")
     if photos_on:
-        for n, page in enumerate(pages, start=1):
+        for n, (page, is_official) in enumerate(pages, start=1):
             if time.monotonic() > deadline:
-                log.info("Image : recherche trop longue, le post part en texte seul")
+                log.info("Image : recherche trop longue")
                 break
-            path = _try_photo(page, check_photo, tag, n, post, fetch)
-            if path:
-                return path, PHOTO_KIND
-    return None, None
+            photo = _try_photo(page, check_photo, tag, n, post, fetch, strict=not press_on)
+            if photo:
+                headline = page.title or headline
+                break
+    second = None
+    if second_on and time.monotonic() <= deadline:
+        second = _second_image(writer, tag, post, headline, photo, wd_get=wd_get, fetch=fetch)
+    if photo:
+        return photo, PHOTO_KIND, second
+    if second:                                   # pas de photo : la 2e image seule, plutôt que rien
+        return second, PHOTO_KIND, None
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -1122,16 +1339,24 @@ def generate_ai_image(settings, prompt: str, tag: str = "post") -> Path | None:
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
-def prepare(settings, draft, writer, tag: str = "post") -> tuple[str | None, str | None]:
-    """(chemin, "video" | "photo" | "ai") ou (None, None). Ne lève jamais."""
+def prepare_media(settings, draft, writer, tag: str = "post") -> tuple[str | None, str | None, str | None]:
+    """(chemin, "video" | "photo" | "ai", 2e image ou None) ; (None, None, None) = texte seul.
+    Ne lève jamais."""
     try:
-        return _prepare(settings, draft, writer, _safe_tag(tag))
+        res = _prepare(settings, draft, writer, _safe_tag(tag))
+        return (res + (None,))[:3] if len(res) == 2 else res
     except Exception as e:  # noqa: BLE001
         log.exception("Visuel : erreur inattendue (%s), post en texte seul", e)
-        return None, None
+        return None, None, None
 
 
-def _prepare(settings, draft, writer, tag: str) -> tuple[str | None, str | None]:
+def prepare(settings, draft, writer, tag: str = "post") -> tuple[str | None, str | None]:
+    """(chemin, "video" | "photo" | "ai") ou (None, None), sans la 2e image. Ne lève jamais."""
+    path, kind, _second = prepare_media(settings, draft, writer, tag)
+    return path, kind
+
+
+def _prepare(settings, draft, writer, tag: str) -> tuple:
     if getattr(draft, "poll", None):
         log.info("Visuel ignoré : X n'accepte pas d'image sur un sondage")
         return None, None

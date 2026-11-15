@@ -1794,7 +1794,9 @@ class TestPhotoCheck:
 
     def test_the_picture_always_comes_from_the_official_page(self):
         assert "taken from the official page" in wmod.PHOTO_CHECK_PROMPT
-        assert "official video published on the page" in wmod.VIDEO_CHECK_PROMPT
+        assert "video published on the official page" in wmod.VIDEO_CHECK_PROMPT
+        for p in (wmod.PHOTO_CHECK_PROMPT, wmod.VIDEO_CHECK_PROMPT):
+            assert "posted as the account's own" in p and "the article that reported it" in p
 
     def test_long_headline_post_and_credit_are_cut(self, settings, state):
         w, llm = make_writer(settings, state, {"photo-check": {"ok": True, "issue": ""}})
@@ -1838,6 +1840,40 @@ class TestVideoCheck:
             raise RuntimeError("down")
         w3, _ = make_writer(settings, state, {"video-check": boom})
         assert w3.video_is_usable(["f.jpg"])[0] is False
+
+
+class TestIdentity:
+    def test_plan_sees_the_photo_and_answers_logo_flag_or_none(self, settings, state):
+        w, llm = make_writer(settings, state, {"identity": [{"kind": "Logo", "name": " Nvidia ", "reason": "x"},
+                                                            {"kind": "flag", "name": "Japan", "reason": ""},
+                                                            {"kind": "none", "name": "", "reason": ""}]})
+        assert w.identity_plan("Nvidia's new chip", NEWS_TEXT, "p.jpg") == ("logo", "Nvidia")
+        call = llm.calls[0]
+        assert call["label"] == "identity" and call["images"] == ["p.jpg"] and call["system"] == wmod.IDENTITY_PROMPT
+        assert "The photo that goes with it is attached." in call["user"]
+        assert w.identity_plan("Japan's robot taxis", NEWS_TEXT) == ("flag", "Japan")
+        assert "There is no photo for this post." in llm.calls[1]["user"] and not llm.calls[1].get("images")
+        assert w.identity_plan("story", "") == ("none", "")
+
+    @pytest.mark.parametrize("answer", [{"kind": "photo", "name": "x"}, {"kind": "logo", "name": ""},
+                                        {"kind": "logo", "name": "openai.com"}, None])
+    def test_plan_nonsense_or_silence_means_none(self, settings, state, answer):
+        w, _ = make_writer(settings, state, {"identity": answer} if answer else {})
+        assert w.identity_plan("story", "post") == ("none", "")
+
+    def test_check_names_what_it_must_be(self, settings, state):
+        w, llm = make_writer(settings, state, {"identity-check": [{"ok": True, "issue": ""},
+                                                                  {"ok": False, "issue": "old logo"}]})
+        assert w.identity_is_right("l.jpg", "logo", "Nvidia") == (True, "bonne image")
+        assert llm.calls[0]["user"] == "It must be the official logo of Nvidia. Is it?"
+        assert llm.calls[0]["images"] == ["l.jpg"] and llm.calls[0]["system"] == wmod.IDENTITY_CHECK_PROMPT
+        assert w.identity_is_right("f.jpg", "flag", "Japan") == (False, "old logo")
+        assert llm.calls[1]["user"] == "It must be the flag of Japan. Is it?"
+        w2, _ = make_writer(settings, state, {})
+        assert w2.identity_is_right("f.jpg", "flag", "Japan") == (False, "vérification indisponible")
+
+    def test_prompt_never_for_war_politics_or_tragedies(self):
+        assert "Never a flag or a logo for a story about war, politics, religion" in wmod.IDENTITY_PROMPT
 
 
 class TestOfficialLink:

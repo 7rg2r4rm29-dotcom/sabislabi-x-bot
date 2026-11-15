@@ -19,13 +19,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   d'alertes info, le post dit le fait directement. Jamais le nom du site, du journal ou du forum où le bot
   l'a lue (« TechCrunch reports », « according to The Verge » : refusé). Qui a fait l'annonce ou qui l'a
   dit reste nommé (« OpenAI says »).
-- **Image prise À LA SOURCE** (décision du propriétaire, 14/11/2026 : « nous sommes la référence ») :
-  un **extrait de 30 s de la vidéo officielle** de l'actu, sinon sa **photo officielle**, prises sur la
-  page de l'entreprise, du labo ou de l'université qui annonce la nouvelle. **Jamais** l'image d'un
-  journal, d'un site ou d'une autre personne, jamais une capture d'écran d'article (abandonnée le
-  14/11/2026), jamais une photo d'agence (Getty, Reuters, AP, AFP…). Vidéos : seulement des FICHIERS
-  publiés par la source ; pas YouTube (téléchargement interdit par YouTube). Aucune maquette, aucune
-  carte dessinée. Sans image sûre, le post part en texte seul.
+- **Image comme AlertesInfos** (décisions du propriétaire, 14 et 15/11/2026, exemples d'AlertesInfos à
+  l'appui) : l'image de l'actu est postée **comme la nôtre** — un extrait de 30 s de la vidéo (fichier
+  seulement, pas YouTube), sinon la photo (page officielle d'abord, puis l'article lui-même), souvent avec
+  une **2e image à côté** : le logo de l'entreprise ou le drapeau du pays (Wikimedia). Jamais une capture
+  d'écran d'article (abandonnée le 14/11), jamais le nom, le logo, le bandeau ou le filigrane d'un autre
+  média ou d'une agence SUR l'image. Le propriétaire sait que reprendre ces photos n'est pas légal à
+  proprement parler et accepte le risque de retraits ; `PRESS_MEDIA_ENABLED=false` revient aux seules
+  images officielles. Aucune maquette, aucune carte dessinée. Sans image sûre, texte seul.
 - **Mode** : `APPROVAL_MODE=auto`, donc les posts partent sans validation humaine. Telegram sert aux
   rapports et aux commandes.
 - **Historique** :
@@ -101,7 +102,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   doublée côté code par `filters.news_outlet_cited`, qui couvre toutes les sources de `news_feeds`).
 - **Jamais de lien externe** dans les posts (consigne du propriétaire, 14/11/2026 ; même un lien YouTube
   vers une vidéo officielle), ni hashtag ni @mention. 260 caractères pondérés au maximum.
-- Les images ne viennent jamais d'un article d'un autre site, journal ou personne (voir « Image »).
+- Les images ne montrent jamais la marque d'un autre média (voir « Image »).
 
 ## 4. Architecture (détails dans `DESIGN.md`)
 
@@ -119,16 +120,19 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - relecture par affirmation (`_factcheck`) ;
   - consignes : `AUDIENCE`, `INTRIGUE`, `PLAYBOOK`, `NEWS_VOICE`, `PICKS`, `TRUTH`, `PHOTO_RULES`,
     `EDITOR_PROMPT`, `FACTCHECK_PROMPT`, `PHOTO_CHECK_PROMPT`.
-- `bot/visuals.py` (image prise à la source) :
+- `bot/visuals.py` (image comme AlertesInfos) :
   - pages officielles de l'histoire (`source_pages`) : flux officiel, ou lien de l'article de presse que
-    Claude désigne (`article_links`, `is_source_url`, `Writer.pick_official_link`) ; jamais un média ;
+    Claude désigne (`article_links`, `is_source_url`, `Writer.pick_official_link`) ; puis les articles
+    eux-mêmes (`article_pages`, si `PRESS_MEDIA_ENABLED`) ;
+  - 2e image (`identity_image`, Wikidata P154 logo / P41 drapeau, l'actuel, sur Commons) choisie et
+    vérifiée par Claude (`Writer.identity_plan`, `Writer.identity_is_right`), jamais avec une vidéo ;
   - vidéo d'abord (`lead_video_url`, fichier seulement) : téléchargée (`fetch_video_file`), extrait de
     30 s par ffmpeg du paquet imageio-ffmpeg (`make_clip`), trois images regardées par Claude
     (`clip_frames`, `Writer.video_is_usable`) ; publiée par `XClient.upload_video` (envoi par morceaux) ;
   - sinon la photo de la page officielle (`lead_image_url`, `photo_credit`, `credit_problem`, JPEG
     propre, `Writer.photo_is_usable`) ;
-  - crédit d'agence : refusé d'office ; téléchargements bornés, jamais X ni une adresse privée
-    (`public_host`) ; au moindre doute, texte seul.
+  - en mode prudent (`PRESS_MEDIA_ENABLED=false`), crédit d'agence refusé d'office ; téléchargements
+    bornés, jamais X ni une adresse privée (`public_host`) ; au moindre doute, texte seul.
 - Les autres modules :
   - `bot/scheduler.py` : créneaux, posts « à chaud », 🔄 nouvelle version ;
   - `bot/approvals.py` : Telegram ;
@@ -150,7 +154,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place) ; 1273 tests au 14/11/2026.
+  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1305 tests au 15/11/2026.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;

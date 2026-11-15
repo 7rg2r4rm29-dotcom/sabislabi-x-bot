@@ -106,11 +106,14 @@ class StubApprovals:
         self.expires = 0
 
     def create_post_item(self, draft, *, slot_key, slot_date, publish_at, expires_at,
-                         image_path=None, image_kind=None):
+                         image_path=None, image_kind=None, image_path2=None):
+        meta = {"from_fallback": draft.from_fallback, "angle": draft.angle}
+        if image_path2:
+            meta["second_image"] = image_path2
         item = self.state.new_item(draft.kind, draft.texts, slot_key=slot_key, slot_date=slot_date,
                                    publish_at=iso(publish_at), expires_at=iso(expires_at),
                                    image_path=image_path, image_kind=image_kind, poll=draft.poll,
-                                   meta={"from_fallback": draft.from_fallback, "angle": draft.angle})
+                                   meta=meta)
         self.created.append(item)
         return item
 
@@ -413,8 +416,8 @@ class TestPlanSlots:
         assert item["image_path"] is None and item["image_kind"] is None
         assert state.slot_item_id("2026-10-15", "tip-1330") == item["id"]
 
-    @pytest.mark.parametrize("bad", [None, "/tmp/shot.jpg", ("/tmp/shot.jpg",), ("/tmp/a.jpg", "shot", "x"),
-                                     ["/tmp/shot.jpg", "shot"], (None, "shot"), ("", "shot")])
+    @pytest.mark.parametrize("bad", [None, "/tmp/shot.jpg", ("/tmp/shot.jpg",), ("/tmp/a.jpg", "shot", "x", "y"),
+                                     ["/tmp/shot.jpg", "shot"], (None, "shot"), ("", "shot"), (None, "photo", "/f.jpg")])
     def test_bad_visual_return_never_blocks_the_post(self, settings, state, budget, parts, clock, bad):
         parts["writer"].queues["post"] = [_shot_draft()]
         bot = make_bot(settings, state, budget, parts, visual=VisualRecorder(bad))
@@ -427,11 +430,24 @@ class TestPlanSlots:
     def test_visual_helper(self, settings, state, budget, parts, clock):
         bot = make_bot(settings, state, budget, parts)
         parts["visual"].result = ("/tmp/shot.jpg", "shot")
-        assert bot._visual(_shot_draft(), "t") == ("/tmp/shot.jpg", "shot")
-        assert bot._visual(_shot_draft(visual=None), "t") == (None, None)
-        assert bot._visual(_shot_draft(poll={"options": ["a", "b"]}), "t") == (None, None)
-        assert bot._visual(object(), "t") == (None, None)            # objet sans champ visual
+        assert bot._visual(_shot_draft(), "t") == ("/tmp/shot.jpg", "shot", None)
+        assert bot._visual(_shot_draft(visual=None), "t") == (None, None, None)
+        assert bot._visual(_shot_draft(poll={"options": ["a", "b"]}), "t") == (None, None, None)
+        assert bot._visual(object(), "t") == (None, None, None)      # objet sans champ visual
         assert parts["visual"].calls == [("tip", "t")]
+        # La 2e image (drapeau, logo) ne va qu'avec une photo : X ne mélange pas vidéo et photos.
+        parts["visual"].result = ("/tmp/p.jpg", "photo", "/tmp/flag.jpg")
+        assert bot._visual(_shot_draft(), "t") == ("/tmp/p.jpg", "photo", "/tmp/flag.jpg")
+        parts["visual"].result = ("/tmp/c.mp4", "video", "/tmp/flag.jpg")
+        assert bot._visual(_shot_draft(), "t") == ("/tmp/c.mp4", "video", None)
+
+    def test_second_image_reaches_the_item(self, settings, state, budget, parts, clock):
+        parts["writer"].queues["post"] = [_shot_draft()]
+        bot = make_bot(settings, state, budget, parts, visual=VisualRecorder(("/tmp/p.jpg", "photo", "/tmp/logo.jpg")))
+        clock(11, 0)
+        assert bot.plan_slots() == 1
+        item = parts["approvals"].created[0]
+        assert item["image_path"] == "/tmp/p.jpg" and item["meta"]["second_image"] == "/tmp/logo.jpg"
 
     @pytest.mark.parametrize("kind,mode", [("tip", "telegram"), ("news", "telegram"), ("tip", "auto"),
                                            ("news", "auto"), ("gm", "auto")])

@@ -619,7 +619,7 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             telegram = Telegram(settings.telegram_token, settings.telegram_chat_id)
         if prepare_visual is None:
             from . import visuals
-            prepare_visual = visuals.prepare
+            prepare_visual = visuals.prepare_media
         try:
             items = list(news.collect(use_x=False) or [])
         except Exception as e:  # noqa: BLE001
@@ -666,7 +666,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                        "fréquent)") if kind == "reactive" else "Claude n'a rien proposé de publiable"
                 out(f"--- {label} : {why}.")
                 continue
-            path, image_kind = prepare_visual(settings, draft, writer, f"apercu_{kind}")
+            res = prepare_visual(settings, draft, writer, f"apercu_{kind}")
+            path, image_kind, second = (*res, None)[:3] if len(res) == 2 else res
             done += 1
             out(f"--- {label} ---")
             for i, text in enumerate(draft.texts, start=1):
@@ -675,11 +676,12 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                 out("[sondage] " + " · ".join(str(o) for o in draft.poll.get("options") or []))
             out(f"{'vidéo' if image_kind == 'video' else 'photo'} : "
                 f"{path or 'aucune (le post partirait en texte seul)'}"
-                + (f" ({image_kind})" if path else ""))
+                + (f" ({image_kind})" if path else "")
+                + (f" + 2e image : {second}" if path and second else ""))
             if getattr(draft, "reason", ""):
                 out(f"pourquoi : {draft.reason}")
             if telegram is not None:
-                _send_preview(telegram, label, draft, path)
+                _send_preview(telegram, label, draft, path, second)
         out(f"=== Aperçu terminé : {done}/{len(kinds)} post(s)"
             + (" envoyé(s) sur Telegram" if telegram is not None and done else "") + ". Rien n'a été publié. ===")
         return EXIT_OK if done else EXIT_FAIL
@@ -687,7 +689,7 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
         tmp.cleanup()
 
 
-def _send_preview(telegram, label: str, draft, path: str | None) -> None:
+def _send_preview(telegram, label: str, draft, path: str | None, second: str | None = None) -> None:
     try:
         from .telegram import esc
         head = f"👀 <b>APERÇU — {esc(label)}</b> (rien n'est publié)"
@@ -696,6 +698,8 @@ def _send_preview(telegram, label: str, draft, path: str | None) -> None:
                 telegram.send_video(path, caption=head)
             else:
                 telegram.send_photo(path, caption=head)
+            if second and Path(second).is_file():
+                telegram.send_photo(second, caption=f"{head} — 2e image")
         body = "\n\n".join(esc(t) for t in draft.texts)
         poll = getattr(draft, "poll", None) or {}
         if poll.get("options"):

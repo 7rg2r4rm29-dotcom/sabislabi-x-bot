@@ -246,6 +246,35 @@ def test_missing_or_refused_image_posts_without_it(pub, state, fake_x, tmp_path)
     assert fake_x.posts[-1]["media_ids"] is None and fake_x.posts[-1]["made_with_ai"] is False
 
 
+def test_photo_and_second_image_side_by_side(pub, state, fake_x, tmp_path):
+    photo, logo = tmp_path / "p.jpg", tmp_path / "logo.jpg"
+    photo.write_bytes(b"jpg")
+    logo.write_bytes(b"jpg")
+    item = approved(state, image_path=str(photo), image_kind="photo", meta={"second_image": str(logo)})
+    assert pub.publish_due() == 1
+    assert [c[:2] for c in fake_x.calls[:2]] == [("upload", str(photo)), ("upload", str(logo))]
+    assert fake_x.posts[0]["media_ids"] == ["1000", "1001"] and item["status"] == "published"
+
+
+def test_refused_or_missing_second_image_keeps_the_photo(pub, state, fake_x, tmp_path):
+    photo, logo = tmp_path / "p.jpg", tmp_path / "logo.jpg"
+    photo.write_bytes(b"jpg")
+    logo.write_bytes(b"jpg")
+    approved(state, image_path=str(photo), image_kind="photo", meta={"second_image": str(logo)})
+    fake_x.fail_next = []
+    real_upload = fake_x.upload_image
+
+    def refuse_second(path):
+        if str(path) == str(logo):
+            raise XError("invalid", "bad media", 400)
+        return real_upload(path)
+    fake_x.upload_image = refuse_second
+    assert pub.publish_due() == 1 and fake_x.posts[0]["media_ids"] == ["1000"]
+    approved(state, texts=["other"], image_path=str(photo), image_kind="photo",
+             meta={"second_image": str(tmp_path / "gone.jpg")})
+    assert pub.publish_due() == 1 and len(fake_x.posts[-1]["media_ids"]) == 1
+
+
 def test_video_is_uploaded_as_a_video(pub, state, fake_x, tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake mp4")

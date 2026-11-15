@@ -389,9 +389,10 @@ def test_auto_mode_post_goes_out_as_text_when_claude_rejects_the_photo(feed_sett
     assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))                  # photo refusée : effacée
 
 
-def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, state, budget, clock, monkeypatch,
-                                                            web):
-    """Crédit Reuters / Getty : refusée d'office, sans même la télécharger ni la montrer à Claude."""
+def test_careful_mode_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, state, budget, clock,
+                                                                          monkeypatch, web):
+    """PRESS_MEDIA_ENABLED=false (le mode prudent) : crédit Reuters / Getty refusé d'office, sans
+    même télécharger la photo ni la montrer à Claude."""
     from bot import visuals
     from bot.config import parse_post_slots
     downloads: list[str] = []
@@ -399,6 +400,7 @@ def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, stat
     monkeypatch.setitem(SOURCES, ROBOT_TITLE, (ROBOT_SOURCE, ROBOT_PHOTO, "Jane Doe/Reuters"))
     web.pages[ROBOT_SOURCE] = _source_page(ROBOT_TITLE)
     settings = feed_settings
+    settings.press_media_enabled = False
     settings.approval_mode = "auto"
     settings.automated_label_ack = True
     settings.post_slots = parse_post_slots("tip@14:30")
@@ -415,16 +417,19 @@ def test_agency_photo_is_never_used_and_costs_no_claude_call(feed_settings, stat
     assert downloads == [] and "photo-check" not in llm.labels()
 
 
-def test_the_medias_own_photo_is_never_taken_when_there_is_no_official_page(feed_settings, state, budget,
-                                                                              clock, monkeypatch, web):
-    """L'article ne renvoie vers aucune page officielle : texte seul, et la photo du média
-    (son photographe) n'est jamais téléchargée."""
+@pytest.mark.parametrize("press_media", [True, False])
+def test_without_official_page_the_articles_photo_like_a_news_alert_account(feed_settings, state, budget, clock,
+                                                                            monkeypatch, web, press_media):
+    """L'article ne renvoie vers aucune page officielle : sa propre photo est reprise comme la
+    nôtre (choix du propriétaire, 15/11/2026) ; en mode prudent, texte seul et la photo du
+    média n'est jamais téléchargée."""
     from bot import visuals
     from bot.config import parse_post_slots
     downloads: list[str] = []
     monkeypatch.setattr(visuals, "fetch_image_bytes", lambda url: downloads.append(url) or _jpeg())
     web.pages[ROBOT_URL] = web.pages[ROBOT_URL].replace(ROBOT_SOURCE, "https://www.youtube.com/watch?v=robot")
     settings = feed_settings
+    settings.press_media_enabled = press_media
     settings.approval_mode = "auto"
     settings.automated_label_ack = True
     settings.post_slots = parse_post_slots("tip@14:30")
@@ -436,9 +441,12 @@ def test_the_medias_own_photo_is_never_taken_when_there_is_no_official_page(feed
         utils.set_clock(t)
         bot.tick()
         t += timedelta(minutes=5)
-    assert [p["text"] for p in x.posts] == [TIP] and x.posts[0]["media_ids"] is None
-    assert downloads == [] and NEWS_PHOTO not in web.requests
+    assert [p["text"] for p in x.posts] == [TIP]
     assert "source-link" not in llm.labels()                 # aucun lien possible : Claude n'est même pas appelé
+    if press_media:
+        assert downloads == [NEWS_PHOTO] and len(x.posts[0]["media_ids"]) == 1
+    else:
+        assert downloads == [] and x.posts[0]["media_ids"] is None
 
 
 def test_auto_mode_post_goes_out_with_a_clip_of_the_official_video(feed_settings, state, budget, clock,

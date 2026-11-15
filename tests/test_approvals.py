@@ -150,6 +150,27 @@ def test_card_labels_thread_poll_image_fallback(app, fake_tg, tmp_path, clock):
     assert "⚠️ Sondage + image" in fake_tg.sent[-1]["text"] and both["poll"]
 
 
+def test_photo_and_second_image_card(app, fake_tg, tmp_path):
+    photo, flag = tmp_path / "p.jpg", tmp_path / "flag.jpg"
+    photo.write_bytes(b"jpg")
+    flag.write_bytes(b"jpg")
+    d = Draft(kind="news", texts=["Japan's first robot taxis carry passengers."], reason="robotaxis")
+    item = app.create_post_item(d, slot_key="news-1900", slot_date="2026-10-16", publish_at=at(19, day=16),
+                                expires_at=at(21, day=16), image_path=str(photo), image_kind="photo",
+                                image_path2=str(flag))
+    assert [ph["path"] for ph in fake_tg.photos[-2:]] == [str(photo), str(flag)]
+    assert fake_tg.photos[-1]["caption"].endswith("2e image, à côté de la photo")
+    assert "📷 Photo de l'actu + 2e image (drapeau ou logo) jointes (au-dessus)" in fake_tg.sent[-1]["text"]
+    assert item["meta"]["second_image"] == str(flag)
+    # Avec une vidéo, jamais de 2e image (X ne mélange pas vidéo et photos).
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"mp4")
+    it2 = app.create_post_item(d, slot_key="news-1901", slot_date="2026-10-16", publish_at=at(19, day=16),
+                               expires_at=at(21, day=16), image_path=str(clip), image_kind="video",
+                               image_path2=str(flag))
+    assert "second_image" not in it2["meta"]
+
+
 def test_video_clip_card(app, fake_tg, tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake mp4")

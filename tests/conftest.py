@@ -38,6 +38,7 @@ def _env(monkeypatch, tmp_path):
     # Les photos d'actu non plus : sans résolution de nom, aucun téléchargement ne part.
     from bot import visuals
     monkeypatch.setattr(visuals, "_resolve", _no_network)
+    monkeypatch.setattr(visuals, "_wikimedia_json", _no_network)       # drapeaux et logos (Wikimedia)
     yield
     utils.set_clock(None)
 

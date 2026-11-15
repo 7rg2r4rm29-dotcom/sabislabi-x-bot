@@ -154,6 +154,66 @@ class Checker:
         return self.video_answer
 
 
+class IdentityChecker(Checker):
+    """Checker + le choix et la vérification de la 2e image (drapeau, logo)."""
+
+    def __init__(self, *answers, plan=("none", ""), identity=(True, "ok"), **kw) -> None:
+        super().__init__(*answers, **kw)
+        self.plan, self.identity = plan, identity
+        self.plans: list[tuple] = []
+        self.identity_checks: list[tuple] = []
+
+    def identity_plan(self, headline, post, photo=None):
+        self.plans.append((headline, post, photo))
+        return self.plan
+
+    def identity_is_right(self, path, kind, name):
+        self.identity_checks.append((Path(path), kind, name))
+        return self.identity
+
+
+def png_logo(color=(10, 10, 10, 255), size=(600, 200)) -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    im = Image.new("RGBA", size, (0, 0, 0, 0))
+    im.paste(Image.new("RGBA", (size[0] - 40, size[1] - 40), color), (20, 20))
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Logo.svg/1200px-Logo.svg.png"
+FLAG_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9e/Flag.svg/1200px-Flag.svg.png"
+
+
+class Wikimedia:
+    """Remplace les API de Wikidata et Commons : une entreprise (OpenAI, avec un logo) et un
+    pays (le Japon, avec un drapeau), et les licences de leurs fichiers."""
+
+    def __init__(self, license_value="pd", short="Public domain") -> None:
+        self.calls: list[dict] = []
+        self.license = {"License": {"value": license_value}, "LicenseShortName": {"value": short}}
+
+    def __call__(self, url, params):
+        self.calls.append(dict(params))
+        action = params.get("action")
+        if action == "wbsearchentities":
+            found = {"openai": ["Q1", "Q21708200"], "japan": ["Q17"], "meta platforms": ["Q380"]}
+            return {"search": [{"id": q} for q in found.get(params["search"].lower(), [])]}
+        if action == "wbgetentities":
+            claims = {"Q1": {}, "Q21708200": {"P154": [
+                          {"rank": "normal", "qualifiers": {"P582": []},
+                           "mainsnak": {"datavalue": {"value": "OpenAI old logo.svg"}}},
+                          {"rank": "normal", "mainsnak": {"datavalue": {"value": "OpenAI 2019 logo.svg"}}},
+                          {"rank": "preferred", "mainsnak": {"datavalue": {"value": "OpenAI logo.svg"}}}]},
+                      "Q17": {"P41": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "Flag of Japan.svg"}}}]},
+                      "Q380": {"P154": [{"rank": "deprecated", "mainsnak": {"datavalue": {"value": "Old.svg"}}}]}}
+            return {"entities": {q: {"claims": claims.get(q, {})} for q in params["ids"].split("|")}}
+        if action == "query":
+            url = FLAG_URL if "Flag" in params["titles"] else LOGO_URL
+            return {"query": {"pages": {"1": {"imageinfo": [{"thumburl": url, "extmetadata": self.license}]}}}}
+        raise AssertionError(params)
+
+
 def pages_world() -> dict[str, str]:
     """Le web simulé : TC et The Verge renvoient vers la page officielle d'OpenAI."""
     return {TC: page(TITLES[TC], TC_PHOTO, "OpenAI", "TechCrunch",
@@ -184,6 +244,7 @@ def images(monkeypatch):
 
 
 FFMPEG = visuals.ffmpeg_exe()
+REAL_WIKIMEDIA_JSON = visuals._wikimedia_json     # gardée avant que tests/conftest.py ne la bloque
 needs_ffmpeg = pytest.mark.skipif(not FFMPEG, reason="ffmpeg absent (paquet imageio-ffmpeg)")
 
 
@@ -736,64 +797,75 @@ class TestStoryCandidates:
 
 
 class TestStoryMedia:
-    def run(self, settings, draft, checker, web=None, images=None, videos=None, tag="news_2026-11-14"):
+    def run(self, settings, draft, checker, web=None, images=None, videos=None, tag="news_2026-11-14", wd=None):
         return visuals._story_media(settings, draft, checker, tag, http_get=web or Web(pages_world()),
                                     fetch=images or Images({BLOG_PHOTO: jpeg(fmt="PNG"), META_PHOTO: jpeg(),
-                                                            LAB_PHOTO: jpeg(), TC_PHOTO: jpeg()}),
-                                    fetch_video=videos or Videos())
+                                                            LAB_PHOTO: jpeg(), TC_PHOTO: jpeg(),
+                                                            LOGO_URL: png_logo(), FLAG_URL: png_logo((200, 0, 0, 255))}),
+                                    fetch_video=videos or Videos(), wd_get=wd or Wikimedia())
 
-    def test_the_photo_comes_from_the_official_page_never_from_the_article(self, settings):
+    def test_the_official_page_comes_first(self, settings):
         imgs, checker = Images({TC_PHOTO: jpeg(), BLOG_PHOTO: jpeg(fmt="PNG")}), Checker()
-        path, kind = self.run(settings, photo_draft(), checker, images=imgs)
-        assert kind == "photo" and Path(path).is_file() and imgs.urls == [BLOG_PHOTO]
+        path, kind, second = self.run(settings, photo_draft(), checker, images=imgs)
+        assert kind == "photo" and Path(path).is_file() and imgs.urls == [BLOG_PHOTO] and second is None
         assert Path(path).parent == utils.MEDIA_DIR / "photos" and Path(path).name.startswith("news_2026-11-14_")
         call = checker.calls[0]
         assert call["exists"] and call["headline"] == TITLES[TC] and call["credit"] == "" and call["official"]
         assert call["post"] == "ChatGPT can now shop for you."
 
-    def test_text_only_when_the_article_leads_to_no_official_page(self, settings):
+    def test_otherwise_the_articles_own_photo_like_a_news_alert_account(self, settings):
+        """Pas de page officielle : la photo de l'article est reprise, comme la sienne (choix du
+        propriétaire, 15/11/2026) — tant que Claude n'y voit aucune marque d'un autre média."""
         imgs = Images({TC_PHOTO: jpeg()})
-        assert self.run(settings, photo_draft(), Checker(official=()), images=imgs) == (None, None)
-        assert imgs.urls == []                              # la photo de l'article n'est jamais prise
+        path, kind, _ = self.run(settings, photo_draft(), Checker(official=()), images=imgs)
+        assert kind == "photo" and imgs.urls == [TC_PHOTO]
+
+    def test_never_the_articles_photo_when_the_owner_says_no(self, settings):
+        settings.press_media_enabled = False
+        imgs = Images({TC_PHOTO: jpeg()})
+        assert self.run(settings, photo_draft(), Checker(official=()), images=imgs) == (None, None, None)
+        assert imgs.urls == []
+
+    def test_agency_credit_only_blocks_in_the_careful_mode(self, settings):
+        world = pages_world()
+        world[BLOG] = page(TITLES[BLOG], BLOG_PHOTO, "Jane Doe/Getty Images", "OpenAI")
+        imgs = Images({BLOG_PHOTO: jpeg()})
+        assert self.run(settings, photo_draft(), Checker(), web=Web(world), images=imgs)[1] == "photo"
+        settings.press_media_enabled = False
+        imgs2, checker = Images({BLOG_PHOTO: jpeg()}), Checker()
+        assert self.run(settings, photo_draft(), checker, web=Web(world), images=imgs2) == (None, None, None)
+        assert imgs2.urls == [] and checker.calls == []
 
     def test_university_photo_with_its_own_credit(self, settings):
         checker = Checker()
-        path, kind = self.run(settings, photo_draft(LAB, cited=(LAB,), official=(LAB,)), checker)
+        path, kind, _ = self.run(settings, photo_draft(LAB, cited=(LAB,), official=(LAB,)), checker)
         assert kind == "photo" and checker.calls[0]["credit"] == "Cecilie Ryberg / Aarhus University"
 
-    def test_agency_photo_on_the_official_page_is_refused_without_download(self, settings):
-        world = pages_world()
-        world[BLOG] = page(TITLES[BLOG], BLOG_PHOTO, "Jane Doe/Getty Images", "OpenAI")
-        imgs, checker = Images({BLOG_PHOTO: jpeg()}), Checker()
-        assert self.run(settings, photo_draft(), checker, web=Web(world), images=imgs) == (None, None)
-        assert imgs.urls == [] and checker.calls == []
-
-    def test_photos_disabled(self, settings):
+    def test_photos_and_videos_disabled(self, settings):
         settings.photos_enabled = settings.videos_enabled = False
         w = Web(pages_world())
-        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None) and w.urls == []
+        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None, None) and w.urls == []
 
     def test_never_used_without_claudes_look(self, settings):
         imgs = Images({BLOG_PHOTO: jpeg()})
-        assert self.run(settings, photo_draft(), object(), images=imgs) == (None, None)
+        assert self.run(settings, photo_draft(), object(), images=imgs) == (None, None, None)
         assert imgs.urls == []
 
     @pytest.mark.parametrize("answer", [(False, "blurry"), ("yes", ""), (1, ""), RuntimeError("API down")])
     def test_text_only_unless_claude_clearly_says_yes(self, settings, answer):
-        assert self.run(settings, photo_draft(), Checker(answer)) == (None, None)
+        assert self.run(settings, photo_draft(), Checker(answer)) == (None, None, None)
         assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))
 
-    def test_refused_photo_is_deleted_and_the_next_official_page_tried(self, settings):
+    def test_refused_photo_is_deleted_and_the_next_page_tried(self, settings):
         checker = Checker((False, "a logo only"), (True, "ok"))
-        draft = photo_draft(TC, cited=(TC, LAB), official=(LAB,))
-        path, kind = self.run(settings, draft, checker)
-        assert kind == "photo" and len(checker.calls) == 2
+        path, kind, _ = self.run(settings, photo_draft(TC, cited=(TC,)), checker)
+        assert kind == "photo" and len(checker.calls) == 2              # la page officielle, puis l'article
         assert not checker.calls[0]["path"].exists() and Path(path) == checker.calls[1]["path"]
 
     def test_search_is_bounded_in_time(self, settings, monkeypatch):
         monkeypatch.setattr(visuals, "MEDIA_SEARCH_MAX_S", -1)
         w = Web(pages_world())
-        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None) and w.urls == []
+        assert self.run(settings, photo_draft(), Checker(), web=w) == (None, None, None) and w.urls == []
 
     def test_old_photos_are_cleaned_up(self, settings, monkeypatch):
         monkeypatch.setattr(visuals, "PHOTOS_KEEP", 2)
@@ -804,13 +876,15 @@ class TestStoryMedia:
         self.run(settings, photo_draft(), Checker())
         assert len(list(folder.iterdir())) == 2
 
-    # --- La vidéo officielle passe avant la photo -------------------------------------
+    # --- La vidéo passe avant la photo ------------------------------------------------
     @needs_ffmpeg
     def test_official_video_clip_comes_first(self, settings, tmp_path):
         vids = Videos({META_VIDEO: make_video(tmp_path / "src.mp4", seconds=4).read_bytes()})
-        checker = Checker()
-        path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker, videos=vids)
+        checker = IdentityChecker(plan=("logo", "Meta Platforms"))
+        path, kind, second = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker,
+                                      videos=vids)
         assert kind == "video" and Path(path).suffix == ".mp4" and Path(path).parent == utils.MEDIA_DIR / "videos"
+        assert second is None and checker.plans == []        # jamais de 2e image avec une vidéo
         assert vids.urls == [META_VIDEO] and checker.calls == []           # la photo n'a pas servi
         call = checker.video_calls[0]
         assert len(call["frames"]) == 3 and call["exist"] and call["headline"] == TITLES[META]
@@ -822,15 +896,15 @@ class TestStoryMedia:
     def test_refused_video_falls_back_to_the_photo(self, settings, tmp_path):
         vids = Videos({META_VIDEO: make_video(tmp_path / "src.mp4").read_bytes()})
         checker = Checker(video=(False, "a TV news report"))
-        path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker, videos=vids)
+        path, kind, _ = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker, videos=vids)
         assert kind == "photo" and len(checker.video_calls) == 1
         assert not list((utils.MEDIA_DIR / "videos").glob("*.mp4"))
 
     def test_video_download_failure_or_unreadable_file_falls_back_to_the_photo(self, settings):
         for vids in (Videos(), Videos({META_VIDEO: b"not a video at all"})):
             checker = Checker()
-            path, kind = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker,
-                                  videos=vids)
+            path, kind, _ = self.run(settings, photo_draft(META, cited=(META,), official=(META,)), checker,
+                                     videos=vids)
             assert kind == "photo" and checker.video_calls == []
 
     def test_videos_disabled_or_without_ffmpeg(self, settings, monkeypatch):
@@ -844,13 +918,44 @@ class TestStoryMedia:
                         videos=vids)[1] == "photo"
         assert vids.urls == []
 
-    def test_agency_credit_also_blocks_the_video(self, settings):
+    def test_agency_credit_blocks_the_video_in_the_careful_mode(self, settings):
+        settings.press_media_enabled = False
         world = pages_world()
         world[META] = page(TITLES[META], META_PHOTO, "Reuters", "Meta Newsroom", video=META_VIDEO)
         vids = Videos({META_VIDEO: b"x"})
         assert self.run(settings, photo_draft(META, cited=(META,), official=(META,)), Checker(), web=Web(world),
-                        videos=vids) == (None, None)
+                        videos=vids) == (None, None, None)
         assert vids.urls == []
+
+    # --- La 2e image : drapeau ou logo, à côté de la photo -------------------------------
+    def test_photo_and_logo_side_by_side(self, settings):
+        checker = IdentityChecker(plan=("logo", "OpenAI"))
+        path, kind, second = self.run(settings, photo_draft(), checker)
+        assert kind == "photo" and second and Path(second).is_file() and Path(second).name.endswith(".jpg")
+        assert "-logo_" in Path(second).name
+        assert checker.plans == [(TITLES[TC], "ChatGPT can now shop for you.", path)]   # Claude voit la photo
+        assert checker.identity_checks == [(Path(second), "logo", "OpenAI")]
+        from PIL import Image
+        with Image.open(second) as im:
+            assert im.size == (visuals.IDENTITY_SIZE, visuals.IDENTITY_SIZE)
+
+    def test_no_photo_then_the_flag_or_logo_alone_rather_than_nothing(self, settings):
+        checker = IdentityChecker((False, "blurry"), plan=("flag", "Japan"))
+        path, kind, second = self.run(settings, photo_draft(), checker)
+        assert kind == "photo" and "-flag_" in Path(path).name and second is None
+        assert checker.plans[0][2] is None                                 # pas de photo à montrer
+
+    @pytest.mark.parametrize("plan, verdict", [(("none", ""), (True, "")), (("logo", "OpenAI"), (False, "wrong logo"))])
+    def test_no_second_image_when_claude_says_none_or_refuses_it(self, settings, plan, verdict):
+        checker = IdentityChecker(plan=plan, identity=verdict)
+        path, kind, second = self.run(settings, photo_draft(), checker)
+        assert kind == "photo" and second is None
+        assert not list((utils.MEDIA_DIR / "photos").glob("*-logo_*"))
+
+    def test_second_image_can_be_turned_off(self, settings):
+        settings.second_image_enabled = False
+        checker = IdentityChecker(plan=("logo", "OpenAI"))
+        assert self.run(settings, photo_draft(), checker)[2] is None and checker.plans == []
 
 
 # ---------------------------------------------------------------------------
@@ -1158,19 +1263,21 @@ class TestPhotoCheckByClaude:
         llm = FakeLLM({"source-link": {"pick": 1, "reason": "billet de blog d'OpenAI"},
                        "photo-check": {"ok": False, "issue": "Getty Images watermark"}})
         assert visuals.prepare(settings, photo_draft(), Writer(settings, llm, state), "t") == (None, None)
-        assert llm.labels() == ["source-link", "photo-check"]
-        link_call, photo_call = llm.calls
+        # La page officielle d'abord, puis la photo de l'article lui-même, puis le choix de la 2e image.
+        assert llm.labels() == ["source-link", "photo-check", "photo-check", "identity"]
+        link_call, photo_call = llm.calls[:2]
         assert f"[1] launched a new wallet feature — {BLOG}" in link_call["user"]
         assert "x.com" not in link_call["user"] and "businessinsider" not in link_call["user"]
         assert len(photo_call["images"]) == 1 and Path(photo_call["images"][0]).suffix == ".jpg"
         assert TITLES[TC] in photo_call["user"] and "ChatGPT can now shop for you." in photo_call["user"]
-        assert images.urls == [BLOG_PHOTO]
+        assert images.urls == [BLOG_PHOTO, TC_PHOTO]
 
     def test_no_answer_means_no_photo(self, settings, state, web, images):
         from bot.writer import Writer
         from tests.fakes import FakeLLM
         assert visuals.prepare(settings, photo_draft(), Writer(settings, FakeLLM({}), state), "t") == (None, None)
-        assert images.urls == []
+        assert images.urls == [TC_PHOTO]                     # regardée, refusée faute de réponse, effacée
+        assert not list((utils.MEDIA_DIR / "photos").glob("*.jpg"))
 
     def test_llm_builds_an_image_block(self, tmp_path):
         from PIL import Image
@@ -1180,3 +1287,103 @@ class TestPhotoCheckByClaude:
         b = _image_block(p)
         assert b["type"] == "image" and b["source"]["media_type"] == "image/jpeg" and b["source"]["data"]
         assert _image_block(tmp_path / "nonexistent.png") is None
+
+
+# ---------------------------------------------------------------------------
+# La 2e image : Wikimedia (domaine public seulement) et la mise en carré
+# ---------------------------------------------------------------------------
+class TestIdentityImage:
+    def test_logo_and_flag_urls(self):
+        wd = Wikimedia()
+        assert visuals.identity_image_url("logo", "OpenAI", wd) == LOGO_URL
+        assert visuals.identity_image_url("flag", "Japan", wd) == FLAG_URL
+        search = [c for c in wd.calls if c["action"] == "wbsearchentities"]
+        assert search[0]["search"] == "OpenAI" and search[0]["language"] == "en"
+        query = [c for c in wd.calls if c["action"] == "query"]
+        assert query[0]["titles"] == "File:OpenAI logo.svg" and query[0]["iiurlwidth"] == visuals.IDENTITY_SIZE
+
+    def test_free_licenses_only(self):
+        for lic, short in (("cc-by-sa-4.0", "CC BY-SA 4.0"), ("", "Apache License 2.0"), ("cc0", "CC0")):
+            assert visuals.identity_image_url("logo", "OpenAI", Wikimedia(lic, short)) == LOGO_URL, short
+        for lic, short in (("", "Non-free logo"), ("", "Fair use"), ("", "")):
+            assert visuals.identity_image_url("logo", "OpenAI", Wikimedia(lic, short)) == "", short
+
+    def test_thumbnails_now_come_from_thumb_wikimedia(self):
+        class Thumb(Wikimedia):
+            def __call__(self, url, params):
+                res = super().__call__(url, params)
+                if params.get("action") == "query":
+                    res["query"]["pages"]["1"]["imageinfo"][0]["thumburl"] = (
+                        "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a4/N.svg/1280px-N.svg.png?utm_source=x")
+                return res
+        assert visuals.identity_image_url("logo", "OpenAI", Thumb()).startswith("https://thumb.wikimedia.org/")
+
+    @pytest.mark.parametrize("kind, name", [("logo", "Meta Platforms"), ("logo", "Nobody"), ("flag", "OpenAI"),
+                                            ("photo", "OpenAI"), ("logo", "")])
+    def test_nothing_usable(self, kind, name):
+        assert visuals.identity_image_url(kind, name, Wikimedia()) == ""   # logo retiré, inconnu, mauvais type…
+
+    def test_never_an_address_outside_wikimedia_uploads(self):
+        class Elsewhere(Wikimedia):
+            def __call__(self, url, params):
+                res = super().__call__(url, params)
+                if params.get("action") == "query":
+                    res["query"]["pages"]["1"]["imageinfo"][0]["thumburl"] = "https://evil.example/x.png"
+                return res
+        assert visuals.identity_image_url("logo", "OpenAI", Elsewhere()) == ""
+
+    def test_square_with_the_whole_flag_or_the_logo_centered(self, tmp_path):
+        from PIL import Image
+        flag = visuals.identity_image("flag", "Japan", tmp_path / "flag.jpg", wd_get=Wikimedia(),
+                                      fetch=Images({FLAG_URL: png_logo((200, 0, 0, 255), (900, 600))}))
+        with Image.open(flag) as im:
+            assert im.size == (1200, 1200)
+            assert im.getpixel((600, 600))[0] > 150 and im.getpixel((600, 10)) == (245, 245, 245)  # rien de coupé
+        dark = visuals.identity_image("logo", "OpenAI", tmp_path / "logo.jpg", wd_get=Wikimedia(),
+                                      fetch=Images({LOGO_URL: png_logo((10, 10, 10, 255))}))
+        with Image.open(dark) as im:
+            assert sum(im.getpixel((5, 5))) > 740                          # logo foncé : fond blanc
+        light = visuals.identity_image("logo", "OpenAI", tmp_path / "logo2.jpg", wd_get=Wikimedia(),
+                                       fetch=Images({LOGO_URL: png_logo((250, 250, 250, 255))}))
+        with Image.open(light) as im:
+            assert sum(im.getpixel((5, 5))) < 80                           # logo blanc : fond sombre
+
+    def test_failures_mean_no_second_image(self, tmp_path):
+        def down(url, params):
+            raise ConnectionError("down")
+        assert visuals.identity_image("logo", "OpenAI", tmp_path / "a.jpg", wd_get=down) is None
+        assert visuals.identity_image("logo", "OpenAI", tmp_path / "b.jpg", wd_get=Wikimedia(),
+                                      fetch=Images({})) is None
+        assert visuals.identity_image("logo", "OpenAI", tmp_path / "c.jpg", wd_get=Wikimedia(),
+                                      fetch=Images({LOGO_URL: b"junk"})) is None
+        assert not list(tmp_path.iterdir())
+
+    def test_tests_never_reach_wikimedia(self, tmp_path):
+        assert visuals.identity_image("logo", "OpenAI", tmp_path / "a.jpg") is None
+
+
+class TestWikimediaPoliteness:
+    def test_pause_between_requests_and_one_retry_after_429(self, monkeypatch):
+        import requests
+
+        class Resp:
+            def __init__(self, status, headers=None):
+                self.status_code, self.headers = status, headers or {}
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise requests.HTTPError(str(self.status_code))
+
+            def json(self):
+                return {"ok": True}
+        answers = [Resp(429, {"Retry-After": "3"}), Resp(200), Resp(200)]
+        agents: list[str] = []
+        monkeypatch.setattr(requests, "get", lambda url, params=None, headers=None, timeout=None:
+                            agents.append(headers["User-Agent"]) or answers.pop(0))
+        monkeypatch.setattr(visuals, "_wikimedia_last", [0.0])
+        sleeps: list[float] = []
+        url = "https://www.wikidata.org/w/api.php"
+        assert REAL_WIKIMEDIA_JSON(url, {"a": 1}, sleep=sleeps.append) == {"ok": True}
+        assert REAL_WIKIMEDIA_JSON(url, {"a": 2}, sleep=sleeps.append) == {"ok": True}
+        assert sleeps[0] == 3.0 and len(sleeps) == 3            # l'attente demandée, puis deux pauses polies
+        assert agents == [visuals.WIKIMEDIA_UA] * 3 and "generic client" in visuals.WIKIMEDIA_UA

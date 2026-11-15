@@ -112,33 +112,32 @@ recommence jamais deux posts de suite par les mêmes mots.
 
 S'il n'y a rien d'assez fort, le créneau est sauté : mieux vaut pas de post qu'un post tiède.
 
-**L'image : prise à la source, comme un compte d'alertes info.** Plus de capture d'écran d'article
-(depuis le 14 novembre 2026) : montrer la page d'un autre média, c'est dire « ce sont eux qui
-informent ». Nous sommes la référence : l'image vient **de la source** de la nouvelle, c'est-à-dire la
-page officielle de l'entreprise, du labo ou de l'université qui l'annonce. **Jamais** de la page d'un
-journal, d'un site ou d'une autre personne.
+**L'image : comme un compte d'alertes info.** Plus de capture d'écran d'article (depuis le 14 novembre
+2026). Comme AlertesInfos, le bot poste l'image de l'actu **comme la sienne** (choix du propriétaire, 15
+novembre 2026) :
 
-- Pour trouver la source, le bot ouvre l'article où il a lu l'actu, y repère les liens, et Claude désigne
-  celui qui mène à la page officielle (le communiqué, le billet de blog, la page du produit). Les sites
-  de presse, les réseaux sociaux, YouTube, les revues scientifiques et les boutiques ne comptent jamais
-  comme source. Si l'actu vient directement d'un flux officiel (Google, Meta, OpenAI…), c'est sa page.
-- **D'abord la vidéo** : si la page officielle publie un fichier vidéo, le bot en prend **les 30
-  premières secondes** et les met directement dans le post (comme une vidéo filmée par toi : pas de
-  lien). Les vidéos YouTube ne sont pas utilisées : YouTube interdit de les télécharger, et un lien
-  dans le post est exclu.
-- **Sinon la photo** officielle de cette page, avec sa ligne de crédit.
-- **Jamais une photo d'agence** (Getty, Reuters, AP, AFP…) ni de banque d'images : ces images
-  appartiennent à quelqu'un qui peut faire retirer le post, et des retraits répétés peuvent faire
-  suspendre un compte.
-- Avant de servir, **Claude regarde** la photo, ou trois images de l'extrait : elle doit montrer ce dont
-  parle le post, sans logo ni titre d'un média, sans être une capture de page ni un reportage télé.
-- Si rien ne convient, ou si la source n'est pas trouvable (certains sites bloquent les robots, et le
-  bot ne force jamais un blocage), le post part **en texte seul** : jamais une image douteuse.
+- **La vidéo d'abord** : si la page officielle de l'actu (le blog de l'entreprise, le communiqué du labo)
+  ou l'article publie un fichier vidéo, le bot en prend **les 30 premières secondes** et les met
+  directement dans le post. Pas YouTube : YouTube interdit de télécharger ses vidéos, et un lien dans le
+  post est exclu.
+- **Sinon la photo** de l'actu : d'abord celle de la page officielle, sinon celle de l'article (la
+  personne, le produit, la scène).
+- **Souvent une 2e image à côté**, qui dit tout de suite de qui ou d'où on parle : **le logo de
+  l'entreprise** (OpenAI, NVIDIA, Meta…) ou **le drapeau du pays** (un robot japonais → le drapeau du
+  Japon). Claude décide si elle sert, et vérifie que c'est le bon logo ou le bon drapeau, actuel. Ces
+  logos et drapeaux viennent de Wikimedia (fichiers libres). Jamais de 2e image avec une vidéo : X ne
+  mélange pas vidéo et photos.
+- Avant de servir, **Claude regarde** chaque image : elle montre ce dont parle le post, sans le nom, le
+  logo, le bandeau ou le filigrane d'un autre média ou d'une agence, sans être une capture de page.
+- Rien de sûr : la 2e image seule (le logo), sinon le post part **en texte seul**.
 - Formats : vidéo MP4 (1280 px au plus, avec le son), photo JPEG (2048 px au plus), sans les
   informations cachées du fichier (appareil, lieu).
 - Un sondage n'a pas d'image (X ne le permet pas).
-- Bon à savoir : même officielle, une image reste celle de quelqu'un d'autre. Si une entreprise s'en
-  plaignait un jour, X te préviendrait : il suffit alors de supprimer le post concerné.
+- **Le risque, à connaître** : reprendre la photo d'un article sans autorisation n'est pas légal à
+  proprement parler (droit d'auteur), mais c'est toléré et très répandu. Le risque concret n'est pas un
+  procès : c'est qu'un photographe ou une agence demande à X de retirer un post, et qu'à force de
+  retraits X suspende le compte. Si ça arrivait, `PRESS_MEDIA_ENABLED=false` (section 10) revient aux
+  seules images officielles, et il suffit de supprimer le post concerné.
 
 - **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 2 ou 3 contenus
   dans la journée.
@@ -355,7 +354,9 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
 | `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler |
 | `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
-| `VIDEOS_ENABLED` | `true` | `false` = jamais d'extrait vidéo : seulement la photo officielle |
+| `VIDEOS_ENABLED` | `true` | `false` = jamais d'extrait vidéo : seulement des photos |
+| `PRESS_MEDIA_ENABLED` | `true` | reprendre la photo ou la vidéo de l'article, comme un compte d'alertes info ; `false` = seulement les images des pages officielles (le mode prudent) |
+| `SECOND_IMAGE_ENABLED` | `true` | la 2e image à côté de la photo : logo de l'entreprise ou drapeau du pays |
 | `PHOTOS_ENABLED` | `true` | `false` = aucune photo (l'ancien nom `SCREENSHOTS_ENABLED` marche encore) ; avec `VIDEOS_ENABLED=false`, tous les posts partent en texte seul |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
@@ -378,10 +379,10 @@ science et tech ; `"filter": "tech"` ne garde d'un flux généraliste que ce qui
   propre et tire un extrait d'une vidéo d'essai).
 - Aperçu sans publier : `python -m bot.main --preview [tip,news,thread,reactive]` ; chiffres :
   `python -m bot.main --report`.
-- Image de l'actu : `bot/visuals.py` (page officielle trouvée via les liens de l'article, vidéo en
-  fichier → extrait de 30 s par ffmpeg (paquet imageio-ffmpeg), sinon photo ; crédit vérifié,
-  téléchargements bornés, regard de Claude). Garde-fou « on donne la nouvelle » :
-  `filters.news_outlet_cited`.
+- Image de l'actu : `bot/visuals.py` (page officielle trouvée via les liens de l'article, puis
+  l'article lui-même ; vidéo en fichier → extrait de 30 s par ffmpeg (paquet imageio-ffmpeg), sinon
+  photo ; 2e image logo / drapeau via Wikidata et Commons ; téléchargements bornés, regard de Claude).
+  Garde-fou « on donne la nouvelle » : `filters.news_outlet_cited`.
 - Rédaction en deux temps : `bot/writer.py` (`_pick` : le choix de l'histoire sur les titres ;
   `_read_articles` + `sources.fetch_article_text` : le texte des articles ; puis rédaction et relecture).
 - Scripts d'installation : `deploy/` (testés dans `tests/test_deploy_scripts.py`).

@@ -235,7 +235,8 @@ class Approvals:
     # ------------------------------------------------------------------
     def create_post_item(self, draft, *, slot_key: str | None, slot_date: str | None,
                          publish_at: datetime, expires_at: datetime,
-                         image_path: str | None = None, image_kind: str | None = None) -> dict:
+                         image_path: str | None = None, image_kind: str | None = None,
+                         image_path2: str | None = None) -> dict:
         now = now_local()
         sources = []
         for s in getattr(draft, "sources", None) or []:
@@ -252,6 +253,8 @@ class Approvals:
             "from_fallback": bool(draft.from_fallback),
             "scheduled_at": iso(publish_at),
         }
+        if image_path and image_path2 and image_kind == "photo":
+            meta["second_image"] = image_path2          # à côté de la photo : drapeau ou logo
         fields: dict[str, Any] = {
             "status": "awaiting",
             "publish_at": iso(publish_at),
@@ -315,6 +318,9 @@ class Approvals:
                 emoji, label = self._label(item)
                 what = IMAGE_KINDS_FR.get(str(item.get("image_kind") or ""), "image")
                 self._send_media(path, f"{emoji} {esc(label)} — {what} jointe à ce post")
+                second = str((item.get("meta") or {}).get("second_image") or "")
+                if second and Path(second).is_file():
+                    self._send_media(second, f"{emoji} {esc(label)} — 2e image, à côté de la photo")
             text, buttons = self._render(item)
             mid = self.tg.send(text, buttons=buttons or None, silent=silent)
             if mid is None:
@@ -451,6 +457,8 @@ class Approvals:
                 lines.append("🎨 Image IA jointe (photo au-dessus, étiquette « Made with AI »)")
             elif item.get("image_kind") == "video":
                 lines.append("🎬 Extrait de la vidéo officielle de l'actu joint (au-dessus)")
+            elif item.get("image_kind") == "photo" and meta.get("second_image"):
+                lines.append("📷 Photo de l'actu + 2e image (drapeau ou logo) jointes (au-dessus)")
             elif item.get("image_kind") == "photo":
                 lines.append("📷 Photo de l'actu jointe (au-dessus)")
             elif item.get("image_kind") == "shot":
@@ -972,8 +980,13 @@ class Approvals:
             return
         path = getattr(result, "image_path", None) or None
         kind = (getattr(result, "image_kind", None) or None) if path else None
+        second = (getattr(result, "image_path2", None) or None) if path and kind == "photo" else None
         item["image_path"], item["image_kind"] = path, kind
         self.state.update_item(item["id"], image_path=path, image_kind=kind)
+        if second:
+            meta["second_image"] = second
+        else:
+            meta.pop("second_image", None)
         meta.pop("card", None)        # ancien format (carte dessinée) : n'a plus de sens
         if path and self.tg is not None and Path(path).is_file():
             try:

@@ -294,7 +294,19 @@ class Publisher:
         except OSError as e:
             log.warning("Item %s : image illisible (%s), publication sans image", item["id"], e)
             return [], False
-        return [str(media_id)], item.get("image_kind") == "ai"
+        media_ids = [str(media_id)]
+        # La 2e image (drapeau ou logo), à côté de la photo — jamais avec une vidéo.
+        second = str((item.get("meta") or {}).get("second_image") or "")
+        if second and not video and Path(second).is_file():
+            try:
+                media_ids.append(str(self.x.upload_image(Path(second))))
+            except XError as e:
+                if e.kind not in ("invalid", "not_found"):
+                    raise
+                log.warning("Item %s : 2e image refusée par X (%s), publication avec la photo seule", item["id"], e)
+            except OSError as e:
+                log.warning("Item %s : 2e image illisible (%s), publication avec la photo seule", item["id"], e)
+        return media_ids, item.get("image_kind") == "ai"
 
     # ------------------------------------------------------------------
     def _on_success(self, item: dict, texts: list[str], ids: list[str]) -> None:

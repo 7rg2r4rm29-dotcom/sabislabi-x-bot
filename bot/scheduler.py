@@ -217,9 +217,10 @@ class Bot:
             self.writer.regen_item_id = None
         if draft is not None and getattr(draft, "texts", None):
             # L'image va avec le texte : nouvelle version, nouvelle photo.
-            path, image_kind = self._visual(draft, f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
+            path, image_kind, second = self._visual(draft,
+                                                    f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
             try:
-                draft.image_path, draft.image_kind = path, image_kind
+                draft.image_path, draft.image_kind, draft.image_path2 = path, image_kind, second
             except AttributeError:
                 pass
         return draft
@@ -479,7 +480,7 @@ class Bot:
                         silent=True)
                     return None
                 draft = self.writer.fallback_post(kind)
-            image_path, image_kind = self._visual(draft, f"{kind}_{date}")
+            image_path, image_kind, second = self._visual(draft, f"{kind}_{date}")
             jitter_s = max(0, int(self.settings.publish_jitter_minutes)) * 60
             publish_at = occ + timedelta(seconds=round(self.rng.uniform(0, jitter_s)))
             expires_at = occ + timedelta(minutes=self.settings.approval_grace_minutes)
@@ -487,7 +488,7 @@ class Bot:
                 publish_at = occ
             item = self.approvals.create_post_item(
                 draft, slot_key=slot.key, slot_date=date, publish_at=publish_at, expires_at=expires_at,
-                image_path=image_path, image_kind=image_kind)
+                image_path=image_path, image_kind=image_kind, image_path2=second)
             self.state.mark_slot(date, slot.key, item["id"])
             log.info("Créneau %s : item %s prêt (publication prévue %s%s)", slot.key, item["id"],
                      iso(publish_at), ", texte de secours" if getattr(draft, "from_fallback", False) else "")
@@ -578,22 +579,27 @@ class Bot:
             return self.writer.draft_reactive(news, notes, perf)
         return self.writer.draft_post(kind, news, notes, perf)
 
-    def _visual(self, draft, tag: str) -> tuple[str | None, str | None]:
-        """Image du post : la photo de l'actu dont il parle (jamais une capture d'écran),
-        sinon texte seul. Un sondage n'a pas d'image ; un post sans source non plus."""
+    def _visual(self, draft, tag: str) -> tuple[str | None, str | None, str | None]:
+        """Image du post, comme un compte d'alertes info : la vidéo ou la photo de l'actu, et
+        parfois une 2e image (drapeau, logo) ; sinon texte seul. Un sondage n'a pas d'image ;
+        un post sans source non plus. (chemin, type, 2e image)."""
         if getattr(draft, "poll", None) or getattr(draft, "visual", None) is None:
-            return None, None
+            return None, None, None
         fn = self._prepare_visual
         if fn is None:
             from . import visuals
-            fn = visuals.prepare
+            fn = visuals.prepare_media
         try:
             res = fn(self.settings, draft, self.writer, tag)
-            path, kind = res if isinstance(res, tuple) and len(res) == 2 else (None, None)
+            if isinstance(res, tuple) and len(res) == 2:
+                res = (*res, None)
+            path, kind, second = res if isinstance(res, tuple) and len(res) == 3 else (None, None, None)
         except Exception as e:  # noqa: BLE001
             log.exception("Visuel : erreur (%s), post en texte seul", e)
-            return None, None
-        return (path, kind) if path else (None, None)
+            return None, None, None
+        if not path:
+            return None, None, None
+        return path, kind, (second if kind == "photo" and isinstance(second, str) and second else None)
 
     # ==================================================================
     # Post réactif (rare : la porte de Claude dit « non » la plupart du temps)
@@ -692,12 +698,12 @@ class Bot:
         if draft is None or not getattr(draft, "texts", None):
             log.info("Réactif : rien d'assez fort pour l'instant")
             return 0
-        image_path, image_kind = self._visual(draft, f"reactive_{today_str()}")
+        image_path, image_kind, second = self._visual(draft, f"reactive_{today_str()}")
         now = now_local()
         item = self.approvals.create_post_item(
             draft, slot_key=None, slot_date=None, publish_at=now,
             expires_at=now + timedelta(minutes=REACTIVE_EXPIRES_MIN),
-            image_path=image_path, image_kind=image_kind)
+            image_path=image_path, image_kind=image_kind, image_path2=second)
         self.state.incr("reactive")
         log.info("Réactif : item %s proposé", item.get("id"))
         return 1

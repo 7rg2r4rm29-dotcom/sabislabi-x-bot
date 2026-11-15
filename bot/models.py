@@ -50,4 +50,5 @@ class Draft:
     # Renseignés par le planificateur quand l'image est prête (🔄 Autre version) :
     # la photo est celle de l'actu du NOUVEAU texte, pas celle de l'ancien.
     image_path: str | None = None
-    image_kind: str | None = None        # "photo" | "ai" ("shot" : capture, avant le 14/11/2026)
+    image_kind: str | None = None        # "video" | "photo" | "ai" ("shot" : capture, avant le 14/11/2026)
+    image_path2: str | None = None       # 2e image, à côté de la photo : drapeau du pays ou logo
