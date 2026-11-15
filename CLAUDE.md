@@ -212,7 +212,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
   au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
   prise à la source (extrait vidéo, sinon photo officielle). Envoi vidéo à X vérifié pour de vrai le
-  14/11 (vidéo d'essai envoyée sans être publiée : initialize → append → finalize → STATUS).
+  14/11 (vidéo d'essai envoyée sans être publiée : initialize → append → finalize → STATUS). Le 15/11 :
+  images comme AlertesInfos (photo ou vidéo de l'article reprise comme la nôtre, 2e image logo /
+  drapeau). Essai réel le 15/11 sur ChatGPT Wallet : openai.com bloque les robots, la photo de
+  TechCrunch montrait l'assistant d'Amazon (écartée par Claude), le logo d'OpenAI a été retenu.
 - **Bilan du 13/11** : `--check` au vert, aucune erreur depuis le 28/10, aucun créneau sauté du 10 au 13/11.
   Aperçu réel de la v4 : deux posts corrects, captures TechCrunch propres (abandonnées depuis).
   Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et

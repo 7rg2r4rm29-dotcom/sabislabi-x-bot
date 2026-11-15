@@ -337,11 +337,14 @@ class TestMain:
 
     def test_config_summary_speaks_of_photos(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
-        assert "Images (prises à la source officielle) : vidéo oui" in txt and "photo oui" in txt
+        assert "Images : vidéo oui" in txt and "photo oui (pages officielles et articles)" in txt
+        assert "2e image (logo, drapeau) oui" in txt
         assert "photos IA non" in txt and "carte" not in txt and "capture" not in txt
-        settings.photos_enabled = settings.videos_enabled = False
+        settings.photos_enabled = settings.videos_enabled = settings.second_image_enabled = False
+        settings.press_media_enabled = False
         txt = "\n".join(bmain.config_summary(settings))
-        assert "vidéo non" in txt and "photo non" in txt
+        assert "vidéo non" in txt and "photo non" in txt and "(pages officielles seulement)" in txt
+        assert "2e image (logo, drapeau) non" in txt
 
     def test_post_labels_follow_the_new_line(self):
         assert bmain.KIND_FR["tip"] == "le futur arrive"

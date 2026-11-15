@@ -288,10 +288,12 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
-        f"Images (prises à la source officielle) : vidéo {'oui' if s.videos_enabled else 'non'}"
+        f"Images : vidéo {'oui' if s.videos_enabled else 'non'}"
         f"{'' if has_ffmpeg or not s.videos_enabled else ' (ffmpeg absent)'} · "
         f"photo {'oui' if s.photos_enabled else 'non'}"
-        f"{'' if has_pil else ' (Pillow absent : aucune image)'} · "
+        f"{'' if has_pil else ' (Pillow absent : aucune image)'} "
+        f"({'pages officielles et articles' if s.press_media_enabled else 'pages officielles seulement'}) · "
+        f"2e image (logo, drapeau) {'oui' if s.second_image_enabled else 'non'} · "
         f"photos IA {'oui' if s.image_ai_enabled else 'non'}"
         f"{'' if has_openai or not s.image_ai_enabled else ' (paquet openai absent)'}",
         f"Récap du matin {s.health_report_at:%H:%M} · bilan hebdo {weekly}",
