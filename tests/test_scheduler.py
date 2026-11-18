@@ -990,8 +990,22 @@ class TestHooks:
                                             "2026-10-01": {"calls": 1, "usd": 1.0}}}
         bot = make_bot(settings, state, budget, parts)
         txt = bot.budget_text()
-        assert "0.42 $ aujourd'hui (3 appel(s)), 1.42 $ ce mois" in txt
-        assert "API X" in txt
+        assert "0.42 $ aujourd'hui (3 appel(s)), 1.42 $ ce mois sur 35 $ (plafond du mois)" in txt
+        assert "API X" in txt and "s'arrêtent en premier" in txt
+        assert "1.42 $ ce mois sur 35 $ (plafond du mois)" in bot.status_text()
+
+    def test_budget_text_counts_manual_runs_and_hides_the_cap_when_there_is_none(self, settings, state, budget,
+                                                                              parts, clock):
+        from bot import llm as llm_mod
+        clock(10, 0)
+        state.data["llm_usage"] = {"days": {"2026-10-15": {"calls": 3, "usd": 0.42}}}
+        utils.save_json(llm_mod.manual_ledger_path(), {"days": {"2026-10-03": {"calls": 4, "usd": 0.5},
+                                                                "2026-09-30": {"calls": 9, "usd": 9.0}}})
+        bot = make_bot(settings, state, budget, parts)
+        assert "0.92 $ ce mois sur 35 $" in bot.budget_text()         # 0,42 du bot + 0,50 d'essais d'octobre
+        settings.claude_budget_monthly_usd = 0
+        txt = bot.budget_text()
+        assert "0.92 $ ce mois" in txt and "plafond du mois" not in txt and "s'arrêtent en premier" not in txt
 
 
 # ---------------------------------------------------------------------------
@@ -1153,6 +1167,95 @@ def test_claude_account_problem_is_reported_once_per_12h(settings, state, budget
     clock(23, 0)
     bot.tick()
     assert len([n for n in parts["approvals"].notes if "Claude ne peut plus écrire" in n]) == 2
+
+
+class _BudgetLLM:
+    """Un Claude dont on règle la dépense du mois (plafond 35 $)."""
+
+    def __init__(self, spent: float = 0.0, cap: float = 35.0, optional: bool = True) -> None:
+        self.spent, self.monthly_budget, self.optional = spent, cap, optional
+
+    def over(self) -> bool:
+        return self.monthly_budget > 0 and self.spent >= self.monthly_budget
+
+    def paused(self) -> bool:
+        return self.over()
+
+    def spent_month(self) -> float:
+        return self.spent
+
+    def optional_ok(self) -> bool:
+        return self.optional
+
+    def budget_warning_due(self) -> bool:
+        return self.monthly_budget > 0 and self.spent >= 0.8 * self.monthly_budget
+
+    def budget_problem(self):
+        return f"plafond Claude du mois atteint ({self.spent:.2f} $ sur 35 $)" if self.over() else None
+
+    @property
+    def account_problem(self):
+        return self.budget_problem()
+
+
+def test_tight_claude_budget_pauses_radar_comments_and_breaking_posts_first(settings, state, budget, parts,
+                                                                           clock):
+    parts["writer"].default_reactive = True                 # l'actu du jour mériterait un post à chaud
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = _BudgetLLM(spent=30.0, optional=False)
+    clock(15, 45)                                           # entre deux créneaux : rien de planifié à rédiger
+    bot.tick()
+    bot.tick()
+    assert parts["comments"].check.n == 0 and parts["radar"].check.n == 0
+    assert parts["writer"].names() == [] and parts["approvals"].created == []
+    assert parts["approvals"].polls >= 2 and parts["publisher"].publish_due.n >= 2    # le reste tourne
+    # …mais un post planifié est toujours rédigé.
+    clock(16, 30)                                           # l'actu de 18:00 est due
+    assert bot.plan_slots() == 1
+    assert [i["kind"] for i in parts["approvals"].created] == ["news"]
+    # La marge revient (nouveau mois, plafond relevé) : tout reprend.
+    bot.llm.optional = True
+    clock(20, 30)
+    bot.tick()
+    assert parts["comments"].check.n == 1 and parts["radar"].check.n == 1
+    assert "draft_reactive" in parts["writer"].names()
+
+
+def test_claude_budget_warning_once_a_month_at_80_percent(settings, state, budget, parts, clock):
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = _BudgetLLM(spent=27.0)
+    clock(10, 0)
+    bot.tick()
+    assert not [n for n in parts["approvals"].notes if "dépensés sur" in n]
+    bot.llm.spent = 28.4
+    bot.tick()
+    bot.tick()
+    warnings = [n for n in parts["approvals"].notes if "dépensés sur" in n]
+    assert len(warnings) == 1 and "28.40 $ dépensés sur 35 $ ce mois-ci" in warnings[0]
+    assert "en pause en premier" in warnings[0]
+    clock(10, 0, day=20)
+    bot.tick()
+    assert len([n for n in parts["approvals"].notes if "dépensés sur" in n]) == 1     # pas deux fois dans le mois
+    clock(10, 0, day=20, month=11)                           # le mois suivant, de nouveau à 80 %
+    bot.tick()
+    assert len([n for n in parts["approvals"].notes if "dépensés sur" in n]) == 2
+
+
+def test_claude_budget_reached_one_alert_and_nothing_is_drafted(settings, state, budget, parts, clock):
+    bot = make_bot(settings, state, budget, parts)
+    bot.llm = _BudgetLLM(spent=35.02, optional=False)
+    clock(16, 30)                                            # l'actu de 18:00 serait due
+    bot.tick()
+    clock(23, 0)
+    bot.tick()
+    clock(10, 0, day=16)
+    bot.tick()
+    alerts = [n for n in parts["approvals"].notes if "Claude ne peut plus écrire" in n]
+    assert len(alerts) == 1                                  # une fois dans le mois, pas toutes les 12 h
+    assert "plafond Claude du mois atteint (35.02 $ sur 35 $)" in alerts[0] and "augmenter le plafond" in alerts[0]
+    assert not [n for n in parts["approvals"].notes if "dépensés sur" in n]          # pas d'alerte « 80 % » en plus
+    assert parts["approvals"].created == [] and parts["writer"].calls == []
+    assert parts["comments"].check.n == 0 and parts["radar"].check.n == 0
 
 
 def test_auto_mode_never_publishes_canned_text(settings, state, budget, parts, clock):

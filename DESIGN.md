@@ -34,7 +34,7 @@ Assistant X pour **@sabislabi** (compte international en anglais). Ligne éditor
 | `bot/config.py` | `Settings` (env + `config/settings.json` + `config/content.json`), `Slot`, `load_settings()`, `validate()` |
 | `bot/state.py` | `StateStore` : items, créneaux, posts publiés, compteurs, notes, etc. |
 | `bot/costs.py` | `Budget` : enregistrement des coûts API X, plafonds essentiel/optionnel |
-| `bot/llm.py` | `LLM.json(label, system, user, schema, effort)` → dict ou None (sorties structurées, cache 1 h, bascule refus) ; helpers `schema()`, `STR`, `BOOL`, `INT`, `STR_LIST`, `INT_LIST` |
+| `bot/llm.py` | `LLM.json(label, system, user, schema, effort)` → dict ou None (sorties structurées, cache 1 h, bascule refus) ; plafond du mois `CLAUDE_BUDGET_MONTHLY_USD` (`spent_month`, `over_budget`, `optional_ok`, `budget_warning_due`, `budget_problem` ; `LLM(…, manual=True)` pour un essai fait à la main) ; helpers `schema()`, `STR`, `BOOL`, `INT`, `STR_LIST`, `INT_LIST` |
 | `bot/x_api.py` | `XClient` (OAuth1) : `post`, `post_thread`, `upload_image`, `upload_video` (par morceaux : `/2/media/upload/initialize` → `/{id}/append` → `/{id}/finalize` → `STATUS`, vérifié sur la vraie API le 14/11/2026), `mentions`, `my_recent_posts`, `user_posts`, `user_ids`, `user_id` ; `XError(kind)` ; `intent_reply_url`, `intent_post_url`, `tweet_url`, `contains_url` |
 | `bot/telegram.py` | `Telegram` : `send`, `send_photo`, `send_video`, `send_media`, `edit`, `answer_callback`, `updates` ; `button()`, `esc()` |
 | `bot/filters.py` | garde-fous éditoriaux : `publish_problem`, `off_limits_term`, `find_tech_jargon`, `hard_blocked`, `is_noise`, `is_too_similar`, `clean_output`, `weighted_length`… |
@@ -125,7 +125,17 @@ Toutes les `REACTIVE_CHECK_EVERY_MINUTES` dans `REACTIVE_WINDOW`, hors ±`REACTI
 
 ## Coûts estimés
 
-API X : 2 posts/jour + 2 threads/semaine ≈ 2 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~15-40 appels/jour (chaque post = un choix d'histoire, une rédaction, une relecture, un regard sur la photo ; les vérifications « à chaud » ne coûtent que le choix), soit de l'ordre de 25 $/mois avec `claude-opus-5-5` (4 $ / 20 $ par million de tokens), environ moitié moins avec `claude-sonnet-5-5`.
+API X : 2 posts/jour + 2 threads/semaine ≈ 2 $/mois ; réponses aux commentaires validées 0,01 $ pièce ; lectures radar/actu (optionnelles) plafonnées à 75 % de `X_BUDGET_MONTHLY_USD`, étalées jour par jour (au plus `min(80 % du plafond du jour, 75 % du mois / nb de jours)`) : le dernier quart du mois reste toujours disponible pour publier. Claude : ~15-40 appels/jour (chaque post = un choix d'histoire, une rédaction, une relecture, un regard sur la photo ; les vérifications « à chaud » ne coûtent que le choix), soit de l'ordre de 30 à 35 $/mois avec `claude-opus-5-5` (4 $ / 20 $ par million de tokens ; mesuré en novembre 2026 : environ 1,10 $ par jour, dont 0,30 $ d'optionnel — radar et vérifications « à chaud »), environ moitié moins avec `claude-sonnet-5-5`. Plafond : voir « Budget Claude du mois ».
+
+### Budget Claude du mois (18/11/2026)
+
+Le compte API du bot (console Claude, organisation individuelle du propriétaire) reçoit chaque mois les 200 $ de crédits compris dans son forfait Claude Ultra (crédits « promotionnels », réclamés le 18/11/2026 ; ils expirent à la fin de chaque cycle, sans report). Le propriétaire veut que le bot n'en consomme pas plus de **35 $ par mois** : `CLAUDE_BUDGET_MONTHLY_USD` (défaut 35, 0 = pas de plafond).
+
+- Le coût de chaque appel est estimé à partir des jetons (`MODEL_PRICES`, à 1 % près de la console) et rangé par jour dans `state.llm_usage.days`. Les essais faits à la main pendant que le service tourne (`--preview`, `--check`, scripts) utilisent `LLM(…, manual=True)` : leur coût va dans `state/llm_manual_usage.json` (le service lit ce fichier et ne l'écrit jamais, car il réécrirait son état par-dessus). `LLM.spent_month()` additionne les deux.
+- Plafond atteint (`over_budget`) : plus aucun appel (`_call` rend None, `paused()` vrai, donc ni créneau ni post à chaud), un seul message Telegram dans le mois (`Bot.maybe_alert_claude`, marque `state.claude_budget.reached`), rappel dans le récap du matin ; reprise automatique le 1er.
+- Avant le plafond, l'optionnel cède le premier (`LLM.optional_ok`, `Bot._claude_optional_ok` dans `tick`) : radar, posts à chaud et réponses aux commentaires ne tournent que si `dépensé + ESSENTIAL_SHARE (75 %) × plafond × jours restants / jours du mois ≤ plafond` ; les posts planifiés continuent jusqu'au plafond.
+- À 80 % (`BUDGET_WARN_SHARE`) : un message Telegram, une fois par mois (`Bot.maybe_warn_claude_budget`).
+- Panne du 17/11/2026 : crédit prépayé épuisé (« Your credit balance is too low »), deux créneaux perdus ; le bot avait prévenu sur Telegram (`account_problem`).
 
 ## Tests
 

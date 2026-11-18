@@ -7,6 +7,7 @@ import pytest
 
 from bot import analytics as amod
 from bot.analytics import Analytics
+from bot import utils
 from bot.utils import iso, now_local
 from bot.x_api import XError
 from tests.fakes import FakeX
@@ -249,7 +250,21 @@ def test_daily_report(an, settings, state, budget, clock):
     assert "1 suggestion(s) radar ouvertes" in txt
     assert "4 brouillon(s)" in txt
     assert "API X" in txt
-    assert "Claude hier : 0.42 $ (37 appel(s))" in txt
+    assert "Claude hier : 0.42 $ (37 appel(s)) · 0.42 $ ce mois sur 35 $" in txt
+    assert "plafond atteint" not in txt
+
+
+def test_daily_report_recalls_the_claude_cap_when_it_is_reached(an, settings, state, clock):
+    from bot import llm as llm_mod
+    clock(8, 30)
+    state.data["llm_usage"] = {"days": {"2026-10-14": {"calls": 37, "usd": 0.42},
+                                        "2026-10-02": {"calls": 900, "usd": 33.0},
+                                        "2026-09-30": {"calls": 9, "usd": 20.0}}}       # septembre : pas compté
+    utils.save_json(llm_mod.manual_ledger_path(), {"days": {"2026-10-05": {"calls": 9, "usd": 1.6}}})
+    txt = an.daily_report()
+    assert "· 35.02 $ ce mois sur 35 $ — plafond atteint : plus rien n'est rédigé jusqu'au 1er" in txt
+    settings.claude_budget_monthly_usd = 0                 # sans plafond : la ligne d'avant, telle quelle
+    assert "Claude hier : 0.42 $ (37 appel(s))\n" in an.daily_report() + "\n"
 
 
 def test_daily_report_shows_thread_on_thread_day(an, clock):

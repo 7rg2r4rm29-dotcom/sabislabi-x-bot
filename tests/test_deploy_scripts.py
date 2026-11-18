@@ -121,7 +121,8 @@ def test_migrate_adds_v2_settings_without_overwriting(tmp_path):
     assert "TELEGRAM_CHAT_ID=777" in lines                   # dernière ligne d'origine intacte
     assert "X_HANDLE=sabislabi" in lines and sum(line.startswith("X_HANDLE=") for line in lines) == 1
     assert {"DRY_RUN=false", "APPROVAL_MODE=telegram", "LLM_MODEL=claude-opus-5-5",
-            "X_BUDGET_MONTHLY_USD=30", "TIMEZONE=Europe/Paris"} <= set(lines)
+            "X_BUDGET_MONTHLY_USD=30", "CLAUDE_BUDGET_MONTHLY_USD=35", "TIMEZONE=Europe/Paris"} <= set(lines)
+    assert "CLAUDE_BUDGET_MONTHLY_USD=35" in res.stdout      # affiché avec les réglages non secrets
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
     assert (app / "config" / ".env.avant_v2").read_text() == V1_ENV.rstrip("\n")
 

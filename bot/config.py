@@ -205,6 +205,9 @@ class Settings:
     x_budget_daily_usd: float = 1.50
     x_budget_monthly_usd: float = 30.0
 
+    # --- Budget Claude (dollars) : plafond du mois voulu par le propriétaire ; 0 = pas de plafond ---
+    claude_budget_monthly_usd: float = 35.0
+
     # --- Visuels ---
     photos_enabled: bool = True          # PHOTOS_ENABLED (ancien nom : SCREENSHOTS_ENABLED)
     videos_enabled: bool = True          # VIDEOS_ENABLED : extrait de la vidéo officielle de l'actu
@@ -367,6 +370,7 @@ def load_settings() -> Settings:
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
+        claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),
         # L'ancien réglage SCREENSHOTS_ENABLED (« une image ou pas ») vaut encore, faute du nouveau.
         photos_enabled=_env_bool("PHOTOS_ENABLED", _env_bool("SCREENSHOTS_ENABLED", True)),
         videos_enabled=_env_bool("VIDEOS_ENABLED", True),

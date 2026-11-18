@@ -179,6 +179,17 @@ class TestConfig:
         monkeypatch.setenv("QUIET_HOURS", "off")
         assert cfg.load_settings().quiet_hours is None
 
+    def test_claude_monthly_budget(self, monkeypatch):
+        """Plafond voulu par le propriétaire (18/11/2026) : 35 $ par mois ; 0 = pas de plafond."""
+        monkeypatch.delenv("CLAUDE_BUDGET_MONTHLY_USD", raising=False)
+        assert cfg.load_settings().claude_budget_monthly_usd == 35.0
+        monkeypatch.setenv("CLAUDE_BUDGET_MONTHLY_USD", "50")
+        assert cfg.load_settings().claude_budget_monthly_usd == 50.0
+        monkeypatch.setenv("CLAUDE_BUDGET_MONTHLY_USD", "-5")
+        assert cfg.load_settings().claude_budget_monthly_usd == 0.0
+        monkeypatch.setenv("CLAUDE_BUDGET_MONTHLY_USD", "abc")
+        assert cfg.load_settings().claude_budget_monthly_usd == 35.0
+
 
 # ---------------------------------------------------------------------------
 # Fichiers de configuration livrés (config/settings.json, config/content.json)
@@ -638,6 +649,91 @@ class TestLLM:
         t["now"] += llm_mod.ACCOUNT_PAUSE_S + 1
         assert llm.json("c", "s", "u", SCHEMA)["text"] == "back"
         assert llm.account_problem is None
+
+    # --- Plafond du mois (CLAUDE_BUDGET_MONTHLY_USD) ---------------------------------
+    def test_monthly_cap_stops_every_call_until_the_next_month(self, settings, state, clock):
+        settings.claude_budget_monthly_usd = 35.0
+        clock(10, 0, day=15)
+        state.data["llm_usage"] = {"days": {"2026-09-30": {"calls": 9, "usd": 30.0},      # mois d'avant
+                                            "2026-10-01": {"calls": 9, "usd": 20.0},
+                                            "2026-10-14": {"calls": 9, "usd": 15.0}}}
+        fake = FakeAnthropic([_resp('{"ok": true, "text": "new month"}')])
+        llm = LLM(settings, state, client=fake)
+        assert llm.spent_month() == 35.0 and llm.over_budget() and llm.paused()
+        assert llm.json("a", "s", "u", SCHEMA) is None and fake.calls == []      # aucun appel payant
+        assert "plafond Claude du mois atteint (35.00 $ sur 35 $)" in llm.account_problem
+        clock(0, 5, day=1, month=11)                                              # le 1er : ça repart seul
+        assert not llm.over_budget() and llm.account_problem is None and not llm.paused()
+        assert llm.json("b", "s", "u", SCHEMA)["text"] == "new month"
+
+    def test_last_call_under_the_cap_goes_through_and_is_counted(self, settings, state, clock):
+        settings.claude_budget_monthly_usd = 35.0
+        state.data["llm_usage"] = {"days": {"2026-10-14": {"calls": 9, "usd": 34.999}}}
+        fake = FakeAnthropic([_resp('{"ok": true, "text": "last"}'), _resp('{"ok": true, "text": "never"}')])
+        llm = LLM(settings, state, client=fake)
+        assert llm.json("a", "s", "u", SCHEMA)["text"] == "last"                 # 0,0016 $ de plus
+        assert llm.spent_month() == pytest.approx(35.0006)
+        assert llm.json("b", "s", "u", SCHEMA) is None and len(fake.calls) == 1
+
+    def test_no_cap_when_set_to_zero(self, settings, state, clock):
+        settings.claude_budget_monthly_usd = 0
+        state.data["llm_usage"] = {"days": {"2026-10-14": {"calls": 9, "usd": 500.0}}}
+        llm = LLM(settings, state, client=FakeAnthropic([_resp('{"ok": true, "text": "hi"}')]))
+        assert not llm.over_budget() and llm.optional_ok() and not llm.budget_warning_due()
+        assert llm.budget_problem() is None and llm.json("a", "s", "u", SCHEMA)["text"] == "hi"
+
+    @pytest.mark.parametrize("day, spent, ok", [
+        (1, 0.0, True), (1, 8.7, True), (1, 8.8, False),    # 1er : 26,25 $ réservés aux posts planifiés
+        (16, 20.0, True), (16, 21.5, False),                # il reste 16 jours sur 31 : réserve 13,55 $
+        (31, 34.0, True), (31, 34.2, False),                # dernier jour : réserve 0,85 $
+    ])
+    def test_optional_features_yield_before_the_scheduled_posts(self, settings, state, clock, day, spent, ok):
+        """Radar, posts à chaud, réponses aux commentaires : seulement s'il reste plus que de
+        quoi écrire les posts planifiés jusqu'à la fin du mois (octobre : 31 jours)."""
+        settings.claude_budget_monthly_usd = 35.0
+        clock(10, 0, day=day)
+        state.data["llm_usage"] = {"days": {"2026-10-01": {"calls": 1, "usd": spent}}}
+        llm = LLM(settings, state)
+        assert llm.optional_ok() is ok and not llm.over_budget()
+
+    def test_warning_threshold_at_80_percent(self, settings, state, clock):
+        settings.claude_budget_monthly_usd = 35.0
+        state.data["llm_usage"] = {"days": {"2026-10-14": {"calls": 9, "usd": 27.9}}}
+        llm = LLM(settings, state)
+        assert not llm.budget_warning_due()
+        state.data["llm_usage"]["days"]["2026-10-15"] = {"calls": 1, "usd": 0.2}
+        assert llm.budget_warning_due() and not llm.over_budget()
+
+    def test_manual_runs_are_counted_in_a_side_file_never_in_the_live_state(self, settings, state, clock):
+        """--preview / --check pendant que le bot tourne : leur coût est noté à part (le service
+        réécrirait son état par-dessus) et compte dans le même plafond."""
+        from bot import llm as llm_mod
+        settings.claude_budget_monthly_usd = 35.0
+        state.data["llm_usage"] = {"days": {"2026-10-14": {"calls": 9, "usd": 34.0}}}
+        manual = LLM(settings, state, manual=True,
+                     client=FakeAnthropic([_resp('{"ok": true, "text": "p"}'), _resp('{"ok": true, "text": "p"}')]))
+        assert manual.json("pick-news", "s", "u", SCHEMA)["text"] == "p"
+        assert state.data["llm_usage"]["days"] == {"2026-10-14": {"calls": 9, "usd": 34.0}}     # état intact
+        ledger = llm_mod.manual_ledger_path()
+        assert json.loads(ledger.read_text()) == {"days": {"2026-10-15": {"calls": 1, "usd": 0.0016}}}
+        manual.json("post-news", "s", "u", SCHEMA)
+        assert json.loads(ledger.read_text())["days"]["2026-10-15"] == {"calls": 2, "usd": 0.0032}
+        assert manual.spent_month() == pytest.approx(34.0032)                    # compté une seule fois
+        service = LLM(settings, state)                                           # le service les voit
+        assert service.spent_month() == pytest.approx(34.0032) and not service.over_budget()
+        ledger.write_text(json.dumps({"days": {"2026-10-15": {"calls": 3, "usd": 1.2}}}))
+        assert service.over_budget()
+
+    @pytest.mark.parametrize("content", ["", "not json", "[]", '{"days": []}', '{"days": {"2026-10-15": 3}}'])
+    def test_broken_side_file_is_ignored_then_repaired(self, settings, state, clock, content):
+        from bot import llm as llm_mod
+        ledger = llm_mod.manual_ledger_path()
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(content)
+        llm = LLM(settings, state, client=FakeAnthropic([_resp('{"ok": true, "text": "p"}')]), manual=True)
+        assert llm.spent_month() == 0.0
+        assert llm.json("check", "s", "u", SCHEMA)["text"] == "p"
+        assert llm_mod.manual_spent_month() == pytest.approx(0.0016)
 
     def test_real_client_timeout_is_long_enough(self, settings, state):
         settings.anthropic_api_key = "sk-test"

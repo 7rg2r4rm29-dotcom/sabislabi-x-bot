@@ -147,14 +147,24 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     au plus).
   - Sans histoire assez forte, un créneau est sauté exprès. Si Claude tombe pendant la rédaction, le
     créneau est rédigé à son retour.
-- Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude estimé : environ 25 $ par mois.
-  Budget X : `X_BUDGET_DAILY_USD` / `X_BUDGET_MONTHLY_USD`.
+- Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude mesuré : environ 1,10 $ par jour (30
+  à 35 $ par mois). Budget X : `X_BUDGET_DAILY_USD` / `X_BUDGET_MONTHLY_USD`.
+- **Budget Claude : 35 $ par mois au plus** (consigne du propriétaire, 18/11/2026 ;
+  `CLAUDE_BUDGET_MONTHLY_USD`, codé dans `bot/llm.py`) : tout est compté, essais à la main compris
+  (`LLM(…, manual=True)` → `state/llm_manual_usage.json`) ; l'optionnel (radar, posts à chaud, réponses
+  aux commentaires) cède le premier ; alerte Telegram à 80 % ; arrêt au plafond jusqu'au 1er.
+  **Donc : peu d'aperçus et d'essais payants** (un `--preview` coûte environ 0,50 $).
+- **Qui paie Claude** : la clé du bot est dans l'organisation individuelle du propriétaire sur la console
+  Claude (platform.claude.com). Depuis le 18/11/2026 elle reçoit chaque mois les 200 $ de crédits API
+  compris dans son forfait Claude Ultra (gratuits, expirent à chaque cycle : le premier lot le 13/12/2026).
+  Plus de recharge à faire tant que le forfait Ultra est actif. La limite de dépenses de l'organisation,
+  côté console, est restée à 500 $ (valeur par défaut).
 
 ## 5. Commandes utiles
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1305 tests au 15/11/2026.
+  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1330 tests au 18/11/2026.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;
@@ -207,7 +217,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     commits : `Claude <noreply@anthropic.com>` (config locale du clone). Un clone neuf doit reprendre ces
     trois réglages.
 
-## 8. État au 14/11/2026, limites connues, pistes
+## 8. État au 18/11/2026, limites connues, pistes
 
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
   au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
@@ -216,6 +226,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   images comme AlertesInfos (photo ou vidéo de l'article reprise comme la nôtre, 2e image logo /
   drapeau). Essai réel le 15/11 sur ChatGPT Wallet : openai.com bloque les robots, la photo de
   TechCrunch montrait l'assistant d'Amazon (écartée par Claude), le logo d'OpenAI a été retenu.
+- **Panne du 17/11** : crédit Claude prépayé épuisé le 17/11 à 13 h 02 (la recharge de 24 $ du 27/10 a
+  tenu trois semaines ; environ 2 $ sont partis dans les essais de la session du 13 au 15/11). Le thread
+  du mardi et le post de 19 h ont été perdus ; le bot avait prévenu sur Telegram (« 💳 Claude ne peut plus
+  écrire »), sans que le propriétaire le voie. Réglé le 18/11 à 8 h : crédits du forfait Ultra réclamés
+  (avec son accord), puis plafond de 35 $ par mois ajouté au bot.
 - **Bilan du 13/11** : `--check` au vert, aucune erreur depuis le 28/10, aucun créneau sauté du 10 au 13/11.
   Aperçu réel de la v4 : deux posts corrects, captures TechCrunch propres (abandonnées depuis).
   Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et

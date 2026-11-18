@@ -406,6 +406,28 @@ class Analytics:
         d = days.get(date) or {}
         return {"calls": int(d.get("calls") or 0), "usd": float(d.get("usd") or 0.0)}
 
+    def _claude_month_text(self) -> str:
+        """« · 28,10 $ ce mois sur 35 $ » (avec les essais faits à la main), et le rappel du
+        plafond s'il est atteint ; rien si aucun plafond n'est réglé."""
+        try:
+            cap = float(getattr(self.settings, "claude_budget_monthly_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cap = 0.0
+        if cap <= 0:
+            return ""
+        month = now_local().strftime("%Y-%m")
+        days = (self.state.data.get("llm_usage") or {}).get("days") or {}
+        spent = sum(float((v or {}).get("usd") or 0.0) for k, v in days.items() if str(k).startswith(month))
+        try:
+            from .llm import manual_spent_month
+            spent += manual_spent_month(month)
+        except Exception:  # noqa: BLE001
+            pass
+        text = f" · {spent:.2f} $ ce mois sur {cap:.0f} $"
+        if spent >= cap:
+            text += " — plafond atteint : plus rien n'est rédigé jusqu'au 1er"
+        return text
+
     def _llm_last_days(self, n: int) -> float:
         today = now_local().date()
         return sum(self._llm_day((today - timedelta(days=i)).strftime("%Y-%m-%d"))["usd"] for i in range(n))
@@ -512,7 +534,7 @@ class Analytics:
         if self.budget is not None:
             lines.append(f"💸 {esc(self.budget.summary())}")
         llm = self._llm_day(yday_s)
-        lines.append(f"🤖 Claude hier : {llm['usd']:.2f} $ ({llm['calls']} appel(s))")
+        lines.append(f"🤖 Claude hier : {llm['usd']:.2f} $ ({llm['calls']} appel(s)){self._claude_month_text()}")
 
         tip = self._ignored_tip()
         if tip:

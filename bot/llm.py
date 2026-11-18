@@ -8,13 +8,20 @@
 - Bascule serveur en cas de refus (`fallbacks: "default"`) sur les modèles qui
   la proposent ; un refus final renvoie None, jamais un texte vide publié.
 - Délais bornés : 150 s par essai, 2 nouvelles tentatives au plus.
+- Plafond du mois (CLAUDE_BUDGET_MONTHLY_USD, 35 $ par défaut) : le coût de chaque appel
+  est compté ; au plafond, plus aucun appel jusqu'au 1er du mois. Avant, ce qui est
+  optionnel (radar, posts « à chaud », réponses aux commentaires) s'arrête dès qu'il ne
+  reste plus de quoi écrire les posts planifiés jusqu'à la fin du mois.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
+from . import utils
 from .utils import heartbeat, now_local
 
 log = logging.getLogger("xbot.llm")
@@ -42,18 +49,111 @@ BREAKER_FAILURES = 2
 BREAKER_PAUSE_S = 600
 ACCOUNT_PAUSE_S = 900    # plus de crédit / clé refusée : on réessaie toutes les 15 min
 
+# Plafond du mois : la part réservée aux posts planifiés (2 par jour, 2 threads par semaine,
+# leurs relectures et leurs images), au prorata des jours qui restent. Le radar, les posts
+# « à chaud » et les réponses aux commentaires ne tournent que s'il reste plus que cette réserve.
+ESSENTIAL_SHARE = 0.75
+BUDGET_WARN_SHARE = 0.8  # alerte Telegram, une fois par mois, à 80 % du plafond
+# Ce que coûtent les essais faits à la main pendant que le bot tourne (--preview, --check,
+# scripts de vérification) : ils n'écrivent jamais dans l'état du bot en service, mais ils
+# comptent dans le même plafond. Le service lit ce fichier, il ne l'écrit jamais.
+MANUAL_LEDGER = "llm_manual_usage.json"
+
+
+def manual_ledger_path() -> Path:
+    return utils.STATE_DIR / MANUAL_LEDGER
+
+
+def _month_sum(days: Any, month: str) -> float:
+    if not isinstance(days, dict):
+        return 0.0
+    total = 0.0
+    for day, entry in days.items():
+        if str(day).startswith(month) and isinstance(entry, dict):
+            try:
+                total += float(entry.get("usd") or 0.0)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def manual_spent_month(month: str | None = None) -> float:
+    """Coût des essais faits à la main ce mois-ci (0 si le fichier n'existe pas)."""
+    try:
+        data = json.loads(manual_ledger_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0.0
+    return _month_sum((data or {}).get("days") if isinstance(data, dict) else None,
+                      month or now_local().strftime("%Y-%m"))
+
 
 class LLM:
-    def __init__(self, settings, state=None, client=None) -> None:
+    def __init__(self, settings, state=None, client=None, manual: bool = False) -> None:
         self.settings = settings
         self.state = state
         self._client = client
+        # `manual` : appels faits à la main (aperçu, vérification) sur un état jetable ; leur
+        # coût va dans le fichier des essais, compté dans le plafond du mois.
+        self.manual = bool(manual)
         self._fallback_ok = settings.use_server_fallback
         self._failures = 0
         self._paused_until = 0.0
         # Problème de compte Claude (crédit épuisé, clé refusée) : le bot le signale
         # sur Telegram et attend au lieu de sauter ou de remplir des créneaux.
-        self.account_problem: str | None = None
+        self._account_problem: str | None = None
+
+    # ------------------------------------------------------------------
+    # Plafond du mois
+    # ------------------------------------------------------------------
+    @property
+    def monthly_budget(self) -> float:
+        """Plafond Claude du mois en dollars ; 0 = pas de plafond."""
+        try:
+            return max(0.0, float(getattr(self.settings, "claude_budget_monthly_usd", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def spent_month(self) -> float:
+        """Ce que Claude a coûté ce mois-ci : le bot, plus les essais faits à la main."""
+        month = now_local().strftime("%Y-%m")
+        own = 0.0
+        if self.state is not None:
+            # (Pour un essai à la main, l'état est une copie jetable de celui du service : ce
+            # que le bot avait dépensé au moment de la copie.)
+            own = _month_sum((self.state.data.get("llm_usage") or {}).get("days"), month)
+        return own + manual_spent_month(month)
+
+    def over_budget(self) -> bool:
+        cap = self.monthly_budget
+        return cap > 0 and self.spent_month() >= cap
+
+    def budget_problem(self) -> str | None:
+        """Le message du plafond atteint, ou None. Se lève tout seul le 1er du mois."""
+        if not self.over_budget():
+            return None
+        return (f"plafond Claude du mois atteint ({self.spent_month():.2f} $ sur {self.monthly_budget:.0f} $) : "
+                "reprise le 1er du mois (réglage CLAUDE_BUDGET_MONTHLY_USD)")
+
+    def optional_ok(self) -> bool:
+        """Radar, posts « à chaud », réponses aux commentaires : seulement s'il reste plus
+        que la réserve des posts planifiés jusqu'à la fin du mois."""
+        cap = self.monthly_budget
+        if cap <= 0:
+            return True
+        now = now_local()
+        days = calendar.monthrange(now.year, now.month)[1]
+        left = days - now.day + 1                      # aujourd'hui compris
+        return self.spent_month() + cap * ESSENTIAL_SHARE * left / days <= cap
+
+    def budget_warning_due(self) -> bool:
+        cap = self.monthly_budget
+        return cap > 0 and self.spent_month() >= cap * BUDGET_WARN_SHARE
+
+    @property
+    def account_problem(self) -> str | None:
+        """Ce qui empêche Claude d'écrire : le compte (crédit épuisé, clé refusée) ou le
+        plafond du mois. None si tout va bien."""
+        return self._account_problem or self.budget_problem()
 
     # ------------------------------------------------------------------
     @property
@@ -80,6 +180,10 @@ class LLM:
         import time
 
         import anthropic
+        if self.over_budget():
+            log.info("Claude [%s] : plafond du mois atteint (%.2f $ sur %.0f $), appel sauté", label,
+                     self.spent_month(), self.monthly_budget)
+            return None
         if time.monotonic() < self._paused_until:
             log.info("Claude [%s] : en pause après des pannes répétées, appel sauté", label)
             return None
@@ -93,17 +197,17 @@ class LLM:
                           BREAKER_PAUSE_S // 60)
         elif resp is not None:
             self._failures = 0
-            self.account_problem = None
-        if resp is None and self.account_problem:
+            self._account_problem = None
+        if resp is None and self._account_problem:
             self._paused_until = time.monotonic() + ACCOUNT_PAUSE_S
         return resp
 
     _last_was_outage = False
 
     def paused(self) -> bool:
-        """Coupe-circuit ouvert : Claude n'est pas appelé en ce moment."""
+        """Claude n'est pas appelé en ce moment : coupe-circuit ouvert, ou plafond du mois atteint."""
         import time
-        return time.monotonic() < self._paused_until
+        return time.monotonic() < self._paused_until or self.over_budget()
 
     def _call_once(self, label: str, kwargs: dict, anthropic) -> Any | None:
         self._last_was_outage = False
@@ -121,11 +225,11 @@ class LLM:
                         log.error("Claude [%s] : échec sans bascule : %s", label, e2)
                         return None
                 if "credit balance" in msg.lower():
-                    self.account_problem = "plus de crédit sur ton compte Claude (console.anthropic.com → Billing)"
+                    self._account_problem = "plus de crédit sur ton compte Claude (console.anthropic.com → Billing)"
                 log.error("Claude [%s] : requête invalide : %s", label, msg[:300])
                 return None
             except anthropic.AuthenticationError:
-                self.account_problem = "clé ANTHROPIC_API_KEY refusée (console.anthropic.com → API Keys)"
+                self._account_problem = "clé ANTHROPIC_API_KEY refusée (console.anthropic.com → API Keys)"
                 log.error("Claude [%s] : clé ANTHROPIC_API_KEY refusée", label)
                 return None
             except anthropic.RateLimitError:
@@ -142,7 +246,7 @@ class LLM:
 
     # ------------------------------------------------------------------
     def _record_usage(self, label: str, resp: Any) -> None:
-        if self.state is None:
+        if self.state is None and not self.manual:
             return
         usage = getattr(resp, "usage", None)
         if usage is None:
@@ -154,14 +258,42 @@ class LLM:
         cwrite = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         p_in, p_out, p_cr, p_cw = MODEL_PRICES.get(str(model), MODEL_PRICES["claude-opus-5-5"])
         cost = (inp * p_in + out * p_out + cread * p_cr + cwrite * p_cw) / 1_000_000
-        days = self.state.data.setdefault("llm_usage", {}).setdefault("days", {})
-        day = days.setdefault(now_local().strftime("%Y-%m-%d"), {"calls": 0, "usd": 0.0})
-        day["calls"] += 1
-        day["usd"] = round(day["usd"] + cost, 5)
-        for d in sorted(days)[:-70]:
-            del days[d]
-        self.state.flush()
+        today = now_local().strftime("%Y-%m-%d")
+        if self.manual:
+            self._record_manual(today, cost)
+        else:
+            days = self.state.data.setdefault("llm_usage", {}).setdefault("days", {})
+            day = days.setdefault(today, {"calls": 0, "usd": 0.0})
+            day["calls"] += 1
+            day["usd"] = round(day["usd"] + cost, 5)
+            for d in sorted(days)[:-70]:
+                del days[d]
+            self.state.flush()
         log.info("Claude [%s] %s : %d in (+%d cache) / %d out ≈ %.4f $", label, model, inp, cread, out, cost)
+
+    @staticmethod
+    def _record_manual(today: str, cost: float) -> None:
+        """Ajoute le coût d'un essai fait à la main au fichier lu par le service (jamais
+        son état : il le réécrirait par-dessus). Une écriture ratée n'arrête rien."""
+        path = manual_ledger_path()
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
+                data = {"days": {}}
+            days = data["days"]
+            day = days.get(today)
+            if not isinstance(day, dict):
+                day = days[today] = {"calls": 0, "usd": 0.0}
+            day["calls"] = int(day.get("calls") or 0) + 1
+            day["usd"] = round(float(day.get("usd") or 0.0) + cost, 5)
+            for d in sorted(days)[:-70]:
+                del days[d]
+            utils.save_json(path, data)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Essais à la main : coût non noté (%s)", type(e).__name__)
 
     @staticmethod
     def _first_text(resp: Any) -> str:

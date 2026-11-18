@@ -216,10 +216,18 @@ Chaque note peut être utilisée 2 fois, pendant 14 jours, sans rien ajouter au-
 - Crédits offerts par X : 20 $ à l'ajout d'une carte, puis jusqu'à 50 $ (égaux à ta première recharge
   automatique).
 
-**Claude** : compte de l'ordre de **25 $ par mois** avec le modèle par défaut (Opus 5.5). Chaque post demande
-quatre ou cinq appels : choisir l'histoire, écrire, relire, trouver la source, regarder l'image. À surveiller sur
-console.anthropic.com ; `/budget` affiche une estimation. Pour diviser la facture environ par deux, mets
-`LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
+**Claude** : de l'ordre de **30 à 35 $ par mois** avec le modèle par défaut (Opus 5.5). Chaque post demande
+quatre ou cinq appels : choisir l'histoire, écrire, relire, trouver la source, regarder l'image.
+
+- **Qui paie** : depuis le 18 novembre 2026, ces appels sont pris sur les **200 $ de crédits compris chaque
+  mois dans ton forfait Claude Ultra** (associé au compte du bot sur la console Claude). Rien à recharger
+  tant que le forfait Ultra est actif. Les crédits non utilisés ne se reportent pas d'un mois sur l'autre.
+- **Le plafond : 35 $ par mois** (`CLAUDE_BUDGET_MONTHLY_USD`, section 10). Le bot compte tout ce que
+  Claude lui coûte, aperçus et vérifications compris. Si le mois devient juste, il met d'abord en pause
+  le radar, les posts « ça vient de tomber » et les réponses aux commentaires, pour garder de quoi écrire
+  les posts prévus. À 80 % il te prévient sur Telegram ; au plafond il n'écrit plus rien jusqu'au 1er.
+- `/budget` affiche où tu en es. Pour diviser la consommation environ par deux, mets
+  `LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
 
 ## 5. Installation (une seule fois)
 
@@ -315,6 +323,7 @@ des sites d'actualité (`news_feeds`), qui va avec la ligne éditoriale, est tou
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
 | Les posts partent **sans image** | Souvent normal : beaucoup d'actus n'ont pas de page officielle trouvable, ou pas d'image officielle utilisable (photo d'agence, logo…). Si c'est **tous** les posts pendant des jours, quelque chose bloque. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
+| « 💳 Claude ne peut plus écrire » | Soit le **plafond du mois** est atteint (35 $ par défaut) : tout reprend le 1er, ou augmente `CLAUDE_BUDGET_MONTHLY_USD` (section 10). Soit il n'y a **plus de crédit** sur la console Claude (platform.claude.com → Facturation) : vérifie que ton forfait Ultra est toujours actif, sinon achète des crédits. Dans les deux cas le bot reprend tout seul, rien à relancer |
 | « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
 | « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
 | « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
@@ -359,6 +368,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `SECOND_IMAGE_ENABLED` | `true` | la 2e image à côté de la photo : logo de l'entreprise ou drapeau du pays |
 | `PHOTOS_ENABLED` | `true` | `false` = aucune photo (l'ancien nom `SCREENSHOTS_ENABLED` marche encore) ; avec `VIDEOS_ENABLED=false`, tous les posts partent en texte seul |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
+| `CLAUDE_BUDGET_MONTHLY_USD` | `35` | plafond Claude du mois, en dollars (`0` = pas de plafond) |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |
 | `DRY_RUN` | `false` | `true` = simulation, rien n'est publié |

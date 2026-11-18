@@ -346,6 +346,32 @@ class TestMain:
         assert "vidéo non" in txt and "photo non" in txt and "(pages officielles seulement)" in txt
         assert "2e image (logo, drapeau) non" in txt
 
+    def test_config_summary_shows_the_claude_cap(self, settings):
+        assert "Claude : 35 $/mois au plus" in "\n".join(bmain.config_summary(settings))
+        settings.claude_budget_monthly_usd = 0
+        assert "Claude : sans plafond" in "\n".join(bmain.config_summary(settings))
+
+    def test_manual_runs_use_a_claude_client_that_counts_in_the_monthly_cap(self, settings, tmp_path,
+                                                                           monkeypatch):
+        """--preview et --check créent leur client Claude en mode « essai à la main »."""
+        from bot import llm as llm_mod
+        from bot.models import Draft
+        made: list[bool] = []
+
+        class Recorder:
+            def __init__(self, settings, state=None, client=None, manual=False):
+                made.append(manual)
+
+            def json(self, *a, **k):
+                return {"ok": True}
+        monkeypatch.setattr(llm_mod, "LLM", Recorder)
+        bmain.run_preview(settings, "tip", tmp_path / "s.json", news=PreviewNews(), telegram=None,
+                          writer=PreviewWriter({"tip": Draft(kind="tip", texts=["A tip."])}),
+                          prepare_visual=lambda *a: (None, None, None), out=lambda line: None)
+        bmain.run_check(settings, telegram=FakeTelegram(), x=FakeXMe(), images=lambda: (True, ""),
+                        videos=lambda: (True, ""), out=lambda line: None)
+        assert made == [True, True]
+
     def test_post_labels_follow_the_new_line(self):
         assert bmain.KIND_FR["tip"] == "le futur arrive"
         assert bmain.KIND_FR["news"] == "l'histoire du jour"

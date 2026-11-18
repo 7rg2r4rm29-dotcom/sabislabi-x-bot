@@ -287,7 +287,8 @@ def config_summary(settings) -> list[str]:
         f"max {s.radar_max_per_day}/jour)",
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
-        f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois",
+        f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois · "
+        f"Claude : {f'{s.claude_budget_monthly_usd:.0f} $/mois au plus' if s.claude_budget_monthly_usd > 0 else 'sans plafond'}",
         f"Images : vidéo {'oui' if s.videos_enabled else 'non'}"
         f"{'' if has_ffmpeg or not s.videos_enabled else ' (ffmpeg absent)'} · "
         f"photo {'oui' if s.photos_enabled else 'non'}"
@@ -411,7 +412,7 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
                 ok = False
             else:
                 from .llm import LLM
-                llm = LLM(settings, _state()[0])
+                llm = LLM(settings, _state()[0], manual=True)     # compté dans le plafond du mois
         if llm is not None:
             from .llm import BOOL, schema
             try:
@@ -609,7 +610,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
         state = StateStore(copy)
         if llm is None:
             from .llm import LLM
-            llm = LLM(settings, state)
+            # Essai fait à la main : son coût est compté dans le plafond Claude du mois.
+            llm = LLM(settings, state, manual=True)
         if writer is None:
             from .writer import Writer
             writer = Writer(settings, llm, state)

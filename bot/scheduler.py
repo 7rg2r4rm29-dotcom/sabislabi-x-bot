@@ -184,6 +184,7 @@ class Bot:
         self.rng = rng or random.Random()
         self._stop = False
         self._ticks = 0
+        self._optional_pause_logged = False
         self._recover_pending_slots()
 
     # ==================================================================
@@ -257,6 +258,7 @@ class Bot:
         # faire partir un post dont le délai est passé.
         res["expire"] = self._step("expiration", self.approvals.expire_due)
         res["claude_alert"] = self._step("alerte Claude", self.maybe_alert_claude)
+        res["claude_budget"] = self._step("budget Claude", self.maybe_warn_claude_budget)
         res["poll"] = self._step("Telegram", self.approvals.poll)
         res["publish"] = self._step("publication", self.publisher.publish_due)
         paused = bool(self.state.data.get("paused"))
@@ -268,7 +270,12 @@ class Bot:
             optional = (("post réactif", "reactive", self.maybe_reactive),
                         ("commentaires", "comments", self.comments.check),
                         ("radar", "radar", self.radar.check))
+            # Budget Claude du mois : ce qui est optionnel s'arrête en premier, pour garder de
+            # quoi écrire les posts planifiés jusqu'à la fin du mois.
+            optional_ok = self._claude_optional_ok()
             for label, key, fn in optional:
+                if not optional_ok:
+                    continue
                 if key == "reactive" and res["plan"]:
                     continue  # une seule rédaction (lente) par tour
                 if time.monotonic() - started > TICK_BUDGET_S:
@@ -285,10 +292,50 @@ class Bot:
         self._heartbeat(paused, time.monotonic() - started, res)
         return res
 
+    def _claude_budget_problem(self) -> str | None:
+        fn = getattr(self.llm, "budget_problem", None)
+        try:
+            return (fn() if callable(fn) else None) or None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _claude_optional_ok(self) -> bool:
+        """Reste-t-il assez de budget Claude ce mois-ci pour le radar, les posts « à chaud »
+        et les réponses aux commentaires, sans entamer la part des posts planifiés ?"""
+        fn = getattr(self.llm, "optional_ok", None)
+        try:
+            ok = bool(fn()) if callable(fn) else True
+        except Exception:  # noqa: BLE001
+            ok = True
+        if not ok and not self._optional_pause_logged:
+            log.info("Budget Claude : radar, posts à chaud et réponses aux commentaires en pause "
+                     "(la suite du mois est réservée aux posts planifiés)")
+        self._optional_pause_logged = not ok
+        return ok
+
+    def _budget_mark(self, key: str) -> bool:
+        """True la première fois du mois pour `key` (et le note)."""
+        marks = self.state.data.setdefault("claude_budget", {})
+        month = now_local().strftime("%Y-%m")
+        if marks.get(key) == month:
+            return False
+        marks[key] = month
+        self.state.flush()
+        return True
+
     def maybe_alert_claude(self) -> bool:
         """Crédit Claude épuisé ou clé refusée : un message Telegram (au plus toutes
         les 12 h). En attendant, aucun créneau n'est sauté : ils seront rédigés dès que
-        Claude répondra de nouveau (s'il n'est pas trop tard)."""
+        Claude répondra de nouveau (s'il n'est pas trop tard).
+        Plafond du mois atteint : un seul message dans le mois (le récap du matin le rappelle)."""
+        capped = self._claude_budget_problem()
+        if capped:
+            if not self._budget_mark("reached"):
+                return False
+            self.approvals.notify(f"💳 Claude ne peut plus écrire : {esc(capped)}.\n"
+                                  "Plus rien n'est rédigé ni publié d'ici là. Pour continuer avant, il faut "
+                                  "augmenter le plafond.")
+            return True
         problem = getattr(self.llm, "account_problem", None)
         if not problem:
             return False
@@ -298,6 +345,23 @@ class Bot:
         self.state.set_last_run("claude_alert")
         self.approvals.notify(f"💳 Claude ne peut plus écrire : {esc(problem)}.\n"
                               "Rien n'est publié en attendant ; tout reprend tout seul dès que c'est réglé.")
+        return True
+
+    def maybe_warn_claude_budget(self) -> bool:
+        """À 80 % du plafond Claude du mois : un message Telegram, une seule fois dans le mois."""
+        due = getattr(self.llm, "budget_warning_due", None)
+        try:
+            if not (callable(due) and due()) or self._claude_budget_problem():
+                return False
+            spent, cap = float(self.llm.spent_month()), float(self.llm.monthly_budget)
+        except Exception:  # noqa: BLE001
+            return False
+        if not self._budget_mark("warned"):
+            return False
+        self.approvals.notify(
+            f"⚠️ Claude : {spent:.2f} $ dépensés sur {cap:.0f} $ ce mois-ci. Le radar, les posts « à chaud » et "
+            "les réponses aux commentaires se mettent en pause en premier ; les posts prévus continuent "
+            "jusqu'au plafond, puis tout reprend le 1er du mois.", silent=True)
         return True
 
     def _between(self) -> int:
@@ -793,7 +857,20 @@ class Bot:
         month = today[:7]
         d = days.get(today) or {}
         month_usd = sum(float((v or {}).get("usd", 0.0)) for k, v in days.items() if k.startswith(month))
+        try:   # avec les essais faits à la main (aperçus, vérifications), comptés dans le même plafond
+            from .llm import manual_spent_month
+            month_usd += manual_spent_month(month)
+        except Exception:  # noqa: BLE001
+            pass
         return float(d.get("usd", 0.0)), int(d.get("calls", 0)), month_usd
+
+    def _claude_cap_text(self) -> str:
+        """« sur 35 $ » quand un plafond du mois est réglé, sinon rien."""
+        try:
+            cap = float(getattr(self.settings, "claude_budget_monthly_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cap = 0.0
+        return f" sur {cap:.0f} $ (plafond du mois)" if cap > 0 else ""
 
     def status_text(self) -> str:
         s = self.settings
@@ -840,7 +917,8 @@ class Bot:
         lines.append("")
         lines.append(f"💸 {esc(self.budget.summary())}")
         usd, calls, month = self._llm_spent()
-        lines.append(f"🧠 Claude : {usd:.2f} $ aujourd'hui ({calls} appel(s)), {month:.2f} $ ce mois")
+        lines.append(f"🧠 Claude : {usd:.2f} $ aujourd'hui ({calls} appel(s)), {month:.2f} $ ce mois"
+                     f"{self._claude_cap_text()}")
         return "\n".join(lines)
 
     def _slot_status(self, slot: Slot, occ: datetime, now: datetime) -> str:
@@ -907,5 +985,9 @@ class Bot:
                  f"💸 {esc(self.budget.summary())}",
                  f"   lectures optionnelles (radar, actu) bloquées au-delà de "
                  f"{s.x_budget_daily_usd * 0.8:.2f} $/jour ; tout s'arrête à {s.x_budget_monthly_usd:.0f} $/mois",
-                 f"🧠 Claude : {usd:.2f} $ aujourd'hui ({calls} appel(s)), {month:.2f} $ ce mois"]
+                 f"🧠 Claude : {usd:.2f} $ aujourd'hui ({calls} appel(s)), {month:.2f} $ ce mois"
+                 f"{self._claude_cap_text()}"]
+        if self._claude_cap_text():
+            lines.append("   le radar, les posts « à chaud » et les réponses aux commentaires s'arrêtent en "
+                         "premier ; tout s'arrête au plafond, jusqu'au 1er du mois")
         return "\n".join(lines)
