@@ -169,10 +169,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     normalement le premier. La console ne compte dans « Bot X » que depuis le 18/11 : les 18 $ du début
     de novembre sont passés par l'ancienne clé, dans « Default ».
   - **Clé du bot : « bot-x-serveur »**, créée le 18/11/2026 dans l'espace « Bot X », **sans date
-    d'expiration**. Vérifié le 18/11 : `--check` au vert, l'ancienne clé étant coupée.
-    Anciennes clés, dans « Default » : « sabislabi-bot » (27/10, expirait le 26/11) désactivée le
-    18/11 ; « sabislabi-bot-octobre » (21/10, sans expiration) encore active, mais plus utilisée
-    (aucun coût en novembre).
+    d'expiration**. Vérifié le 18/11 : `--check` au vert, le service a écrit avec elle (appel du
+    radar à 10 h 32), et la console compte bien sa dépense dans « Bot X ».
+    C'est la seule clé du compte : les deux anciennes (« sabislabi-bot » du 27/10, qui expirait le
+    26/11, et « sabislabi-bot-octobre » du 21/10, toutes deux dans « Default ») ont été supprimées
+    le 18/11, avec l'accord du propriétaire.
   - Remplacer seulement la clé Claude (ce qui a marché le 18/11) : sur la console, Clés API → « Créer
     une clé » → « Continuer avec une clé API » ; nom, Expire « Jamais », Portée « Bot X ». L'assistant
     peut remplir le formulaire, mais c'est le propriétaire qui clique sur « Créer une clé » et qui copie
@@ -260,9 +261,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   répond 403 (refus des robots) : le bot le saute.
 - **Clé Claude remplacée le 18/11/2026** (elle expirait le 26/11) : nouvelle clé sans date
   d'expiration, dans un espace réservé au bot et limité à 35 $ par mois (voir section 4, « Qui paie
-  Claude »). Bot relancé à 9 h 47, `--check` au vert.
-- **En attente de la décision du propriétaire** : supprimer les deux anciennes clés Claude sur la
-  console (suppression définitive) ; lancer `cleanup_v1.sh` (le dossier `auth/` et deux
+  Claude »). Bot relancé à 9 h 47, `--check` au vert ; les deux anciennes clés ont été supprimées.
+- **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
   le radar.
