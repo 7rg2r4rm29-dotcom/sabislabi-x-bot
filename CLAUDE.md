@@ -157,8 +157,20 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Qui paie Claude** : la clé du bot est dans l'organisation individuelle du propriétaire sur la console
   Claude (platform.claude.com). Depuis le 18/11/2026 elle reçoit chaque mois les 200 $ de crédits API
   compris dans son forfait Claude Ultra (gratuits, expirent à chaque cycle : le premier lot le 13/12/2026).
-  Plus de recharge à faire tant que le forfait Ultra est actif. La limite de dépenses de l'organisation,
-  côté console, est restée à 500 $ (valeur par défaut).
+  Plus de recharge à faire tant que le forfait Ultra est actif.
+  - Ces crédits sont partagés par TOUT le compte API (toutes les clés, tous les projets) : le bot en
+    prend 35 $ au plus, le reste est pour les autres projets du propriétaire.
+  - La limite de dépenses de l'organisation, côté console, est restée à 500 $ **exprès** : elle
+    s'applique à tout le compte, et le propriétaire veut que les 35 $ ne concernent que le bot (18/11).
+    Pour une limite côté console qui ne touche que le bot : lui donner son propre espace de travail
+    (workspace) avec une limite de 35 $, et y créer sa clé. Ne jamais limiter l'espace « Default ».
+  - **La clé du bot (« sabislabi-bot », créée le 27/10/2026) expire le 26/11/2026** : sans nouvelle
+    clé avant cette date, plus aucun post (« clé ANTHROPIC_API_KEY refusée »). L'expiration ne se
+    modifie pas dans la console. Une ancienne clé « sabislabi-bot-octobre » (21/10) traîne, inutilisée.
+    Remplacer seulement la clé Claude : le propriétaire crée la clé dans la console (sans date
+    d'expiration), puis la colle lui-même dans son Terminal avec
+    `ssh -t botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/set_secrets.sh ANTHROPIC_API_KEY'`
+    (saisie masquée) ; ensuite `sudo -n systemctl restart x-degen-bot` et `--check`.
 
 ## 5. Commandes utiles
 
@@ -236,6 +248,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et
   réponses aux commentaires : aucune suggestion utilisée (62 et 10 expirées). Le flux IEEE Spectrum
   répond 403 (refus des robots) : le bot le saute.
+- **Urgent, avant le 26/11/2026** : remplacer la clé Claude du bot, qui expire (voir section 4,
+  « Qui paie Claude »). Proposé au propriétaire le 18/11, avec un espace réservé au bot limité à 35 $.
 - **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
