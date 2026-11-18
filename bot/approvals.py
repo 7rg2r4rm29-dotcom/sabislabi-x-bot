@@ -28,6 +28,7 @@ log = logging.getLogger("xbot.approvals")
 POST_KINDS = ("gm", "tip", "news", "thread", "reactive")
 MAX_REGEN = 3
 RESUME_DELAY_MINUTES = 3  # /reprendre : délai avant le départ des posts en retard
+COMMENT_AUTO_DELAY_MINUTES = 3  # COMMENTS_AUTO_REPLY : le temps de toucher ❌ avant l'envoi
 CARD_MAX_CHARS = 3900          # Telegram coupe à 4096 ; on garde de la marge pour le HTML
 EDIT_PROMPT_MAX_TEXT = 3000    # au-delà, on ne recopie pas le texte actuel dans l'invite ✏️
 CARD_RETRY_MINUTES = 5         # carte non envoyée (Telegram en panne) : nouvel essai toutes les 5 min
@@ -278,13 +279,19 @@ class Approvals:
     def create_comment_item(self, *, text: str, comment_id: str, comment_text: str, commenter: str,
                             my_post_text: str, post_url: str, expires_at: datetime) -> dict:
         now = now_local()
-        item = self.state.new_item(
-            "comment_reply", [text], status="awaiting", publish_at=iso(now), expires_at=iso(expires_at),
-            meta={"comment_id": str(comment_id), "comment_text": comment_text or "",
-                  "commenter": (commenter or "").lstrip("@"), "my_post_text": my_post_text or "",
-                  "post_url": post_url or ""},
-        )
-        log.info("Item %s créé (réponse à @%s)", item["id"], commenter)
+        meta = {"comment_id": str(comment_id), "comment_text": comment_text or "",
+                "commenter": (commenter or "").lstrip("@"), "my_post_text": my_post_text or "",
+                "post_url": post_url or ""}
+        fields: dict[str, Any] = {"status": "awaiting", "publish_at": iso(now)}
+        if getattr(self.settings, "comments_auto_reply", False):
+            # Réponse automatique : elle part seule quelques minutes plus tard (❌ l'arrête).
+            fields = {"status": "approved", "approved_at": iso(now),
+                      "publish_at": iso(now + timedelta(minutes=COMMENT_AUTO_DELAY_MINUTES))}
+            meta["auto"] = True
+            meta["scheduled_at"] = iso(now)
+        item = self.state.new_item("comment_reply", [text], expires_at=iso(expires_at), meta=meta, **fields)
+        log.info("Item %s créé (réponse à @%s%s)", item["id"], commenter,
+                 ", envoi automatique" if meta.get("auto") else "")
         self._send_card(item)
         return item
 
@@ -604,6 +611,8 @@ class Approvals:
             if voir:
                 rows.append(voir)
             return rows
+        if status == "approved":
+            return [[button("❌ Annuler", f"no:{iid}")]] + ([voir] if voir else [])
         if status == "failed":
             texts = item.get("texts") or [""]
             rows = []

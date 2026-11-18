@@ -843,6 +843,39 @@ def test_comment_card_and_ok(app, settings, state, fake_tg, fake_x, clock):
     assert "Réponse envoyée" in fake_tg.edits[-1]["text"]
 
 
+def test_comment_auto_reply_goes_alone_after_delay(app, settings, state, fake_tg, fake_x, clock):
+    settings.comments_auto_reply = True
+    clock(10, 0)
+    item = make_comment(app)
+    assert item["status"] == "approved" and item["meta"]["auto"] is True
+    assert item["publish_at"] == iso(now_local() + timedelta(minutes=3))
+    card = fake_tg.sent[-1]
+    assert "Mode auto" in card["text"]
+    assert labels(card["buttons"]) == ["❌ Annuler", "🔗 Voir"]
+    pub = Publisher(settings, state, fake_x, app)
+    clock(10, 2)
+    assert pub.publish_due() == 0 and fake_x.posts == []   # encore le temps d'annuler
+    clock(10, 3)
+    assert pub.publish_due() == 1
+    assert fake_x.posts[-1]["reply_to"] == "555"
+    assert "Réponse envoyée" in fake_tg.edits[-1]["text"]
+
+
+def test_comment_auto_reply_can_be_cancelled(app, settings, state, fake_tg, fake_x, clock):
+    settings.comments_auto_reply = True
+    clock(10, 0)
+    item = make_comment(app)
+    click(fake_tg, app, f"no:{item['id']}", item)
+    assert item["status"] == "rejected"
+    clock(10, 5)
+    assert Publisher(settings, state, fake_x, app).publish_due() == 0
+    assert fake_x.posts == []
+
+
+def test_comment_auto_reply_off_by_default(settings):
+    assert settings.comments_auto_reply is False
+
+
 def test_comment_regen_and_ignore(app, fake_tg):
     item = make_comment(app)
     app.hooks["regen_comment"] = lambda it: "Another angle: show it one example first."

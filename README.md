@@ -70,13 +70,14 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 | Contenu | Publication | La carte arrive vers |
 |---|---|---|
 | **Le futur arrive** 🔮 : un geste de tous les jours qui va changer (« Bientôt, plus besoin de manette pour jouer »), raconté à partir d'une vraie nouveauté des derniers jours | 14 h 30 | 2 h 30 avant (45 min en mode automatique) |
-| **L'histoire du jour** 📰 : la nouveauté du jour qui intrigue tout le monde (« Amazon vient de dévoiler une caméra volante qui patrouille seule chez vous ») | 19 h | 2 h avant (45 min en auto) |
-| Thread 🧵 : une histoire racontée en grand le mardi, **« cette semaine, le futur s'est rapproché »** le dimanche | mardi 14 h 30 et dimanche 16 h | 4 h avant (1 h 30 en auto) |
-| **Ça vient de tomber** ⚡ : seulement pour une histoire dont tout le monde va parler (grande annonce d'un nom connu, première mondiale) | 1 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
+| **L'histoire du jour** 📰 : la nouveauté du jour qui intrigue tout le monde (« Amazon vient de dévoiler une caméra volante qui patrouille seule chez vous ») | 19 h, et une 2e histoire à 23 h | 2 h avant (45 min en auto) |
+| Thread 🧵 : une histoire racontée en grand le mardi et le jeudi, **« cette semaine, le futur s'est rapproché »** le dimanche | mardi et jeudi 14 h 30, dimanche 16 h | 4 h avant (1 h 30 en auto) |
+| **Ça vient de tomber** ⚡ : seulement pour une histoire dont tout le monde va parler (grande annonce d'un nom connu, première mondiale) | 3 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
 
-Deux posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
-19 h = leur pause de midi et la soirée en Europe). Moins de posts, mais chacun soigné : un post médiocre
-coûte plus cher qu'un post en moins.
+Trois posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
+19 h = leur pause de midi et la soirée en Europe, 23 h = leur après-midi). Rythme choisi par le
+propriétaire le 18 novembre 2026 (avant : 2 posts, 2 threads, 1 « ça vient de tomber »). Chaque post
+reste soigné : s'il n'y a rien d'assez fort, le créneau est sauté.
 
 **À qui on parle.** Une infirmière, un chauffeur de taxi, un étudiant qui joue aux jeux vidéo, un parent,
 un retraité : des gens qui ne suivent pas la tech et qui font défiler leur fil très vite. Ils ne s'arrêtent
@@ -139,8 +140,8 @@ novembre 2026) :
   retraits X suspende le compte. Si ça arrivait, `PRESS_MEDIA_ENABLED=false` (section 10) revient aux
   seules images officielles, et il suffit de supprimer le post concerné.
 
-- **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 2 ou 3 contenus
-  dans la journée.
+- **Les jours de thread**, le thread prend la place du post de 14 h 30 : jamais plus de 3 contenus
+  prévus dans la journée (plus, au plus, 3 « ça vient de tomber »).
 - Si Claude ne trouve rien de solide, le créneau est **sauté** (tu es prévenu) plutôt que rempli avec un
   texte creux. En mode automatique, aucun texte « de secours » n'est jamais publié tout seul.
 - Chaque texte est **vérifié** par une seconde lecture de Claude, article en main : faits, chiffres,
@@ -153,10 +154,16 @@ novembre 2026) :
   **jamais de doublon**.
 - La nuit (23 h 30 - 7 h 30), les messages arrivent **sans sonnerie**.
 
-**Les commentaires sous tes posts.** Quand quelqu'un répond à l'un de tes posts, une carte arrive avec une
-réponse proposée. ✅ = le bot répond pour toi (X l'autorise, puisque cette personne t'a répondu).
+**Les commentaires sous tes posts.** Quand quelqu'un répond à l'un de tes posts, le bot écrit une réponse
+et **l'envoie tout seul 3 minutes plus tard** (X l'autorise, puisque cette personne t'a répondu). La carte
+arrive sur Telegram avec un bouton ❌ : touche-le dans ces 3 minutes pour l'arrêter. Depuis le 18 novembre
+2026 (`COMMENTS_AUTO_REPLY=true`). Avec `COMMENTS_AUTO_REPLY=false`, rien ne part sans ton ✅. Les mêmes
+garde-fous que pour les posts s'appliquent : les commentaires hors ligne éditoriale, le bruit (emoji seul,
+lien seul) et la liste noire sont ignorés, chaque réponse est relue par les filtres, et une seule réponse
+par personne et par post dans la journée.
 
-**Le radar 🎯.** Quand un gros compte de ta niche vient de poster et que ça décolle, une carte arrive avec
+**Le radar 🎯 (coupé depuis le 18 novembre 2026, `RADAR_ENABLED=false`).** Aucune de ses 62 suggestions
+n'avait servi, et c'est lui qui lisait le plus chez X (payé par ta carte). Quand il est allumé : quand un gros compte de ta niche vient de poster et que ça décolle, une carte arrive avec
 une réponse suggérée. Le bouton **« Répondre dans X »** ouvre l'application X avec le texte déjà rempli :
 tu relis, tu ajustes, **tu publies toi-même**. Le bot ne publie jamais ces réponses (c'est interdit et
 c'est ce qui a fait supprimer 42 000 comptes). La suggestion reste valable 90 minutes : une réponse en
@@ -207,10 +214,13 @@ Chaque note peut être utilisée 2 fois, pendant 14 jours, sans rien ajouter au-
 
 ## 4. Combien ça coûte
 
-**API X** (paiement à l'usage) : un post coûte 0,015 $, une réponse 0,01 $, la lecture d'un post 0,005 $.
+**API X** (paiement à l'usage, **payé par ta carte chez X** : les crédits Claude ne peuvent pas payer X) :
+un post coûte 0,015 $, une réponse 0,01 $, la lecture d'un post 0,005 $.
 
-- 2 posts par jour : environ 1 $ par mois ; 2 threads par semaine : environ 1 $ par mois.
-- Le reste sert à lire (radar, comptes d'actu, statistiques).
+- 3 posts par jour : environ 1,50 $ par mois ; 3 threads par semaine : environ 1,50 $ par mois ; les
+  réponses automatiques aux commentaires : 1 centime chacune.
+- Le reste sert à lire (comptes d'actu, statistiques, commentaires). Mi-novembre 2026, le bot dépensait
+  environ 24 $ par mois chez X, surtout en lectures ; le radar, gros lecteur, est coupé depuis le 18/11.
 - **Plafond du bot : 30 $ par mois.** Les lectures (radar…) ne peuvent jamais dépasser 75 % de ce plafond,
   réparties sur le mois : le dernier quart reste toujours disponible pour publier.
 - Crédits offerts par X : 20 $ à l'ajout d'une carte, puis jusqu'à 50 $ (égaux à ta première recharge
@@ -222,17 +232,20 @@ quatre ou cinq appels : choisir l'histoire, écrire, relire, trouver la source, 
 - **Qui paie** : depuis le 18 novembre 2026, ces appels sont pris sur les **200 $ de crédits compris chaque
   mois dans ton forfait Claude Ultra** (associé au compte du bot sur la console Claude). Rien à recharger
   tant que le forfait Ultra est actif. Les crédits non utilisés ne se reportent pas d'un mois sur l'autre.
-- **Le plafond : 35 $ par mois** (`CLAUDE_BUDGET_MONTHLY_USD`, section 10). Le bot compte tout ce que
-  Claude lui coûte, aperçus et vérifications compris. Si le mois devient juste, il met d'abord en pause
-  le radar, les posts « ça vient de tomber » et les réponses aux commentaires, pour garder de quoi écrire
-  les posts prévus. À 80 % il te prévient sur Telegram ; au plafond il n'écrit plus rien jusqu'au 1er.
-- Ce plafond ne concerne **que le bot**. Les 200 $ de crédits, eux, sont partagés par tout ton compte
-  API : ce que le bot ne prend pas reste disponible pour tes autres projets. Ton forfait Ultra lui-même
-  (Claude, Claude Code) n'est limité par rien de tout ça.
+- **Jamais ta carte pour Claude** (consigne du propriétaire, 18/11/2026) : la recharge automatique est
+  coupée sur la console Claude, et elle doit le rester. Quand les crédits gratuits sont épuisés, Claude
+  s'arrête simplement d'écrire (le bot te prévient sur Telegram) ; rien n'est prélevé. Ne jamais acheter
+  de crédits Claude pour le bot.
+- **Le plafond : 195 $ par mois** (`CLAUDE_BUDGET_MONTHLY_USD`, section 10 ; 35 $ jusqu'au 18/11/2026).
+  Le bot compte tout ce que Claude lui coûte, aperçus et vérifications compris. Si le mois devient juste,
+  il met d'abord en pause le radar, les posts « ça vient de tomber » et les réponses aux commentaires, pour
+  garder de quoi écrire les posts prévus. À 80 % il te prévient sur Telegram ; au plafond il n'écrit plus
+  rien jusqu'au 1er.
+- Les 200 $ de crédits sont partagés par tout ton compte API : avec ce plafond, le bot peut presque tout
+  prendre. Ton forfait Ultra lui-même (Claude, Claude Code) n'est limité par rien de tout ça.
 - **Deuxième sécurité, côté console Claude** : la clé du bot (« bot-x-serveur ») vit dans un espace à
-  part, « Bot X », lui aussi limité à 35 $ par mois. Même si cette clé fuyait, elle ne pourrait pas
-  dépenser plus. L'espace « Default » n'a aucune limite et le compte entier garde la sienne (500 $) :
-  tes autres projets ne sont pas touchés.
+  part, « Bot X », lui aussi limité à 195 $ par mois. Même si cette clé fuyait, elle ne pourrait pas
+  dépenser plus. L'espace « Default » n'a aucune limite et le compte entier garde la sienne (500 $).
 - `/budget` affiche où tu en es. Pour diviser la consommation environ par deux, mets
   `LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
 
@@ -361,21 +374,23 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 
 | Réglage | Par défaut | Rôle |
 |---|---|---|
-| `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = « le futur arrive », `news` = « l'histoire du jour » ; `gm` existe encore si tu y tiens) |
-| `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure) |
+| `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = « le futur arrive », `news` = « l'histoire du jour » ; `gm` existe encore si tu y tiens). Sur ton serveur depuis le 18/11/2026 : `tip@14:30,news@19:00,news@23:00` |
+| `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure). Sur ton serveur depuis le 18/11/2026 : `tue@14:30,thu@14:30,sun@16:00` |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |
-| `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes |
-| `COMMENTS_ENABLED` | `true` | réponses proposées aux commentaires |
-| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler |
+| `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes (`false` sur ton serveur depuis le 18/11/2026) |
+| `COMMENTS_ENABLED` | `true` | réponses aux commentaires sous tes posts |
+| `COMMENTS_AUTO_REPLY` | `false` | `true` = la réponse part seule 3 min après la carte (❌ pour l'arrêter) ; `true` sur ton serveur depuis le 18/11/2026 |
+| `COMMENTS_MAX_DRAFTS_PER_DAY` | `40` | réponses aux commentaires par jour, au plus |
+| `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler (`3` sur ton serveur depuis le 18/11/2026) |
 | `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
 | `VIDEOS_ENABLED` | `true` | `false` = jamais d'extrait vidéo : seulement des photos |
 | `PRESS_MEDIA_ENABLED` | `true` | reprendre la photo ou la vidéo de l'article, comme un compte d'alertes info ; `false` = seulement les images des pages officielles (le mode prudent) |
 | `SECOND_IMAGE_ENABLED` | `true` | la 2e image à côté de la photo : logo de l'entreprise ou drapeau du pays |
 | `PHOTOS_ENABLED` | `true` | `false` = aucune photo (l'ancien nom `SCREENSHOTS_ENABLED` marche encore) ; avec `VIDEOS_ENABLED=false`, tous les posts partent en texte seul |
 | `X_BUDGET_MONTHLY_USD` / `X_BUDGET_DAILY_USD` | `30` / `1.50` | plafonds API X |
-| `CLAUDE_BUDGET_MONTHLY_USD` | `35` | plafond Claude du mois, en dollars (`0` = pas de plafond) |
+| `CLAUDE_BUDGET_MONTHLY_USD` | `35` | plafond Claude du mois, en dollars (`0` = pas de plafond ; `195` sur ton serveur depuis le 18/11/2026) |
 | `LLM_MODEL` | `claude-opus-5-5` | modèle Claude (`claude-sonnet-5-5` = moins cher) |
 | `IMAGE_AI_ENABLED` | `false` | photos générées par IA (clé OpenAI nécessaire) |
 | `DRY_RUN` | `false` | `true` = simulation, rien n'est publié |

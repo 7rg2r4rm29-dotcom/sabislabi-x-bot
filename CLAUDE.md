@@ -28,7 +28,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   proprement parler et accepte le risque de retraits ; `PRESS_MEDIA_ENABLED=false` revient aux seules
   images officielles. Aucune maquette, aucune carte dessinée. Sans image sûre, texte seul.
 - **Mode** : `APPROVAL_MODE=auto`, donc les posts partent sans validation humaine. Telegram sert aux
-  rapports et aux commandes.
+  rapports et aux commandes. Depuis le 18/11/2026, les réponses aux commentaires sous NOS posts partent
+  seules aussi (`COMMENTS_AUTO_REPLY=true`, 3 min pour toucher ❌), et le radar est coupé
+  (`RADAR_ENABLED=false` : aucune suggestion utilisée, et c'était le plus gros lecteur payant chez X).
 - **Historique** :
   - v1 : navigateur automatisé, abandonnée ;
   - v2 : API officielle X + Telegram ;
@@ -140,17 +142,20 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - `bot/analytics.py` : statistiques, rapports, notes de performance données à Claude ;
   - `bot/main.py` : ligne de commande ;
   - `bot/state.py`, `bot/config.py`, `bot/llm.py`.
-- **Rythme par défaut** (modifiable dans `config/.env`) :
-  - `POST_SLOTS=tip@14:30,news@19:00` (« le futur arrive », « l'histoire du jour ») ;
-  - `THREAD_SLOTS=tue@14:30,sun@16:00` ;
-  - post « ça vient de tomber » : au plus 1 par jour, entre 12 h et 23 h 30 (6 vérifications par jour
-    au plus).
+- **Rythme du serveur** (choix du propriétaire, 18/11/2026 au soir ; réglé dans `config/.env`, les défauts
+  du code sont restés à 2 posts, 2 threads, 1 post à chaud) :
+  - `POST_SLOTS=tip@14:30,news@19:00,news@23:00` (« le futur arrive », « l'histoire du jour », une 2e
+    histoire à 23 h = l'après-midi aux États-Unis) ;
+  - `THREAD_SLOTS=tue@14:30,thu@14:30,sun@16:00` (le jeudi est un thread « histoire », comme le mardi) ;
+  - post « ça vient de tomber » : `REACTIVE_MAX_PER_DAY=3`, entre 12 h et 23 h 30 (6 vérifications par
+    jour au plus).
   - Sans histoire assez forte, un créneau est sauté exprès. Si Claude tombe pendant la rédaction, le
     créneau est rédigé à son retour.
 - Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude mesuré : environ 1,10 $ par jour (30
   à 35 $ par mois). Budget X : `X_BUDGET_DAILY_USD` / `X_BUDGET_MONTHLY_USD`.
-- **Budget Claude : 35 $ par mois au plus** (consigne du propriétaire, 18/11/2026 ;
-  `CLAUDE_BUDGET_MONTHLY_USD`, codé dans `bot/llm.py`) : tout est compté, essais à la main compris
+- **Budget Claude : 195 $ par mois au plus** (consigne du propriétaire, 18/11/2026 au soir ; 35 $ le
+  matin même ; `CLAUDE_BUDGET_MONTHLY_USD=195` dans le `.env` du serveur, défaut du code 35, codé dans
+  `bot/llm.py`) : tout est compté, essais à la main compris
   (`LLM(…, manual=True)` → `state/llm_manual_usage.json`) ; l'optionnel (radar, posts à chaud, réponses
   aux commentaires) cède le premier ; alerte Telegram à 80 % ; arrêt au plafond jusqu'au 1er.
   **Donc : peu d'aperçus et d'essais payants** (un `--preview` coûte environ 0,50 $).
@@ -158,12 +163,17 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   Claude (platform.claude.com). Depuis le 18/11/2026 elle reçoit chaque mois les 200 $ de crédits API
   compris dans son forfait Claude Ultra (gratuits, expirent à chaque cycle : le premier lot le 13/12/2026).
   Plus de recharge à faire tant que le forfait Ultra est actif.
-  - Ces crédits sont partagés par TOUT le compte API (toutes les clés, tous les projets) : le bot en
-    prend 35 $ au plus, le reste est pour les autres projets du propriétaire.
+  - **Jamais la carte du propriétaire pour Claude** (sa consigne, 18/11/2026) : la recharge automatique
+    de la console est coupée et doit le rester ; ne jamais acheter de crédits Claude pour le bot. À crédit
+    épuisé, l'API refuse, le bot prévient sur Telegram et attend. (L'API X, elle, est payée par sa carte
+    chez X : d'où le radar coupé, pour que la dépense X n'augmente pas avec le nouveau rythme.)
+  - Ces crédits sont partagés par TOUT le compte API (toutes les clés, tous les projets) : le bot peut en
+    prendre 195 $, presque tout.
   - La limite de dépenses de l'organisation, côté console, est restée à 500 $ **exprès** : elle
     s'applique à tout le compte, et le propriétaire veut que les 35 $ ne concernent que le bot (18/11).
     Ne jamais limiter l'espace « Default » : il sert à ses autres projets.
-  - **Le bot a son propre espace de travail, « Bot X », limité à 35 $ par mois côté console**
+  - **Le bot a son propre espace de travail, « Bot X », limité à 195 $ par mois côté console** (35 $
+    jusqu'au 18/11/2026 au soir)
     (Dépenses et utilisation → Limites de dépenses → Limites de l'espace de travail ; créé le
     18/11/2026). C'est une deuxième barrière : le compteur du bot (un peu pessimiste) s'arrête
     normalement le premier. La console ne compte dans « Bot X » que depuis le 18/11 : les 18 $ du début
@@ -187,7 +197,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1330 tests au 18/11/2026.
+  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1333 tests au 18/11/2026.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;
@@ -264,8 +274,12 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   Claude »). Bot relancé à 9 h 47, `--check` au vert ; les deux anciennes clés ont été supprimées.
 - **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
-  `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
-  le radar.
+  `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés). Le radar,
+  lui, est coupé depuis le 18/11/2026.
+- **Mac du propriétaire : Documents est dans iCloud, avec des fichiers « dans le nuage seulement »**
+  (le 18/11/2026, `.venv` et quelques objets `.git` du clone ne s'ouvraient plus : Python restait
+  bloqué). Pour tester, travailler dans un clone neuf hors de Documents (avec son propre `venv`), puis
+  recopier les fichiers modifiés dans `~/Documents/sabislabi-x-bot`.
 - **À surveiller les premiers jours** :
   - la qualité des posts et des images (et la part des posts en texte seul) ;
   - les créneaux sautés (normal s'il n'y a pas d'histoire assez forte, à creuser si c'est fréquent) ;

@@ -188,6 +188,8 @@ class Settings:
     comments_check_every_min: int = 10
     comments_max_drafts_per_day: int = 40
     comments_window: tuple[dtime, dtime] = (dtime(8, 0), dtime(23, 30))
+    # true : la réponse part seule après COMMENT_AUTO_DELAY_MINUTES (❌ sur la carte pour l'arrêter)
+    comments_auto_reply: bool = False
 
     # --- Radar (suggestions de réponses sous les gros comptes, publiées À LA MAIN) ---
     radar_enabled: bool = True
@@ -360,6 +362,7 @@ def load_settings() -> Settings:
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),
         comments_max_drafts_per_day=_env_int("COMMENTS_MAX_DRAFTS_PER_DAY", 40),
         comments_window=_lenient("COMMENTS_WINDOW", parse_window, "08:00-23:30", w),
+        comments_auto_reply=_env_bool("COMMENTS_AUTO_REPLY", False),
         radar_enabled=_env_bool("RADAR_ENABLED", True),
         radar_check_every_min=_env_int("RADAR_CHECK_EVERY_MINUTES", 15),
         radar_accounts_per_check=_env_int("RADAR_ACCOUNTS_PER_CHECK", 20),
