@@ -136,6 +136,7 @@ Le compte API du bot (console Claude, organisation individuelle du propriétaire
 - Avant le plafond, l'optionnel cède le premier (`LLM.optional_ok`, `Bot._claude_optional_ok` dans `tick`) : radar, posts à chaud et réponses aux commentaires ne tournent que si `dépensé + ESSENTIAL_SHARE (75 %) × plafond × jours restants / jours du mois ≤ plafond` ; les posts planifiés continuent jusqu'au plafond.
 - À 80 % (`BUDGET_WARN_SHARE`) : un message Telegram, une fois par mois (`Bot.maybe_warn_claude_budget`).
 - Panne du 17/11/2026 : crédit prépayé épuisé (« Your credit balance is too low »), deux créneaux perdus ; le bot avait prévenu sur Telegram (`account_problem`).
+- Deuxième barrière, hors du code (18/11/2026) : sur la console, la clé du bot est dans un espace de travail réservé, « Bot X », limité à 35 $ par mois. La limite de l'organisation (500 $) et l'espace « Default » ne sont pas touchés, pour les autres projets du propriétaire. Le compteur du bot étant un peu pessimiste, c'est lui qui s'arrête le premier en temps normal.
 
 ## Tests
 

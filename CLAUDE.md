@@ -162,15 +162,25 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     prend 35 $ au plus, le reste est pour les autres projets du propriétaire.
   - La limite de dépenses de l'organisation, côté console, est restée à 500 $ **exprès** : elle
     s'applique à tout le compte, et le propriétaire veut que les 35 $ ne concernent que le bot (18/11).
-    Pour une limite côté console qui ne touche que le bot : lui donner son propre espace de travail
-    (workspace) avec une limite de 35 $, et y créer sa clé. Ne jamais limiter l'espace « Default ».
-  - **La clé du bot (« sabislabi-bot », créée le 27/10/2026) expire le 26/11/2026** : sans nouvelle
-    clé avant cette date, plus aucun post (« clé ANTHROPIC_API_KEY refusée »). L'expiration ne se
-    modifie pas dans la console. Une ancienne clé « sabislabi-bot-octobre » (21/10) traîne, inutilisée.
-    Remplacer seulement la clé Claude : le propriétaire crée la clé dans la console (sans date
-    d'expiration), puis la colle lui-même dans son Terminal avec
+    Ne jamais limiter l'espace « Default » : il sert à ses autres projets.
+  - **Le bot a son propre espace de travail, « Bot X », limité à 35 $ par mois côté console**
+    (Dépenses et utilisation → Limites de dépenses → Limites de l'espace de travail ; créé le
+    18/11/2026). C'est une deuxième barrière : le compteur du bot (un peu pessimiste) s'arrête
+    normalement le premier. La console ne compte dans « Bot X » que depuis le 18/11 : les 18 $ du début
+    de novembre sont passés par l'ancienne clé, dans « Default ».
+  - **Clé du bot : « bot-x-serveur »**, créée le 18/11/2026 dans l'espace « Bot X », **sans date
+    d'expiration**. Vérifié le 18/11 : `--check` au vert, l'ancienne clé étant coupée.
+    Anciennes clés, dans « Default » : « sabislabi-bot » (27/10, expirait le 26/11) désactivée le
+    18/11 ; « sabislabi-bot-octobre » (21/10, sans expiration) encore active, mais plus utilisée
+    (aucun coût en novembre).
+  - Remplacer seulement la clé Claude (ce qui a marché le 18/11) : sur la console, Clés API → « Créer
+    une clé » → « Continuer avec une clé API » ; nom, Expire « Jamais », Portée « Bot X ». L'assistant
+    peut remplir le formulaire, mais c'est le propriétaire qui clique sur « Créer une clé » et qui copie
+    la clé (l'assistant ne regarde plus la page tant qu'elle peut afficher la clé). Il la colle lui-même
+    dans son Terminal avec
     `ssh -t botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/set_secrets.sh ANTHROPIC_API_KEY'`
-    (saisie masquée) ; ensuite `sudo -n systemctl restart x-degen-bot` et `--check`.
+    (saisie masquée). Ensuite : un petit appel d'essai, `sudo -n systemctl restart x-degen-bot`,
+    désactiver l'ancienne clé, puis `--check`.
 
 ## 5. Commandes utiles
 
@@ -248,9 +258,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   Abonnés : −1 440 d'un coup le 31/10 (ménage de X, pas le bot), puis environ −2 par jour. Radar et
   réponses aux commentaires : aucune suggestion utilisée (62 et 10 expirées). Le flux IEEE Spectrum
   répond 403 (refus des robots) : le bot le saute.
-- **Urgent, avant le 26/11/2026** : remplacer la clé Claude du bot, qui expire (voir section 4,
-  « Qui paie Claude »). Proposé au propriétaire le 18/11, avec un espace réservé au bot limité à 35 $.
-- **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
+- **Clé Claude remplacée le 18/11/2026** (elle expirait le 26/11) : nouvelle clé sans date
+  d'expiration, dans un espace réservé au bot et limité à 35 $ par mois (voir section 4, « Qui paie
+  Claude »). Bot relancé à 9 h 47, `--check` au vert.
+- **En attente de la décision du propriétaire** : supprimer les deux anciennes clés Claude sur la
+  console (suppression définitive) ; lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés) ; couper ou non
   le radar.

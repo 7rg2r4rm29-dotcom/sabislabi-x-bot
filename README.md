@@ -229,6 +229,10 @@ quatre ou cinq appels : choisir l'histoire, écrire, relire, trouver la source, 
 - Ce plafond ne concerne **que le bot**. Les 200 $ de crédits, eux, sont partagés par tout ton compte
   API : ce que le bot ne prend pas reste disponible pour tes autres projets. Ton forfait Ultra lui-même
   (Claude, Claude Code) n'est limité par rien de tout ça.
+- **Deuxième sécurité, côté console Claude** : la clé du bot (« bot-x-serveur ») vit dans un espace à
+  part, « Bot X », lui aussi limité à 35 $ par mois. Même si cette clé fuyait, elle ne pourrait pas
+  dépenser plus. L'espace « Default » n'a aucune limite et le compte entier garde la sienne (500 $) :
+  tes autres projets ne sont pas touchés.
 - `/budget` affiche où tu en es. Pour diviser la consommation environ par deux, mets
   `LLM_MODEL=claude-sonnet-5-5` dans les réglages (section 10).
 
@@ -326,7 +330,7 @@ des sites d'actualité (`news_feeds`), qui va avec la ligne éditoriale, est tou
 |---|---|
 | Plus aucune carte | Envoie `/statut`. Pas de réponse : relance le bot (section 7) |
 | Les posts partent **sans image** | Souvent normal : beaucoup d'actus n'ont pas de page officielle trouvable, ou pas d'image officielle utilisable (photo d'agence, logo…). Si c'est **tous** les posts pendant des jours, quelque chose bloque. Lance la vérification : `ssh botuser@178.128.194.190 'cd ~/x-degen-bot && .venv/bin/python -m bot.main --check'` et lis la ligne « Images » |
-| « 💳 Claude ne peut plus écrire » | Le message dit pourquoi. **Plafond du mois** atteint (35 $ par défaut) : tout reprend le 1er, ou augmente `CLAUDE_BUDGET_MONTHLY_USD` (section 10). **Plus de crédit** sur la console Claude (platform.claude.com → Facturation) : vérifie que ton forfait Ultra est toujours actif, sinon achète des crédits. **Clé refusée** : elle a sans doute expiré (une clé peut avoir une date de fin, visible sur platform.claude.com → Clés API). Crée une nouvelle clé, sans date d'expiration, puis colle-la avec `ssh -t botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/set_secrets.sh ANTHROPIC_API_KEY'` (rien ne s'affiche quand tu colles, c'est normal ; ne l'écris JAMAIS ailleurs), et relance le bot (section 7). Dans les deux premiers cas le bot reprend tout seul |
+| « 💳 Claude ne peut plus écrire » | Le message dit pourquoi. **Plafond du mois** atteint (35 $ par défaut) : tout reprend le 1er, ou augmente `CLAUDE_BUDGET_MONTHLY_USD` (section 10). **Plus de crédit** sur la console Claude (platform.claude.com → Facturation) : vérifie que ton forfait Ultra est toujours actif, sinon achète des crédits. **Clé refusée** : elle a sans doute expiré (une clé peut avoir une date de fin, visible sur platform.claude.com → Clés API). Crée une nouvelle clé dans l'espace « Bot X » (case « Portée »), avec « Expire : Jamais », puis colle-la avec `ssh -t botuser@178.128.194.190 'bash ~/x-degen-bot/deploy/set_secrets.sh ANTHROPIC_API_KEY'` (rien ne s'affiche quand tu colles, c'est normal ; ne l'écris JAMAIS ailleurs), et relance le bot (section 7). Dans les deux premiers cas le bot reprend tout seul |
 | « Clés API X refusées », « plus de crédits » | Relance la commande de la section 5 : l'assistant détecte le problème et te guide |
 | « ❌ Le bot ne peut pas démarrer » sur Telegram | Un réglage de `config/.env` est faux : le message dit lequel |
 | « ⚠️ Réglage ignoré » au démarrage | Un horaire mal écrit : le bot utilise la valeur par défaut en attendant |
