@@ -54,7 +54,7 @@ setkey_default PUBLISH_JITTER_MINUTES 4
 setkey_default QUIET_HOURS "23:30-07:30"
 setkey_default REACTIVE_ENABLED true
 setkey_default REACTIVE_MAX_PER_DAY 1
-setkey_default REACTIVE_CHECK_EVERY_MINUTES 30
+setkey_default REACTIVE_CHECK_EVERY_MINUTES 15
 setkey_default REACTIVE_WINDOW "12:00-23:30"
 # Anciennes valeurs par défaut jamais modifiées à la main -> nouvelles valeurs
 # (novembre 2026 : moins de posts, mieux choisis, aux heures du public anglophone).
@@ -64,9 +64,10 @@ upgrade_default THREAD_SLOTS "tue@15:00,sun@17:00" "tue@14:30,sun@16:00"
 upgrade_default THREAD_SLOTS "tue@15:00,sun@18:00" "tue@14:30,sun@16:00"
 upgrade_default REACTIVE_MAX_PER_DAY 4 1
 upgrade_default REACTIVE_MAX_PER_DAY 2 1
-upgrade_default REACTIVE_CHECK_EVERY_MINUTES 150 30
-upgrade_default REACTIVE_CHECK_EVERY_MINUTES 60 30
-upgrade_default REACTIVE_CHECK_EVERY_MINUTES 20 30
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 150 15
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 60 15
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 20 15
+upgrade_default REACTIVE_CHECK_EVERY_MINUTES 30 15
 upgrade_default REACTIVE_WINDOW "09:30-22:00" "12:00-23:30"
 upgrade_default REACTIVE_WINDOW "11:00-23:00" "12:00-23:30"
 upgrade_default REACTIVE_WINDOW "08:00-01:00" "12:00-23:30"
@@ -80,6 +81,14 @@ setkey_default RADAR_CHECK_EVERY_MINUTES 15
 setkey_default X_BUDGET_DAILY_USD 1.50
 setkey_default X_BUDGET_MONTHLY_USD 30
 setkey_default CLAUDE_BUDGET_MONTHLY_USD 35
+# 19/11/2026 (choix du propriétaire) : les crédits Claude servent à mieux faire, pas à publier
+# plus. L'actu chaude est regardée toutes les 15 min (au lieu de 30) et Claude peut être
+# interrogé 30 fois par jour (au lieu de 6 : le bot ne voyait plus rien le soir) ; chaque post
+# est écrit en 3 versions, un second avis garde la meilleure ; et Claude réfléchit plus
+# longtemps pour l'écrire. Le nombre de posts ne change pas.
+setkey_default REACTIVE_MAX_CHECKS_PER_DAY 30
+setkey_default POST_VERSIONS 3
+setkey_default LLM_EFFORT_POST high
 setkey_default HEALTH_REPORT_AT "08:30"
 setkey_default WEEKLY_REPORT_AT "sun@20:30"
 setkey_default SCREENSHOTS_ENABLED true
@@ -92,5 +101,5 @@ chmod 600 "$ENV_FILE"
 
 echo "REGLAGES_OK${ADDED:+ (ajouté :$ADDED)}${UPGRADED:+ (mis à jour :$UPGRADED)}"
 # Uniquement des réglages NON secrets (liste explicite).
-grep -E '^(DRY_RUN|APPROVAL_MODE|POST_SLOTS|THREAD_SLOTS|DRAFT_LEAD_MINUTES|APPROVAL_GRACE_MINUTES|QUIET_HOURS|REACTIVE_ENABLED|REACTIVE_MAX_PER_DAY|COMMENTS_ENABLED|RADAR_ENABLED|RADAR_MAX_PER_DAY|X_BUDGET_DAILY_USD|X_BUDGET_MONTHLY_USD|CLAUDE_BUDGET_MONTHLY_USD|LLM_MODEL|X_HANDLE|TIMEZONE)=' "$ENV_FILE" | tr '\n' ' '
+grep -E '^(DRY_RUN|APPROVAL_MODE|POST_SLOTS|THREAD_SLOTS|DRAFT_LEAD_MINUTES|APPROVAL_GRACE_MINUTES|QUIET_HOURS|REACTIVE_ENABLED|REACTIVE_MAX_PER_DAY|REACTIVE_CHECK_EVERY_MINUTES|REACTIVE_MAX_CHECKS_PER_DAY|COMMENTS_ENABLED|RADAR_ENABLED|RADAR_MAX_PER_DAY|X_BUDGET_DAILY_USD|X_BUDGET_MONTHLY_USD|CLAUDE_BUDGET_MONTHLY_USD|LLM_MODEL|LLM_EFFORT_POST|POST_VERSIONS|X_HANDLE|TIMEZONE)=' "$ENV_FILE" | tr '\n' ' '
 echo

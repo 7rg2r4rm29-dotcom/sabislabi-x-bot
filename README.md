@@ -79,6 +79,17 @@ Trois posts par jour, aux heures où le public anglophone est en ligne (14 h 30 
 propriétaire le 18 novembre 2026 (avant : 2 posts, 2 threads, 1 « ça vient de tomber »). Chaque post
 reste soigné : s'il n'y a rien d'assez fort, le créneau est sauté.
 
+**La qualité avant le nombre** (choix du propriétaire, 19 novembre 2026) : les crédits Claude servent à
+mieux faire, pas à publier plus.
+
+- **Trois versions pour chaque post.** Claude écrit le post trois fois, séparément, en cherchant à
+  chaque fois une autre accroche. Un second avis les compare et garde la meilleure ; c'est elle dont
+  les faits sont vérifiés. Sur la carte Telegram : « meilleure de 3 versions ».
+- **Plus de temps de réflexion** pour écrire chaque post, comme pour les threads.
+- **L'actu chaude est regardée toutes les 15 minutes** (30 avant), et Claude peut être interrogé
+  30 fois par jour (6 avant : le bot ne voyait plus rien le soir, à l'heure des annonces américaines).
+  Le nombre de posts « ça vient de tomber » ne change pas : 3 par jour au plus.
+
 **À qui on parle.** Une infirmière, un chauffeur de taxi, un étudiant qui joue aux jeux vidéo, un parent,
 un retraité : des gens qui ne suivent pas la tech et qui font défiler leur fil très vite. Ils ne s'arrêtent
 que pour une chose : ce qui leur fait dire **« attends, quoi ? »**. Donc :
@@ -226,8 +237,12 @@ un post coûte 0,015 $, une réponse 0,01 $, la lecture d'un post 0,005 $.
 - Crédits offerts par X : 20 $ à l'ajout d'une carte, puis jusqu'à 50 $ (égaux à ta première recharge
   automatique).
 
-**Claude** : de l'ordre de **30 à 35 $ par mois** avec le modèle par défaut (Opus 5.5). Chaque post demande
-quatre ou cinq appels : choisir l'histoire, écrire, relire, trouver la source, regarder l'image.
+**Claude** : avec le modèle par défaut (Opus 5.5), de l'ordre de **30 à 35 $ par mois** pour 2 posts par
+jour écrits en une seule version. Chaque post demande quatre ou cinq appels : choisir l'histoire, écrire,
+relire, trouver la source, regarder l'image. Avec le rythme et les réglages de qualité de ton serveur
+(3 posts par jour, trois versions par post, plus de réflexion, actu chaude regardée plus souvent), compte
+plutôt **3 à 3,50 $ par jour, soit 90 à 110 $ par mois** — une estimation du 19/11/2026, à comparer à ce
+qu'affiche `/budget`.
 
 - **Qui paie** : depuis le 18 novembre 2026, ces appels sont pris sur les **200 $ de crédits compris chaque
   mois dans ton forfait Claude Ultra** (associé au compte du bot sur la console Claude). Rien à recharger
@@ -385,6 +400,10 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `COMMENTS_MAX_DRAFTS_PER_DAY` | `40` | réponses aux commentaires par jour, au plus |
 | `REACTIVE_ENABLED` / `REACTIVE_MAX_PER_DAY` | `true` / `1` | « ça vient de tomber » : seulement pour une histoire dont tout le monde va parler (`3` sur ton serveur depuis le 18/11/2026) |
 | `REACTIVE_WINDOW` | `12:00-23:30` | heures où une actu à chaud peut partir |
+| `REACTIVE_CHECK_EVERY_MINUTES` | `30` | toutes les combien de minutes le bot regarde l'actu chaude (`15` sur ton serveur depuis le 19/11/2026) |
+| `REACTIVE_MAX_CHECKS_PER_DAY` | `6` | fois par jour, au plus, où Claude est interrogé sur l'actu chaude (`30` sur ton serveur depuis le 19/11/2026 : à 6, le bot ne voyait plus rien le soir) |
+| `POST_VERSIONS` | `1` | versions écrites pour chaque post ; un second avis garde la meilleure (`3` sur ton serveur depuis le 19/11/2026 ; 5 au plus) |
+| `LLM_EFFORT_POST` | vide | temps de réflexion de Claude pour écrire un post : `low`, `medium`, `high`, `xhigh` ou `max` ; vide = le réglage général (`high` sur ton serveur depuis le 19/11/2026) |
 | `VIDEOS_ENABLED` | `true` | `false` = jamais d'extrait vidéo : seulement des photos |
 | `PRESS_MEDIA_ENABLED` | `true` | reprendre la photo ou la vidéo de l'article, comme un compte d'alertes info ; `false` = seulement les images des pages officielles (le mode prudent) |
 | `SECOND_IMAGE_ENABLED` | `true` | la 2e image à côté de la photo : logo de l'entreprise ou drapeau du pays |

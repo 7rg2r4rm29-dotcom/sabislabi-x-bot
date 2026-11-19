@@ -41,7 +41,7 @@ WATCHDOG_S = 420
 ANALYTICS_EVERY_MIN = 180
 GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
-REACTIVE_MAX_CHECKS_PER_DAY = 6    # appels à Claude pour l'actu chaude, au plus par jour
+REACTIVE_MAX_CHECKS_PER_DAY = 6    # appels à Claude pour l'actu chaude, au plus par jour (défaut du réglage)
 BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
@@ -719,6 +719,16 @@ class Bot:
         self.state.data["breaking_seen"] = (seen + [i for i in ids if i not in seen])[-400:]
         self.state.flush()
 
+    def _reactive_max_checks(self) -> int:
+        """Fois par jour, au plus, où Claude est interrogé sur l'actu chaude
+        (REACTIVE_MAX_CHECKS_PER_DAY). Passé ce nombre, le bot ne voit plus rien jusqu'au
+        lendemain : trop bas, il rate les annonces du soir (la journée aux États-Unis)."""
+        try:
+            return max(1, int(getattr(self.settings, "reactive_max_checks_per_day",
+                                      REACTIVE_MAX_CHECKS_PER_DAY)))
+        except (TypeError, ValueError):
+            return REACTIVE_MAX_CHECKS_PER_DAY
+
     def maybe_reactive(self, force: bool = False) -> int:
         """`force` (commande --once reactive) ignore la fenêtre, l'intervalle et
         l'écart avec les créneaux, jamais le plafond du jour."""
@@ -750,8 +760,9 @@ class Bot:
         fresh = self._new_breaking_candidates(news, now)
         if not fresh and not force:
             return 0
-        if self.state.count("reactive_checks") >= REACTIVE_MAX_CHECKS_PER_DAY and not force:
-            log.info("Réactif : %d vérifications aujourd'hui, on s'arrête là", REACTIVE_MAX_CHECKS_PER_DAY)
+        max_checks = self._reactive_max_checks()
+        if self.state.count("reactive_checks") >= max_checks and not force:
+            log.info("Réactif : %d vérifications aujourd'hui, on s'arrête là", max_checks)
             return 0
         self.state.incr("reactive_checks")
         self._remember_breaking_candidates(fresh)

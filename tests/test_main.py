@@ -346,6 +346,16 @@ class TestMain:
         assert "vidéo non" in txt and "photo non" in txt and "(pages officielles seulement)" in txt
         assert "2e image (logo, drapeau) non" in txt
 
+    def test_config_summary_shows_the_quality_settings(self, settings):
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "effort medium (threads : high)" in txt and "versions par post" not in txt
+        assert "actu regardée toutes les 30 min, Claude interrogé 6 fois/jour au plus" in txt
+        settings.post_versions, settings.llm_effort_post = 3, "high"
+        settings.reactive_check_every_min, settings.reactive_max_checks_per_day = 15, 30
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "effort medium (threads : high · posts : high) · 3 versions par post, la meilleure est gardée" in txt
+        assert "actu regardée toutes les 15 min, Claude interrogé 30 fois/jour au plus" in txt
+
     def test_config_summary_shows_the_claude_cap(self, settings):
         assert "Claude : 35 $/mois au plus" in "\n".join(bmain.config_summary(settings))
         settings.claude_budget_monthly_usd = 0

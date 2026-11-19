@@ -190,6 +190,42 @@ class TestConfig:
         monkeypatch.setenv("CLAUDE_BUDGET_MONTHLY_USD", "abc")
         assert cfg.load_settings().claude_budget_monthly_usd == 35.0
 
+    def test_quality_settings(self, monkeypatch):
+        """19/11/2026 : plusieurs versions par post, plus de réflexion pour les écrire, actu chaude
+        regardée plus souvent. Sans réglage, le bot se comporte comme avant."""
+        for k in ("POST_VERSIONS", "LLM_EFFORT_POST", "REACTIVE_MAX_CHECKS_PER_DAY"):
+            monkeypatch.delenv(k, raising=False)
+        s = cfg.load_settings()
+        assert (s.post_versions, s.llm_effort_post, s.reactive_max_checks_per_day) == (1, "", 6)
+        assert s.warnings == []
+        monkeypatch.setenv("POST_VERSIONS", "3")
+        monkeypatch.setenv("LLM_EFFORT_POST", " High ")
+        monkeypatch.setenv("REACTIVE_MAX_CHECKS_PER_DAY", "30")
+        s = cfg.load_settings()
+        assert (s.post_versions, s.llm_effort_post, s.reactive_max_checks_per_day) == (3, "high", 30)
+        assert s.warnings == [] and s.validate() == [] or "LLM_EFFORT invalide." not in s.validate()
+        # Valeurs absurdes : bornées, jamais bloquantes.
+        monkeypatch.setenv("POST_VERSIONS", "99")
+        monkeypatch.setenv("REACTIVE_MAX_CHECKS_PER_DAY", "0")
+        s = cfg.load_settings()
+        assert s.post_versions == cfg.POST_VERSIONS_MAX == 5 and s.reactive_max_checks_per_day == 1
+        monkeypatch.setenv("POST_VERSIONS", "-2")
+        assert cfg.load_settings().post_versions == 1
+        monkeypatch.setenv("POST_VERSIONS", "abc")
+        monkeypatch.setenv("REACTIVE_MAX_CHECKS_PER_DAY", "abc")
+        s = cfg.load_settings()
+        assert (s.post_versions, s.reactive_max_checks_per_day) == (1, 6)
+        # Un temps de réflexion inconnu est signalé et ignoré : le bot démarre quand même.
+        monkeypatch.setenv("LLM_EFFORT_POST", "turbo")
+        s = cfg.load_settings()
+        assert s.llm_effort_post == "" and any("LLM_EFFORT_POST" in w for w in s.warnings)
+
+    @pytest.mark.parametrize("raw, value", [("", ""), (None, ""), ("low", "low"), ("XHIGH", "xhigh"), (" max ", "max")])
+    def test_parse_effort_or_empty(self, raw, value):
+        assert cfg.parse_effort_or_empty(raw) == value
+        with pytest.raises(cfg.ConfigError):
+            cfg.parse_effort_or_empty("turbo")
+
 
 # ---------------------------------------------------------------------------
 # Fichiers de configuration livrés (config/settings.json, config/content.json)

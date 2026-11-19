@@ -18,6 +18,9 @@ twitter.com est refusé.
   - résultat complet gardé 20 min en mémoire (mêmes arguments) ;
   - chaque flux gardé 20 min en mémoire ; s'il tombe, on réutilise sa dernière
     version valide (≤ 6 h) ;
+  - ces 20 min tombent juste sous l'intervalle des vérifications « à chaud » quand il
+    est plus court (REACTIVE_CHECK_EVERY_MINUTES=15 -> 13 min), jamais sous 5 min :
+    sinon une vérification sur deux relirait le cache au lieu des flux ;
   - posts X : `since_id` par compte (state.data["news_since"]), cache glissant de
     48 h (state.data["news_x_cache"]), chaque compte relu au plus toutes les
     2 h (state.data["news_x_fetched_at"]), ids des comptes partagés avec le radar
@@ -84,6 +87,8 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 # --- Caches ---
 RESULT_TTL = timedelta(minutes=20)
 FEED_TTL = timedelta(minutes=20)
+CACHE_TTL_MIN = timedelta(minutes=5)       # jamais moins : on ne relit pas tous les flux à chaque tour
+CACHE_TTL_MARGIN = timedelta(minutes=2)    # le cache expire un peu avant la vérification suivante
 FEED_STALE_OK = timedelta(hours=6)
 X_CACHE_HOURS = 48
 X_REFRESH_MINUTES = 120
@@ -1131,7 +1136,7 @@ class NewsHub:
         except (TypeError, ValueError):
             key = (36.0, bool(use_x))
         cached = self._result_cache.get(key)
-        if cached and timedelta(0) <= now - cached[0] < RESULT_TTL:
+        if cached and timedelta(0) <= now - cached[0] < self._cache_ttl(RESULT_TTL):
             return [replace(i) for i in cached[1]]
 
         stats: dict[str, Any] = {"rss": 0, "hn": 0, "x": 0, "old": 0, "blocked": 0, "dupes": 0,
@@ -1167,6 +1172,23 @@ class NewsHub:
         """Oublie les caches mémoire (pas le cache des posts X, déjà payés)."""
         self._result_cache.clear()
         self._feed_cache.clear()
+
+    def _cache_ttl(self, base: timedelta) -> timedelta:
+        """Durée de vie des caches mémoire (flux, résultat) : `base`, ramenée juste sous
+        l'intervalle des vérifications « à chaud » quand il est plus court — une actu qui
+        vient de tomber doit être vue à la vérification suivante, pas à celle d'après.
+        Les comptes X, eux, gardent leur propre rythme (X_REFRESH_MINUTES) : chaque
+        lecture y est payée."""
+        s = self.settings
+        if not getattr(s, "reactive_enabled", False):
+            return base
+        try:
+            every = float(getattr(s, "reactive_check_every_min", 0) or 0)
+        except (TypeError, ValueError):
+            return base
+        if every <= 0:
+            return base
+        return min(base, max(CACHE_TTL_MIN, timedelta(minutes=every) - CACHE_TTL_MARGIN))
 
     # ------------------------------------------------------------------
     def _finalize(self, raw: list[tuple[NewsItem, float]], now: datetime, max_age_hours: float,
@@ -1225,7 +1247,7 @@ class NewsHub:
         todo: list[dict] = []
         for f in feeds:
             c = self._feed_cache.get(str(f["url"]))
-            if c and timedelta(0) <= now - c["at"] < FEED_TTL:
+            if c and timedelta(0) <= now - c["at"] < self._cache_ttl(FEED_TTL):
                 ready.append((f, c["items"]))
             else:
                 todo.append(f)

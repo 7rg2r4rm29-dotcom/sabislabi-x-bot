@@ -760,6 +760,22 @@ class TestBreakingTrigger:
         bot.maybe_reactive()
         assert parts["writer"].names().count("draft_reactive") == sched.REACTIVE_MAX_CHECKS_PER_DAY + 2
 
+    @pytest.mark.parametrize("setting, expected", [(2, 2), (30, 30), (0, 1), (-4, 1), ("x", 6), (None, 6)])
+    def test_the_daily_cap_of_checks_is_a_setting(self, settings, state, budget, parts, clock, setting, expected):
+        """REACTIVE_MAX_CHECKS_PER_DAY : à 6, le bot ne voyait plus rien le soir, quand tombent
+        les annonces de la journée américaine."""
+        settings.post_slots, settings.thread_slots = [], []
+        settings.reactive_check_every_min = 0
+        settings.reactive_max_checks_per_day = setting
+        parts["writer"].default_reactive = False                 # Claude dit « non » à chaque fois
+        bot = make_bot(settings, state, budget, parts)
+        clock(16, 0)
+        for i in range(expected + 3):
+            parts["news"].items = [_fresh(f"n{i}", "Something happened today", official=True)]
+            assert bot.maybe_reactive() == 0
+        assert parts["writer"].names().count("draft_reactive") == expected
+        assert state.count("reactive_checks") == expected
+
 
 # ---------------------------------------------------------------------------
 # Tour de boucle

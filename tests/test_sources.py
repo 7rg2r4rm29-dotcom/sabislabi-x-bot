@@ -848,6 +848,39 @@ def test_collect_result_cached_20_minutes(settings, state, clock):
     assert len(http.calls) == 2
 
 
+def test_feeds_are_read_again_at_every_breaking_news_check(settings, state, clock):
+    """Actu chaude regardée toutes les 15 min : la mémoire des flux tombe à 13 min, sinon une
+    vérification sur deux relirait la mémoire au lieu des flux."""
+    settings.reactive_check_every_min = 15
+    tc = feed("TechCrunch AI", "https://techcrunch.com/feed/", 2)
+    hub, http = hub_with(settings, state, [(tc, (200, rss_feed(entry("Claude for Chrome", "https://tc.com/c"))))])
+    hub.collect()
+    clock(10, 12)
+    hub.collect()
+    assert len(http.calls) == 1                     # 12 min : encore en mémoire
+    clock(10, 15)
+    hub.collect()
+    assert len(http.calls) == 2                     # la vérification suivante relit le flux
+    clock(10, 30)
+    hub.collect()
+    assert len(http.calls) == 3
+
+
+@pytest.mark.parametrize("every, enabled, minutes", [
+    (30, True, 20),                       # réglage par défaut : rien ne change
+    (120, True, 20),                      # jamais plus long que la durée de base
+    (15, True, 13), (10, True, 8),
+    (3, True, 5), (1, True, 5),           # jamais moins de 5 min
+    (0, True, 20), (None, True, 20), ("x", True, 20),
+    (15, False, 20),                      # posts « à chaud » coupés : rien ne presse
+])
+def test_cache_lifetime_follows_the_breaking_news_interval(settings, state, every, enabled, minutes):
+    settings.reactive_check_every_min, settings.reactive_enabled = every, enabled
+    hub, _ = hub_with(settings, state, [])
+    assert hub._cache_ttl(sources.FEED_TTL) == timedelta(minutes=minutes)
+    assert hub._cache_ttl(sources.RESULT_TTL) == timedelta(minutes=minutes)
+
+
 def test_returned_items_are_copies(settings, state):
     tc = feed("TechCrunch AI", "https://techcrunch.com/feed/", 2)
     hub, _ = hub_with(settings, state, [(tc, (200, rss_feed(entry("Claude for Excel", "https://tc.com/x"))))])

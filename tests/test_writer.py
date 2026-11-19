@@ -525,6 +525,254 @@ class TestPostWriting:
 # ---------------------------------------------------------------------------
 # La capture : la page d'une actu CITÉE, jamais un post X
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Plusieurs versions d'un même post : la meilleure est gardée (POST_VERSIONS)
+# ---------------------------------------------------------------------------
+NEWS_TEXT_3 = REACT_TEXT
+NEWS_TEXT_4 = ("Chatting out loud with ChatGPT is now open to everyone.\n"
+               "The paid plan is no longer needed.\n"
+               "Handy, or one more voice in your day?")
+BAD_LINK = "Talk to it at chatgpt.com, for free.\nWould you?"
+
+
+def rank(*order, reason: str = "la plus claire") -> dict:
+    """Réponse du second avis : les numéros des versions, la meilleure d'abord."""
+    return {"ranking": list(order), "reason": reason}
+
+
+class TestPostVersions:
+    def test_one_version_by_default_and_no_second_opinion(self, settings, state, items):
+        assert settings.post_versions == 1 and settings.llm_effort_post == ""
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT, reason="voix gratuite")))
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT] and d.reason == "voix gratuite"
+        assert llm.labels() == ["pick-news", "post-news", "factcheck"]
+        assert "ANOTHER VERSION" not in llm.calls[1]["user"]
+
+    def test_three_versions_are_written_ranked_and_the_best_one_is_kept(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT, reason="v1"), post_resp(NEWS_TEXT_2, reason="voix gratuite"),
+                   post_resp(NEWS_TEXT_3, reason="v3"), picks=(1, 2)),
+            "choose-": rank(2, 3, 1, reason="le début le plus simple")})
+        d = w.draft_post("news", items, [], "")
+        assert isinstance(d, Draft) and d.kind == "news" and d.texts == [NEWS_TEXT_2]
+        assert d.sources == [items[0]] and d.visual == Visual("photo", items[0].url)
+        assert d.reason == "voix gratuite · meilleure de 3 versions : le début le plus simple"
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "choose-news", "factcheck"]
+        first, second, third = (llm.calls[i]["user"] for i in (1, 2, 3))
+        # Chaque version est écrite en voyant les précédentes, avec la consigne de s'en écarter.
+        assert "ANOTHER VERSION" not in first
+        assert second.startswith(first) and third.startswith(first)
+        assert "ANOTHER VERSION" in second and "Write a clearly DIFFERENT version" in second
+        assert NEWS_TEXT in second and NEWS_TEXT_2 not in second
+        assert f'VERSION 1:\n"""\n{NEWS_TEXT}\n"""' in third and f'VERSION 2:\n"""\n{NEWS_TEXT_2}\n"""' in third
+        assert all(llm.calls[i]["system"] == wmod.SYSTEM_PROMPT for i in (1, 2, 3))
+        # Le second avis : les histoires citées, les trois versions, un classement à rendre.
+        judge = llm.calls[4]
+        assert judge["system"] == wmod.POST_JUDGE_PROMPT
+        assert set(judge["schema"]["properties"]) == {"ranking", "reason"}
+        for n, text in enumerate((NEWS_TEXT, NEWS_TEXT_2, NEWS_TEXT_3), start=1):
+            assert f'VERSION {n}:\n"""\n{text}\n"""' in judge["user"]
+        assert items[0].title in judge["user"] and items[1].title not in judge["user"]   # histoires citées seulement
+        # Le relecteur ne lit que la version classée première.
+        fc = llm.calls[5]["user"]
+        assert NEWS_TEXT_2 in fc and NEWS_TEXT not in fc and NEWS_TEXT_3 not in fc
+
+    def test_recent_posts_are_shown_to_the_second_opinion(self, settings, state, items):
+        settings.post_versions = 2
+        state.remember_text("tip", "A robot dog now opens doors.\nStill a prototype.")
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)), "choose-": rank(1, 2)})
+        assert w.draft_post("news", items, [], "") is not None
+        judge = llm.calls[3]["user"]
+        assert "The account's latest posts (for variety):" in judge and "A robot dog now opens doors." in judge
+
+    def test_version_refused_by_the_code_is_never_ranked_and_its_fault_is_told(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(BAD_LINK), post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2)),
+            "choose-": rank(2, 1)})
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT_2] and "meilleure de 3 versions" in d.reason
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "choose-news", "factcheck"]
+        # La version suivante sait pourquoi la précédente a été écartée.
+        assert ("VERSION 1 (rejected by the automatic checks — it contained a link or a domain name"
+                in llm.calls[2]["user"])
+        assert "; don't repeat that):" in llm.calls[2]["user"]
+        judge = llm.calls[4]["user"]
+        assert "chatgpt.com" not in judge and "VERSION 3" not in judge
+        assert f'VERSION 1:\n"""\n{NEWS_TEXT}\n"""' in judge and f'VERSION 2:\n"""\n{NEWS_TEXT_2}\n"""' in judge
+
+    def test_a_single_valid_version_needs_no_second_opinion(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, flow("news", post_resp(BAD_LINK), post_resp(NEWS_TEXT),
+                                                   post_resp(BAD_LINK)))
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT] and d.reason == "raison · meilleure de 3 versions"
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "factcheck"]
+
+    @pytest.mark.parametrize("answer, winner, why", [
+        (None, NEWS_TEXT, ""),                                        # second avis indisponible : ordre d'écriture
+        ({"ranking": "2", "reason": "x"}, NEWS_TEXT, ""),             # classement illisible : sa raison aussi
+        ({"ranking": [9, 0, "x", True], "reason": "y"}, NEWS_TEXT, ""),  # numéros absurdes
+        (rank(3, reason="la chute"), NEWS_TEXT_3, " : la chute"),     # classement incomplet : le reste à la suite
+        (rank(2, 2, 2, 1, 3, reason=""), NEWS_TEXT_2, ""),            # doublons ignorés
+    ])
+    def test_second_opinion_missing_or_odd(self, settings, state, items, answer, winner, why):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3)),
+            "choose-": answer})
+        d = w.draft_post("news", items, [], "")
+        assert d is not None and d.texts == [winner]
+        assert d.reason == f"raison · meilleure de 3 versions{why}"
+        assert llm.labels()[-2:] == ["choose-news", "factcheck"]
+
+    def test_the_fact_checker_follows_the_ranking_until_a_version_passes(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3),
+                   factcheck=[fc_fail("the item never says it works without internet"), FC_OK]),
+            "choose-": rank(3, 1, 2, reason="la plus forte")})
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT]                           # 2e du classement : la 1re a été refusée
+        # La raison du second avis valait pour la version refusée : elle n'est pas reprise.
+        assert d.reason == "raison · meilleure de 3 versions"
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "choose-news",
+                                "factcheck", "factcheck"]
+        assert NEWS_TEXT_3 in llm.calls[5]["user"] and NEWS_TEXT in llm.calls[6]["user"]
+
+    def test_no_version_passes_the_fact_check_then_one_guided_rewrite(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3),
+                   post_resp(NEWS_TEXT_4, reason="réécrit"),
+                   factcheck=[fc_fail("claim A is not in the item"), fc_fail("claim B"), fc_fail("claim C"), FC_OK]),
+            "choose-": rank(2, 1, 3)})
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT_4] and d.reason == "réécrit"       # plus de « meilleure de » : une réécriture
+        assert llm.labels() == (["pick-news"] + ["post-news"] * 3 + ["choose-news"] + ["factcheck"] * 3
+                                + ["post-news", "factcheck"])
+        retry = llm.calls[8]["user"]
+        # Le second essai repart de la version classée première et de ce que le relecteur lui reproche.
+        assert retry.startswith(llm.calls[1]["user"]) and "ANOTHER VERSION" not in retry
+        assert "YOUR PREVIOUS ANSWER WAS REJECTED" in retry
+        assert "a fact-checker found unsupported claims: claim A is not in the item" in retry
+        assert NEWS_TEXT_2.splitlines()[0] in retry
+
+    def test_no_version_passes_at_all_means_no_post(self, settings, state, items):
+        settings.post_versions = 2
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3),
+                   factcheck=fc_fail("unsupported claim")),
+            "choose-": rank(1, 2)})
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "choose-news", "factcheck", "factcheck",
+                                "post-news", "factcheck"]
+
+    def test_every_version_refused_by_the_code_then_one_guided_rewrite(self, settings, state, items):
+        settings.post_versions = 3
+        too_many = "ChatGPT voice is now free in 40 countries.\nWould you?"
+        w, llm = make_writer(settings, state, flow("news", post_resp(BAD_LINK), post_resp(too_many),
+                                                   post_resp(BAD_LINK), post_resp(NEWS_TEXT)))
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT] and d.reason == "raison"
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "post-news", "factcheck"]
+        assert "the figure 40 is not in the stories you cite" in llm.calls[3]["user"]     # dit à la version 3
+        retry = llm.calls[4]["user"]
+        assert "YOUR PREVIOUS ANSWER WAS REJECTED" in retry and "it contained a link or a domain name" in retry
+        assert "ANOTHER VERSION" not in retry
+
+    def test_claude_silent_on_the_first_version_means_no_post(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, flow("news", None))
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news", "post-news"]
+
+    def test_claude_dropping_out_midway_keeps_what_is_written(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT), None))
+        d = w.draft_post("news", items, [], "")
+        assert d.texts == [NEWS_TEXT] and d.reason == "raison"            # une seule version : rien à départager
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "factcheck"]
+
+    def test_fact_check_down_means_no_post_whatever_the_versions(self, settings, state, items):
+        settings.post_versions = 3
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3), factcheck=None),
+            "choose-": rank(1, 2, 3)})
+        assert w.draft_post("news", items, [], "") is None
+        assert llm.labels() == ["pick-news", "post-news", "post-news", "post-news", "choose-news", "factcheck"]
+
+    def test_tip_post_in_versions_keeps_its_poll_rules(self, settings, state, items):
+        settings.post_versions = 2
+        w, llm = make_writer(settings, state, {
+            **flow("tip", post_resp(TIP_TEXT, poll_options=["Yes", "No"]), post_resp(TIP_TEXT_2), picks=(4,)),
+            "choose-": rank(1, 2)})
+        d = w.draft_post("tip", items, [], "")
+        assert d.texts == [TIP_TEXT] and d.poll == {"options": ["Yes", "No"], "duration_minutes": 1440}
+        assert d.visual is None                                 # un sondage n'a pas d'image
+        assert llm.labels() == ["pick-tip", "post-tip", "post-tip", "choose-tip", "factcheck"]
+
+    def test_reactive_post_is_written_in_versions_too(self, settings, state, items):
+        settings.post_versions = 2
+        w, llm = make_writer(settings, state, {
+            **flow("reactive", post_resp(REACT_TEXT, reason=""), post_resp(NEWS_TEXT_2, reason="")),
+            "choose-": rank(2, 1, reason="plus direct")})
+        d = w.draft_reactive(items, [], "")
+        assert d.kind == "reactive" and d.texts == [NEWS_TEXT_2]
+        assert d.reason == "ça vient de tomber · meilleure de 2 versions : plus direct"
+        assert llm.labels() == ["pick-reactive", "post-reactive", "post-reactive", "choose-reactive", "factcheck"]
+
+    def test_gm_is_never_written_in_versions(self, settings, state):
+        settings.post_versions, settings.llm_effort_post = 3, "high"
+        w, llm = make_writer(settings, state, {"post-gm": gm_resp(GM_TEXT), "factcheck": FC_OK})
+        d = w.draft_post("gm", [], [], "")
+        assert d.texts == [GM_TEXT]
+        assert llm.labels() == ["post-gm", "factcheck"] and llm.calls[0]["effort"] is None
+
+    @pytest.mark.parametrize("raw, written", [(0, 1), (1, 1), (2, 2), (99, wmod.POST_VERSIONS_MAX), ("x", 1),
+                                              (None, 1), (-3, 1), ("4", 4)])
+    def test_number_of_versions_is_bounded(self, settings, state, items, raw, written):
+        settings.post_versions = raw
+        w, llm = make_writer(settings, state, {
+            "pick-": pick(1), "post-news": lambda *a: post_resp(NEWS_TEXT), "factcheck": FC_OK,
+            "choose-": rank(1)})
+        assert w.draft_post("news", items, [], "") is not None
+        assert llm.labels().count("post-news") == written
+        assert llm.labels().count("choose-news") == (1 if written > 1 else 0)
+
+    def test_thinking_time_for_posts(self, settings, state, items):
+        """LLM_EFFORT_POST : pour écrire chaque version, la réécriture et le second avis.
+        Le choix de l'histoire reste rapide, la relecture garde le réglage général."""
+        settings.post_versions, settings.llm_effort_post = 2, "high"
+        w, llm = make_writer(settings, state, {
+            **flow("news", post_resp(NEWS_TEXT), post_resp(NEWS_TEXT_2), post_resp(NEWS_TEXT_3),
+                   factcheck=[fc_fail("claim A"), fc_fail("claim B"), FC_OK]),
+            "choose-": rank(1, 2)})
+        assert w.draft_post("news", items, [], "").texts == [NEWS_TEXT_3]
+        efforts = [(c["label"], c["effort"]) for c in llm.calls]
+        assert efforts == [("pick-news", "low"), ("post-news", "high"), ("post-news", "high"),
+                           ("choose-news", "high"), ("factcheck", None), ("factcheck", None),
+                           ("post-news", "high"), ("factcheck", None)]
+
+    @pytest.mark.parametrize("raw", ["", None, "  "])
+    def test_without_the_setting_posts_keep_the_general_thinking_time(self, settings, state, items, raw):
+        settings.llm_effort_post = raw
+        w, llm = make_writer(settings, state, flow("news", post_resp(NEWS_TEXT)))
+        assert w.draft_post("news", items, [], "") is not None
+        assert llm.calls[1]["effort"] is None
+
+    def test_thread_writing_is_untouched(self, settings, state, items):
+        settings.post_versions, settings.llm_effort_post = 3, "max"
+        settings.thread_candidates = 1
+        assert wmod.Writer._post_versions(Writer(settings, FakeLLM(), state), "news") == 3
+        w, llm = make_writer(settings, state, {})
+        w.draft_thread(items, [], "")
+        assert all(not lab.startswith(("post-", "choose-")) for lab in llm.labels())
+
+
 class TestScreenshotTarget:
     @pytest.mark.parametrize("source_ids, visual_url, expected", [
         ([1], "[1]", 0),

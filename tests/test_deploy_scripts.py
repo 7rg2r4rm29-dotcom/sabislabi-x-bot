@@ -123,6 +123,11 @@ def test_migrate_adds_v2_settings_without_overwriting(tmp_path):
     assert {"DRY_RUN=false", "APPROVAL_MODE=telegram", "LLM_MODEL=claude-opus-5-5",
             "X_BUDGET_MONTHLY_USD=30", "CLAUDE_BUDGET_MONTHLY_USD=35", "TIMEZONE=Europe/Paris"} <= set(lines)
     assert "CLAUDE_BUDGET_MONTHLY_USD=35" in res.stdout      # affiché avec les réglages non secrets
+    # 19/11/2026 : la qualité avant le nombre (versions, réflexion, actu chaude regardée plus souvent)
+    quality = {"POST_VERSIONS=3", "LLM_EFFORT_POST=high", "REACTIVE_MAX_CHECKS_PER_DAY=30",
+               "REACTIVE_CHECK_EVERY_MINUTES=15"}
+    assert quality <= set(lines)
+    assert all(q in res.stdout for q in quality)
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
     assert (app / "config" / ".env.avant_v2").read_text() == V1_ENV.rstrip("\n")
 
@@ -641,6 +646,7 @@ def test_migrate_upgrades_untouched_old_defaults_only(tmp_path):
     lines = env_lines(app)
     assert "REACTIVE_MAX_PER_DAY=1" in lines                 # ancienne valeur par défaut -> nouvelle
     assert "REACTIVE_CHECK_EVERY_MINUTES=45" in lines        # réglée à la main : gardée
+    assert "POST_VERSIONS=3" in lines and "LLM_EFFORT_POST=high" in lines      # absents : ajoutés
     assert "REACTIVE_WINDOW=12:00-23:30" in lines
     assert "THREAD_SLOTS=tue@14:30,sun@16:00" in lines
     assert "mis à jour" in res.stdout
@@ -650,6 +656,25 @@ def test_migrate_upgrades_untouched_old_defaults_only(tmp_path):
     assert again.returncode == 0 and "mis à jour" not in again.stdout
     assert env_lines(app) == lines
 
+
+
+@pytest.mark.parametrize("before, after", [
+    ("REACTIVE_CHECK_EVERY_MINUTES=30", "REACTIVE_CHECK_EVERY_MINUTES=15"),      # ancien défaut -> 15 min
+    ('REACTIVE_CHECK_EVERY_MINUTES="30"', "REACTIVE_CHECK_EVERY_MINUTES=15"),
+    ("REACTIVE_CHECK_EVERY_MINUTES=150", "REACTIVE_CHECK_EVERY_MINUTES=15"),
+    ("REACTIVE_CHECK_EVERY_MINUTES=20", "REACTIVE_CHECK_EVERY_MINUTES=15"),
+    ("REACTIVE_CHECK_EVERY_MINUTES=25", "REACTIVE_CHECK_EVERY_MINUTES=25"),      # réglé à la main : gardé
+])
+def test_migrate_checks_breaking_news_more_often(tmp_path, before, after):
+    app = tmp_path / "app"
+    (app / "config").mkdir(parents=True)
+    (app / "config" / ".env").write_text(before + "\nPOST_VERSIONS=1\nREACTIVE_MAX_CHECKS_PER_DAY=12\n")
+    assert run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)}).returncode == 0
+    lines = env_lines(app)
+    assert after in lines and sum(line.startswith("REACTIVE_CHECK_EVERY_MINUTES=") for line in lines) == 1
+    # Ce que le propriétaire a réglé lui-même n'est jamais écrasé.
+    assert "POST_VERSIONS=1" in lines and "REACTIVE_MAX_CHECKS_PER_DAY=12" in lines
+    assert "POST_VERSIONS=3" not in lines and "LLM_EFFORT_POST=high" in lines
 
 
 def test_migrate_drops_gm_from_untouched_schedule(tmp_path):

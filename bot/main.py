@@ -276,12 +276,15 @@ def config_summary(settings) -> list[str]:
             ("X_ACCESS_TOKEN_SECRET", s.x_access_token_secret), ("ANTHROPIC_API_KEY", s.anthropic_api_key),
             ("TELEGRAM_BOT_TOKEN", s.telegram_token), ("TELEGRAM_CHAT_ID", s.telegram_chat_id),
             ("OPENAI_API_KEY", s.openai_api_key))),
-        f"Claude : {s.llm_model}, effort {s.llm_effort} (threads : {s.llm_effort_thread})",
+        f"Claude : {s.llm_model}, effort {s.llm_effort} (threads : {s.llm_effort_thread}"
+        f"{f' · posts : {s.llm_effort_post}' if s.llm_effort_post else ''})"
+        f"{f' · {s.post_versions} versions par post, la meilleure est gardée' if s.post_versions > 1 else ''}",
         f"Créneaux : {posts} · threads : {threads} · aléa de publication 0-{s.publish_jitter_minutes} min",
         f"Rédaction à l'avance : {leads} · délai de validation {s.approval_grace_minutes} min · "
         f"heures calmes {quiet}",
         f"Réactif : {'oui' if s.reactive_enabled else 'non'} (max {s.reactive_max_per_day}/jour, "
-        f"{s.reactive_window[0]:%H:%M}-{s.reactive_window[1]:%H:%M})",
+        f"{s.reactive_window[0]:%H:%M}-{s.reactive_window[1]:%H:%M} · actu regardée toutes les "
+        f"{s.reactive_check_every_min} min, Claude interrogé {s.reactive_max_checks_per_day} fois/jour au plus)",
         f"Commentaires : {'oui' if s.comments_enabled else 'non'} (toutes les {s.comments_check_every_min} min) · "
         f"Radar : {'oui' if s.radar_enabled else 'non'} ({len(s.radar_accounts)} comptes, "
         f"max {s.radar_max_per_day}/jour)",

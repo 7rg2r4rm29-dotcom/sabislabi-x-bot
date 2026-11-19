@@ -42,6 +42,11 @@ AUTO_LEAD_MINUTES = {"thread": 90}   # mode automatique : 45 min avant pour un p
 # Modèles qui acceptent la bascule serveur en cas de refus (fallbacks: "default").
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
 
+# Temps de réflexion que Claude accepte (du plus court au plus long).
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Versions d'un même post écrites séparément puis départagées : au plus.
+POST_VERSIONS_MAX = 5
+
 
 class ConfigError(ValueError):
     pass
@@ -84,6 +89,14 @@ def _env_float(key: str, default: float) -> float:
         return float(_env(key, str(default)) or default)
     except ValueError:
         return default
+
+
+def parse_effort_or_empty(raw: str) -> str:
+    """Un temps de réflexion valide, ou "" (réglage absent : le réglage général s'applique)."""
+    value = (raw or "").strip().lower()
+    if value and value not in EFFORTS:
+        raise ConfigError(f"attendu : {', '.join(EFFORTS)}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -164,6 +177,12 @@ class Settings:
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "medium"
     llm_effort_thread: str = "high"
+    # LLM_EFFORT_POST : temps de réflexion pour ÉCRIRE un post et choisir sa meilleure version
+    # ("" = comme LLM_EFFORT).
+    llm_effort_post: str = ""
+    # POST_VERSIONS : versions de chaque post écrites séparément ; un second avis garde la
+    # meilleure (1 = une seule version, sans second avis).
+    post_versions: int = 1
 
     # --- Planning ---
     post_slots: list[Slot] = field(default_factory=list)
@@ -182,6 +201,8 @@ class Settings:
     reactive_check_every_min: int = 30
     reactive_window: tuple[dtime, dtime] = (dtime(12, 0), dtime(23, 30))
     reactive_min_gap_min: int = 60
+    # REACTIVE_MAX_CHECKS_PER_DAY : fois par jour, au plus, où Claude est interrogé sur l'actu chaude
+    reactive_max_checks_per_day: int = 6
 
     # --- Commentaires sous mes posts ---
     comments_enabled: bool = True
@@ -272,7 +293,7 @@ class Settings:
             errors.append("ANTHROPIC_API_KEY manquante.")
         if not self.handle:
             errors.append("X_HANDLE manquant.")
-        if self.llm_effort not in ("low", "medium", "high", "xhigh", "max"):
+        if self.llm_effort not in EFFORTS:
             errors.append("LLM_EFFORT invalide.")
         return errors
 
@@ -344,6 +365,8 @@ def load_settings() -> Settings:
         llm_model=_env("LLM_MODEL") or "claude-opus-5-5",
         llm_effort=_env("LLM_EFFORT", "medium").lower() or "medium",
         llm_effort_thread=_env("LLM_EFFORT_THREAD", "high").lower() or "high",
+        llm_effort_post=_lenient("LLM_EFFORT_POST", parse_effort_or_empty, "", w),
+        post_versions=min(POST_VERSIONS_MAX, max(1, _env_int("POST_VERSIONS", 1))),
         post_slots=_lenient("POST_SLOTS", parse_post_slots, DEFAULT_POST_SLOTS, w),
         thread_slots=_lenient("THREAD_SLOTS", parse_thread_slots, DEFAULT_THREAD_SLOTS, w),
         draft_leads=parse_leads(_env("DRAFT_LEAD_MINUTES")),
@@ -358,6 +381,7 @@ def load_settings() -> Settings:
         reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 30),
         reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "12:00-23:30", w),
         reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 60),
+        reactive_max_checks_per_day=max(1, _env_int("REACTIVE_MAX_CHECKS_PER_DAY", 6)),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),
         comments_max_drafts_per_day=_env_int("COMMENTS_MAX_DRAFTS_PER_DAY", 40),
