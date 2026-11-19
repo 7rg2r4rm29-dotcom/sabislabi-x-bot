@@ -119,9 +119,16 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - rédaction en chef (`_pick`, 120 titres au plus), puis lecture des articles retenus ;
   - rédaction (`post-<kind>`, `thread-<genre>`, `hook_options` puis `hook`) ;
   - garde-fous : `filters.publish_problem` (avec `blocked_topic`), `ungrounded_number`, `_echoes_recent` ;
-  - relecture par affirmation (`_factcheck`) ;
+  - relecture par affirmation (`_factcheck`, `_review_post`) ;
+  - plusieurs versions d'un même post (`POST_VERSIONS`, `_best_version`) : chaque version est écrite
+    en voyant les précédentes, avec la consigne de s'en écarter (`_other_versions`) ; les contrôles du
+    code écartent les fautives, un second avis classe les autres (`_rank_versions`, appel
+    `choose-<kind>`, consigne `POST_JUDGE_PROMPT`), et la relecture suit ce classement ; si aucune ne
+    passe, une réécriture guidée, comme avant. Jamais pour un thread (il a déjà ses candidats) ;
+  - temps de réflexion : `LLM_EFFORT_POST` pour écrire un post et choisir sa version (`_post_effort`),
+    `LLM_EFFORT_THREAD` pour un thread, `low` pour choisir l'histoire, `LLM_EFFORT` pour le reste ;
   - consignes : `AUDIENCE`, `INTRIGUE`, `PLAYBOOK`, `NEWS_VOICE`, `PICKS`, `TRUTH`, `PHOTO_RULES`,
-    `EDITOR_PROMPT`, `FACTCHECK_PROMPT`, `PHOTO_CHECK_PROMPT`.
+    `EDITOR_PROMPT`, `FACTCHECK_PROMPT`, `POST_JUDGE_PROMPT`, `PHOTO_CHECK_PROMPT`.
 - `bot/visuals.py` (image comme AlertesInfos) :
   - pages officielles de l'histoire (`source_pages`) : flux officiel, ou lien de l'article de presse que
     Claude désigne (`article_links`, `is_source_url`, `Writer.pick_official_link`) ; puis les articles
@@ -147,18 +154,35 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - `POST_SLOTS=tip@14:30,news@19:00,news@23:00` (« le futur arrive », « l'histoire du jour », une 2e
     histoire à 23 h = l'après-midi aux États-Unis) ;
   - `THREAD_SLOTS=tue@14:30,thu@14:30,sun@16:00` (le jeudi est un thread « histoire », comme le mardi) ;
-  - post « ça vient de tomber » : `REACTIVE_MAX_PER_DAY=3`, entre 12 h et 23 h 30 (6 vérifications par
-    jour au plus).
+  - post « ça vient de tomber » : `REACTIVE_MAX_PER_DAY=3`, entre 12 h et 23 h 30. Depuis le
+    19/11/2026, l'actu chaude est regardée toutes les 15 min (`REACTIVE_CHECK_EVERY_MINUTES=15`, 30
+    avant) et Claude peut être interrogé 30 fois par jour (`REACTIVE_MAX_CHECKS_PER_DAY=30` ; à 6, le
+    plafond tombait vers 20 h 30 et le bot ne voyait plus les annonces du soir). La mémoire des flux
+    suit l'intervalle (`NewsHub._cache_ttl`) ; les comptes X restent lus toutes les 2 h au plus.
+    Jamais à moins de 60 min d'un créneau (`REACTIVE_MIN_GAP_MINUTES`) : avec trois créneaux, l'actu
+    chaude n'est donc regardée que de 12 h à 13 h 30, de 15 h 30 à 18 h et de 20 h à 22 h.
   - Sans histoire assez forte, un créneau est sauté exprès. Si Claude tombe pendant la rédaction, le
     créneau est rédigé à son retour.
-- Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude mesuré : environ 1,10 $ par jour (30
-  à 35 $ par mois). Budget X : `X_BUDGET_DAILY_USD` / `X_BUDGET_MONTHLY_USD`.
+- **La qualité avant le nombre** (choix du propriétaire, 19/11/2026) : il a demandé s'il fallait
+  dépenser tous les crédits Claude avant qu'ils expirent ; réponse retenue : pas en publiant plus (il
+  faudrait une vingtaine de posts par jour, donc des posts faibles), mais en faisant mieux. Sur le
+  serveur : `POST_VERSIONS=3` (chaque post écrit en trois versions, un second avis garde la meilleure),
+  `LLM_EFFORT_POST=high` (plus de réflexion pour l'écrire), et l'actu chaude regardée plus souvent
+  (ci-dessus). Réglages posés par `deploy/migrate_env_v2.sh` ; les défauts du code restent une
+  version, pas de réglage de réflexion, 6 vérifications, 30 min. Le nombre de posts ne change pas.
+- Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude mesuré : environ 1,10 $ par jour
+  jusqu'au 18/11 (2 posts, une version) ; 1,37 $ le 18/11 (4 publications). Avec la qualité du 19/11,
+  un post coûte 0,25 $ quand la première version passe la relecture, 0,38 $ mesuré dans le pire cas
+  (trois versions refusées puis une réécriture) : estimation de 2 à 3 $ par jour, soit 60 à 90 $ par
+  mois, à comparer à `/budget` après quelques jours. Budget X : `X_BUDGET_DAILY_USD` /
+  `X_BUDGET_MONTHLY_USD`.
 - **Budget Claude : 195 $ par mois au plus** (consigne du propriétaire, 18/11/2026 au soir ; 35 $ le
   matin même ; `CLAUDE_BUDGET_MONTHLY_USD=195` dans le `.env` du serveur, défaut du code 35, codé dans
   `bot/llm.py`) : tout est compté, essais à la main compris
   (`LLM(…, manual=True)` → `state/llm_manual_usage.json`) ; l'optionnel (radar, posts à chaud, réponses
   aux commentaires) cède le premier ; alerte Telegram à 80 % ; arrêt au plafond jusqu'au 1er.
-  **Donc : peu d'aperçus et d'essais payants** (un `--preview` coûte environ 0,50 $).
+  Un `--preview news` coûte 0,25 à 0,40 $ (`tip,news` : le double) : compté dans le plafond, donc à
+  garder pour vérifier un vrai changement de la rédaction.
 - **Qui paie Claude** : la clé du bot est dans l'organisation individuelle du propriétaire sur la console
   Claude (platform.claude.com). Depuis le 18/11/2026 elle reçoit chaque mois les 200 $ de crédits API
   compris dans son forfait Claude Ultra (gratuits, expirent à chaque cycle : le premier lot le 13/12/2026).
@@ -197,7 +221,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1333 tests au 18/11/2026.
+  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1395 tests au 19/11/2026. Sur le Mac, les tests
+  de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
+  d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
+  le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;
@@ -250,7 +277,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     commits : `Claude <noreply@anthropic.com>` (config locale du clone). Un clone neuf doit reprendre ces
     trois réglages.
 
-## 8. État au 18/11/2026, limites connues, pistes
+## 8. État au 19/11/2026, limites connues, pistes
 
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
   au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
@@ -272,10 +299,36 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Clé Claude remplacée le 18/11/2026** (elle expirait le 26/11) : nouvelle clé sans date
   d'expiration, dans un espace réservé au bot et limité à 35 $ par mois (voir section 4, « Qui paie
   Claude »). Bot relancé à 9 h 47, `--check` au vert ; les deux anciennes clés ont été supprimées.
+- **Qualité avant le nombre, installée le 19/11/2026 à 16 h 13** (`c65ad27`, 1394 tests verts sur le
+  serveur) : trois versions par post et second avis, réflexion longue pour les écrire, actu chaude
+  regardée toutes les 15 min avec 30 appels par jour au plus (détail section 4).
+  - Avant (12 jours de journal, une seule version) : 27 posts écrits, 13 acceptés au premier essai,
+    13 au second, 1 abandonné ; refus au premier essai : relecture des faits 5, trop technique 4,
+    trop long 3, trop proche d'une source 2. Une version sur deux est donc refusée : avec trois
+    versions, il arrive encore qu'aucune ne passe (une fois sur huit environ, par le calcul).
+  - Essai réel du 19/11 (`--preview news`, sortie de Gemini 4 Neon) : trois versions écrites en 20 s
+    chacune (0,05 $ pièce), second avis 0,02 $, puis le relecteur a refusé les trois (« paid » et
+    « only » absents de la source ; « long » ; mots trop techniques) ; la réécriture guidée de la
+    mieux classée est passée. 2 minutes, 0,38 $ en tout, post en texte seul (pas d'image à la source).
+  - Vérifié dans le journal après l'installation : l'actu relevée à 16 h 31 puis à 16 h 47 (flux
+    relus à chaque fois), avec un appel `pick-reactive` de 0,026 $ à chaque relevé. Pas encore vu : le
+    premier post publié avec ce système (19 h le 19/11).
+  - À regarder dans le journal : `Post … : version retenue parmi 3 (… rang N du second avis)`,
+    `version n/3 écartée`, `version classée n refusée à la relecture`, appels `choose-<kind>`.
+  - Le flux The Debrief répond 404 depuis le 19/11 au moins (adresse à corriger dans `news_feeds`).
+- **Limite repérée le 19/11, décision du propriétaire** : l'écart de 60 min autour des créneaux
+  (`REACTIVE_MIN_GAP_MINUTES`) empêche de regarder l'actu chaude de 13 h 30 à 15 h 30, de 18 h à 20 h et
+  de 22 h à 23 h 30 ; une annonce américaine de 19 h (10 h en Californie) n'est vue qu'à 20 h. Lever
+  cet écart ferait partir un post « à chaud » tout près d'un post prévu : choix éditorial, proposé le
+  19/11.
 - **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés). Le radar,
   lui, est coupé depuis le 18/11/2026.
+- **Mac, façon de faire du 19/11** : clone neuf dans le dossier temporaire de la session (depuis
+  GitHub, avec son `venv`), travail et tests là, les trois réglages git recopiés (auteur,
+  `core.sshCommand`, `pushurl`), push et `push_from_mac.sh` depuis ce clone, puis `git pull` dans
+  `~/Documents/sabislabi-x-bot` (git y répond, c'est Python qui bloque).
 - **Mac du propriétaire : Documents est dans iCloud, avec des fichiers « dans le nuage seulement »**
   (le 18/11/2026, `.venv` et quelques objets `.git` du clone ne s'ouvraient plus : Python restait
   bloqué). Pour tester, travailler dans un clone neuf hors de Documents (avec son propre `venv`), puis

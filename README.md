@@ -241,7 +241,8 @@ un post coûte 0,015 $, une réponse 0,01 $, la lecture d'un post 0,005 $.
 jour écrits en une seule version. Chaque post demande quatre ou cinq appels : choisir l'histoire, écrire,
 relire, trouver la source, regarder l'image. Avec le rythme et les réglages de qualité de ton serveur
 (3 posts par jour, trois versions par post, plus de réflexion, actu chaude regardée plus souvent), compte
-plutôt **3 à 3,50 $ par jour, soit 90 à 110 $ par mois** — une estimation du 19/11/2026, à comparer à ce
+plutôt **2 à 3 $ par jour, soit 60 à 90 $ par mois** : estimation du 19/11/2026 (un post d'essai a coûté
+0,38 $ dans le pire cas, 0,25 $ quand la première version passe la relecture), à comparer à ce
 qu'affiche `/budget`.
 
 - **Qui paie** : depuis le 18 novembre 2026, ces appels sont pris sur les **200 $ de crédits compris chaque
