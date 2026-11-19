@@ -220,6 +220,18 @@ class TestConfig:
         s = cfg.load_settings()
         assert s.llm_effort_post == "" and any("LLM_EFFORT_POST" in w for w in s.warnings)
 
+    def test_gap_between_a_breaking_post_and_a_scheduled_one(self, monkeypatch):
+        monkeypatch.delenv("REACTIVE_SLOT_GAP_MINUTES", raising=False)
+        s = cfg.load_settings()
+        assert s.reactive_slot_gap_min is None and s.reactive_min_gap_min == 60
+        for raw, value in (("10", 10), ("0", 0), (" 25 ", 25), ("-3", 0), ("", None)):
+            monkeypatch.setenv("REACTIVE_SLOT_GAP_MINUTES", raw)
+            s = cfg.load_settings()
+            assert s.reactive_slot_gap_min == value and s.warnings == [], raw
+        monkeypatch.setenv("REACTIVE_SLOT_GAP_MINUTES", "bientôt")     # illisible : signalé, puis ignoré
+        s = cfg.load_settings()
+        assert s.reactive_slot_gap_min is None and any("REACTIVE_SLOT_GAP_MINUTES" in w for w in s.warnings)
+
     @pytest.mark.parametrize("raw, value", [("", ""), (None, ""), ("low", "low"), ("XHIGH", "xhigh"), (" max ", "max")])
     def test_parse_effort_or_empty(self, raw, value):
         assert cfg.parse_effort_or_empty(raw) == value

@@ -550,6 +550,45 @@ class TestReactive:
         assert bot.maybe_reactive() == 0
         assert parts["writer"].calls == []
 
+    def test_gap_with_a_scheduled_post_has_its_own_setting(self, settings, state, budget, parts, clock):
+        """REACTIVE_SLOT_GAP_MINUTES (accord du propriétaire, 19/11/2026) : une vraie nouvelle
+        n'attend plus une heure parce qu'un post prévu est proche ; un petit écart suffit."""
+        settings.reactive_slot_gap_min = 10
+        bot = self._bot(settings, state, budget, parts)
+        clock(13, 21)   # 9 min avant le tip de 13:30 : trop près
+        assert bot.maybe_reactive() == 0
+        clock(13, 39)   # 9 min après : encore trop près
+        assert bot.maybe_reactive() == 0
+        assert parts["writer"].calls == []
+        clock(13, 40)   # 10 min après : l'actu chaude est de nouveau regardée
+        assert bot.maybe_reactive() == 1
+        assert parts["approvals"].created[0]["kind"] == "reactive"
+
+    def test_no_gap_at_all_with_scheduled_posts(self, settings, state, budget, parts, clock):
+        settings.reactive_slot_gap_min = 0
+        bot = self._bot(settings, state, budget, parts)
+        clock(13, 30)   # à l'heure même du tip
+        assert bot.maybe_reactive() == 1
+
+    def test_gap_between_two_breaking_posts_is_not_shortened(self, settings, state, budget, parts, clock):
+        settings.reactive_max_per_day = 3
+        settings.reactive_slot_gap_min = 0
+        bot = self._bot(settings, state, budget, parts)
+        clock(15, 50)
+        state.new_item("reactive", ["earlier"])
+        clock(16, 49)   # 59 min après un post « à chaud » : REACTIVE_MIN_GAP_MINUTES (60) vaut toujours
+        assert bot.maybe_reactive() == 0
+        assert parts["writer"].calls == []
+        clock(16, 50)
+        assert bot.maybe_reactive() == 1
+
+    @pytest.mark.parametrize("setting, gap", [(None, 60), (10, 10), (0, 0), (-5, 0), ("15", 15), ("x", 60)])
+    def test_slot_gap_values(self, settings, state, budget, parts, setting, gap):
+        settings.reactive_slot_gap_min = setting
+        assert make_bot(settings, state, budget, parts)._slot_gap() == gap
+        settings.reactive_min_gap_min = 45                       # sans réglage propre : le même écart
+        assert make_bot(settings, state, budget, parts)._slot_gap() == (45 if gap == 60 else gap)
+
     def test_interval_between_checks(self, settings, state, budget, parts, clock):
         parts["writer"].default_reactive = False   # Claude dit « non »
         bot = make_bot(settings, state, budget, parts)

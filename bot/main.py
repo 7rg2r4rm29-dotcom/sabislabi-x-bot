@@ -284,7 +284,8 @@ def config_summary(settings) -> list[str]:
         f"heures calmes {quiet}",
         f"Réactif : {'oui' if s.reactive_enabled else 'non'} (max {s.reactive_max_per_day}/jour, "
         f"{s.reactive_window[0]:%H:%M}-{s.reactive_window[1]:%H:%M} · actu regardée toutes les "
-        f"{s.reactive_check_every_min} min, Claude interrogé {s.reactive_max_checks_per_day} fois/jour au plus)",
+        f"{s.reactive_check_every_min} min, Claude interrogé {s.reactive_max_checks_per_day} fois/jour au plus"
+        f"{'' if s.reactive_slot_gap_min is None else f' · à {s.reactive_slot_gap_min} min au moins d’un post prévu'})",
         f"Commentaires : {'oui' if s.comments_enabled else 'non'} (toutes les {s.comments_check_every_min} min) · "
         f"Radar : {'oui' if s.radar_enabled else 'non'} ({len(s.radar_accounts)} comptes, "
         f"max {s.radar_max_per_day}/jour)",

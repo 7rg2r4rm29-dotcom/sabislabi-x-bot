@@ -91,6 +91,14 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def parse_minutes_or_none(raw: str) -> int | None:
+    """Un nombre de minutes (0 ou plus), ou None quand le réglage est absent."""
+    value = (raw or "").strip()
+    if not value:
+        return None
+    return max(0, int(value))
+
+
 def parse_effort_or_empty(raw: str) -> str:
     """Un temps de réflexion valide, ou "" (réglage absent : le réglage général s'applique)."""
     value = (raw or "").strip().lower()
@@ -201,6 +209,9 @@ class Settings:
     reactive_check_every_min: int = 30
     reactive_window: tuple[dtime, dtime] = (dtime(12, 0), dtime(23, 30))
     reactive_min_gap_min: int = 60
+    # REACTIVE_SLOT_GAP_MINUTES : écart mini entre un post « à chaud » et un post PRÉVU. None :
+    # comme REACTIVE_MIN_GAP_MINUTES, qui reste dans tous les cas l'écart entre deux posts « à chaud ».
+    reactive_slot_gap_min: int | None = None
     # REACTIVE_MAX_CHECKS_PER_DAY : fois par jour, au plus, où Claude est interrogé sur l'actu chaude
     reactive_max_checks_per_day: int = 6
 
@@ -381,6 +392,7 @@ def load_settings() -> Settings:
         reactive_check_every_min=_env_int("REACTIVE_CHECK_EVERY_MINUTES", 30),
         reactive_window=_lenient("REACTIVE_WINDOW", parse_window, "12:00-23:30", w),
         reactive_min_gap_min=_env_int("REACTIVE_MIN_GAP_MINUTES", 60),
+        reactive_slot_gap_min=_lenient("REACTIVE_SLOT_GAP_MINUTES", parse_minutes_or_none, "", w),
         reactive_max_checks_per_day=max(1, _env_int("REACTIVE_MAX_CHECKS_PER_DAY", 6)),
         comments_enabled=_env_bool("COMMENTS_ENABLED", True),
         comments_check_every_min=_env_int("COMMENTS_CHECK_EVERY_MINUTES", 10),

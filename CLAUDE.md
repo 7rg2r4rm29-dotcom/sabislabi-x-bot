@@ -159,8 +159,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     avant) et Claude peut être interrogé 30 fois par jour (`REACTIVE_MAX_CHECKS_PER_DAY=30` ; à 6, le
     plafond tombait vers 20 h 30 et le bot ne voyait plus les annonces du soir). La mémoire des flux
     suit l'intervalle (`NewsHub._cache_ttl`) ; les comptes X restent lus toutes les 2 h au plus.
-    Jamais à moins de 60 min d'un créneau (`REACTIVE_MIN_GAP_MINUTES`) : avec trois créneaux, l'actu
-    chaude n'est donc regardée que de 12 h à 13 h 30, de 15 h 30 à 18 h et de 20 h à 22 h.
+    Un post à chaud peut partir près d'un post prévu : 10 min d'écart (`REACTIVE_SLOT_GAP_MINUTES=10`,
+    accord du propriétaire le 19/11/2026 ; `Bot._slot_gap`). Avec les 60 min d'avant, l'actu chaude
+    n'était regardée ni de 13 h 30 à 15 h 30, ni de 18 h à 20 h, ni après 22 h : une annonce américaine
+    de 19 h attendait 20 h. Entre deux posts à chaud, l'écart reste de 60 min
+    (`REACTIVE_MIN_GAP_MINUTES`).
   - Sans histoire assez forte, un créneau est sauté exprès. Si Claude tombe pendant la rédaction, le
     créneau est rédigé à son retour.
 - **La qualité avant le nombre** (choix du propriétaire, 19/11/2026) : il a demandé s'il fallait
@@ -221,7 +224,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1395 tests au 19/11/2026. Sur le Mac, les tests
+  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1405 tests au 19/11/2026. Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
@@ -316,11 +319,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - À regarder dans le journal : `Post … : version retenue parmi 3 (… rang N du second avis)`,
     `version n/3 écartée`, `version classée n refusée à la relecture`, appels `choose-<kind>`.
   - Le flux The Debrief répond 404 depuis le 19/11 au moins (adresse à corriger dans `news_feeds`).
-- **Limite repérée le 19/11, décision du propriétaire** : l'écart de 60 min autour des créneaux
-  (`REACTIVE_MIN_GAP_MINUTES`) empêche de regarder l'actu chaude de 13 h 30 à 15 h 30, de 18 h à 20 h et
-  de 22 h à 23 h 30 ; une annonce américaine de 19 h (10 h en Californie) n'est vue qu'à 20 h. Lever
-  cet écart ferait partir un post « à chaud » tout près d'un post prévu : choix éditorial, proposé le
-  19/11.
+- **Écart autour des posts prévus ramené de 60 à 10 min le 19/11** (accord du propriétaire : « Oui,
+  autorise », en sachant que deux posts proches se gênent un peu sur X). À surveiller : un post à chaud
+  et un post prévu à quelques minutes l'un de l'autre, et leur portée respective.
 - **En attente de la décision du propriétaire** : lancer `cleanup_v1.sh` (le dossier `auth/` et deux
   fichiers de clé SSH égarés traînent encore sur le serveur ; le script n'efface pas encore
   `config/.env.avant_pause` ni `config/.env.avant_rotation`, deux vieilles copies de clés). Le radar,

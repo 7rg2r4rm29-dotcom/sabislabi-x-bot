@@ -354,7 +354,10 @@ class TestMain:
         settings.reactive_check_every_min, settings.reactive_max_checks_per_day = 15, 30
         txt = "\n".join(bmain.config_summary(settings))
         assert "effort medium (threads : high · posts : high) · 3 versions par post, la meilleure est gardée" in txt
-        assert "actu regardée toutes les 15 min, Claude interrogé 30 fois/jour au plus" in txt
+        assert "actu regardée toutes les 15 min, Claude interrogé 30 fois/jour au plus)" in txt
+        settings.reactive_slot_gap_min = 10
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "Claude interrogé 30 fois/jour au plus · à 10 min au moins d’un post prévu)" in txt
 
     def test_config_summary_shows_the_claude_cap(self, settings):
         assert "Claude : 35 $/mois au plus" in "\n".join(bmain.config_summary(settings))

@@ -125,7 +125,7 @@ def test_migrate_adds_v2_settings_without_overwriting(tmp_path):
     assert "CLAUDE_BUDGET_MONTHLY_USD=35" in res.stdout      # affiché avec les réglages non secrets
     # 19/11/2026 : la qualité avant le nombre (versions, réflexion, actu chaude regardée plus souvent)
     quality = {"POST_VERSIONS=3", "LLM_EFFORT_POST=high", "REACTIVE_MAX_CHECKS_PER_DAY=30",
-               "REACTIVE_CHECK_EVERY_MINUTES=15"}
+               "REACTIVE_CHECK_EVERY_MINUTES=15", "REACTIVE_SLOT_GAP_MINUTES=10"}
     assert quality <= set(lines)
     assert all(q in res.stdout for q in quality)
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
@@ -668,13 +668,15 @@ def test_migrate_upgrades_untouched_old_defaults_only(tmp_path):
 def test_migrate_checks_breaking_news_more_often(tmp_path, before, after):
     app = tmp_path / "app"
     (app / "config").mkdir(parents=True)
-    (app / "config" / ".env").write_text(before + "\nPOST_VERSIONS=1\nREACTIVE_MAX_CHECKS_PER_DAY=12\n")
+    (app / "config" / ".env").write_text(before + "\nPOST_VERSIONS=1\nREACTIVE_MAX_CHECKS_PER_DAY=12\n"
+                                         "REACTIVE_SLOT_GAP_MINUTES=45\n")
     assert run(DEPLOY / "migrate_env_v2.sh", env={"XBOT_APP_DIR": str(app)}).returncode == 0
     lines = env_lines(app)
     assert after in lines and sum(line.startswith("REACTIVE_CHECK_EVERY_MINUTES=") for line in lines) == 1
     # Ce que le propriétaire a réglé lui-même n'est jamais écrasé.
     assert "POST_VERSIONS=1" in lines and "REACTIVE_MAX_CHECKS_PER_DAY=12" in lines
     assert "POST_VERSIONS=3" not in lines and "LLM_EFFORT_POST=high" in lines
+    assert "REACTIVE_SLOT_GAP_MINUTES=45" in lines and "REACTIVE_SLOT_GAP_MINUTES=10" not in lines
 
 
 def test_migrate_drops_gm_from_untouched_schedule(tmp_path):

@@ -674,6 +674,20 @@ class Bot:
                 return True
         return False
 
+    def _slot_gap(self) -> float:
+        """Écart mini, en minutes, entre un post « à chaud » et un post prévu
+        (REACTIVE_SLOT_GAP_MINUTES). Sans ce réglage : le même qu'entre deux posts « à chaud »
+        (REACTIVE_MIN_GAP_MINUTES). Pendant cet écart, l'actu chaude n'est pas regardée du tout :
+        trop large, une annonce tombée juste après un post prévu attend une heure."""
+        base = self.settings.reactive_min_gap_min
+        gap = getattr(self.settings, "reactive_slot_gap_min", None)
+        if gap is None:
+            return base
+        try:
+            return max(0.0, float(gap))
+        except (TypeError, ValueError):
+            return base
+
     def _recent_reactive(self, now: datetime, gap_min: float) -> bool:
         for it in self.state.items(kinds=("reactive",)):
             created = parse_iso(it.get("created_at"))
@@ -744,7 +758,7 @@ class Bot:
             since = self.state.minutes_since("reactive")
             if since is not None and since < s.reactive_check_every_min:
                 return 0
-            if self._near_slot(now, s.reactive_min_gap_min):
+            if self._near_slot(now, self._slot_gap()):
                 return 0
             if self._recent_reactive(now, s.reactive_min_gap_min):
                 return 0
