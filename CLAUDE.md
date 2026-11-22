@@ -176,9 +176,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - Modèle : `LLM_MODEL` (par défaut `claude-opus-5-5`). Coût Claude mesuré : environ 1,10 $ par jour
   jusqu'au 18/11 (2 posts, une version) ; 1,37 $ le 18/11 (4 publications). Avec la qualité du 19/11,
   un post coûte 0,25 $ quand la première version passe la relecture, 0,38 $ mesuré dans le pire cas
-  (trois versions refusées puis une réécriture) : estimation de 2 à 3 $ par jour, soit 60 à 90 $ par
-  mois, à comparer à `/budget` après quelques jours. Budget X : `X_BUDGET_DAILY_USD` /
-  `X_BUDGET_MONTHLY_USD`.
+  (trois versions refusées puis une réécriture). Mesuré ensuite : 2,59 $ le 19/11 (réglages posés à
+  16 h 13), 2,99 $ le 20/11, 2,69 $ le 21/11, soit environ 85 $ par mois. Budget X :
+  `X_BUDGET_DAILY_USD` / `X_BUDGET_MONTHLY_USD`.
 - **Budget Claude : 195 $ par mois au plus** (consigne du propriétaire, 18/11/2026 au soir ; 35 $ le
   matin même ; `CLAUDE_BUDGET_MONTHLY_USD=195` dans le `.env` du serveur, défaut du code 35, codé dans
   `bot/llm.py`) : tout est compté, essais à la main compris
@@ -314,8 +314,20 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     « only » absents de la source ; « long » ; mots trop techniques) ; la réécriture guidée de la
     mieux classée est passée. 2 minutes, 0,38 $ en tout, post en texte seul (pas d'image à la source).
   - Vérifié dans le journal après l'installation : l'actu relevée à 16 h 31 puis à 16 h 47 (flux
-    relus à chaque fois), avec un appel `pick-reactive` de 0,026 $ à chaque relevé. Pas encore vu : le
-    premier post publié avec ce système (19 h le 19/11).
+    relus à chaque fois), avec un appel `pick-reactive` de 0,026 $ à chaque relevé.
+  - **Bilan du 22/11 (19/11 16 h → 21/11)** : 16 posts publiés, aucun créneau perdu. Rédaction :
+    11 posts acceptés au premier essai (version classée 1re par le second avis 9 fois, 2e 2 fois),
+    3 après réécriture, 4 brouillons abandonnés (le post de 19 h le 19/11 au premier passage, refait
+    au passage suivant ; trois essais « à chaud » sur la partie de GTA VI jouée par la pensée, dont la
+    seule source était un post X de six mots : refusés par la relecture, puis publiés le 21/11 à
+    12 h 18 quand un vrai article est sorti). Vérifications à chaud : 12, 25 et 19 par jour (plafond
+    30). Posts à chaud : 3, 2 et 2 par jour ; deux sont partis juste après le post de 19 h (19 h 12 le
+    19/11, 19 h 28 le 20/11 : 28 et 26 vues, contre 23 et 22 pour le post de 19 h). La même histoire
+    deux fois (l'hypothèse de Riemann, 20/11 « pas encore vérifiée » puis 21/11 « vérifiée par deux
+    groupes ») : une suite voulue par la rédaction en chef, raison écrite dans le journal. Dépense X :
+    0,72, 0,63 puis 0,53 $ par jour (le relevé toutes les 15 min ne lit pas X plus souvent). Portée :
+    16 à 208 vues par post, la plupart entre 20 et 45. Seuls avertissements : Telegram injoignable
+    quelques minutes le 20/11 vers 0 h 50.
   - À regarder dans le journal : `Post … : version retenue parmi 3 (… rang N du second avis)`,
     `version n/3 écartée`, `version classée n refusée à la relecture`, appels `choose-<kind>`.
   - Le flux The Debrief répond 404 depuis le 19/11 au moins (adresse à corriger dans `news_feeds`).
