@@ -48,6 +48,8 @@ class Draft:
     from_fallback: bool = False
     used_notes: list[str] = field(default_factory=list)   # notes perso (/note) utilisées
     style_test: bool = False   # post d'essai : autre chose que « ce qui marche » (1 post prévu sur 4)
+    # Vidéo explicative : le script (titre, scènes, fin) que bot/explainer.py anime.
+    video_plan: dict | None = None
     # Renseignés par le planificateur quand l'image est prête (🔄 Autre version) :
     # la photo est celle de l'actu du NOUVEAU texte, pas celle de l'ancien.
     image_path: str | None = None

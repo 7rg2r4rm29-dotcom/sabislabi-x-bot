@@ -674,3 +674,17 @@ def test_edit_prompt_opened_before_publication_is_dropped(pub, app, state, fake_
     app.poll()
     assert item["texts"] == [HOOK, "two", "three"]     # rien n'a changé
     assert any("plus modifiable" in m["text"] or "pas compris" in m["text"] for m in fake_tg.sent)
+
+
+def test_an_explainer_video_goes_out_like_a_post(pub, state, fake_x, tmp_path):
+    """Vidéo explicative animée (23/11/2026) : un post, sa vidéo, retenu comme post récent."""
+    video = tmp_path / "explainer.mp4"
+    video.write_bytes(b"fake mp4")
+    item = approved(state, kind="explainer", texts=["Your car can now tell you're not watching the road."],
+                    image_path=str(video), image_kind="video")
+    assert pub.publish_due() == 1
+    assert fake_x.calls[0] == ("upload_video", str(video))
+    assert fake_x.posts[0]["text"] == "Your car can now tell you're not watching the road."
+    assert item["status"] == "published"
+    assert state.recent_texts("explainer") == ["Your car can now tell you're not watching the road."]
+    assert state.data["published"][-1]["kind"] == "explainer"

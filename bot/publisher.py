@@ -25,7 +25,7 @@ from .x_api import XError
 
 log = logging.getLogger("xbot.publisher")
 
-POST_KINDS = ("gm", "tip", "news", "reactive")
+POST_KINDS = ("gm", "tip", "news", "reactive", "explainer")
 PUBLISHABLE = POST_KINDS + ("thread", "comment_reply")
 FATAL_KINDS = ("auth", "credits", "budget", "forbidden", "invalid", "duplicate")
 MAX_ATTEMPTS = 3
@@ -76,7 +76,7 @@ def _norm(text: str) -> str:
 KIND_FR = {
     "gm": ("Le GM", "publié"), "tip": ("Le post « le futur arrive »", "publié"),
     "news": ("L'histoire du jour", "publiée"), "reactive": ("Le post « ça vient de tomber »", "publié"),
-    "thread": ("Le thread", "publié"),
+    "thread": ("Le thread", "publié"), "explainer": ("La vidéo explicative", "publiée"),
     "comment_reply": ("La réponse au commentaire", "envoyée"),
 }
 

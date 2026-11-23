@@ -238,3 +238,11 @@ def test_every_news_site_the_bot_reads_is_recognized_when_cited():
 def test_owner_edits_are_not_checked_for_citations():
     """✏️ Modifier : le propriétaire écrit ce qu'il veut (publish_problem sans `plain`)."""
     assert publish_problem("TechCrunch reports that OpenAI is testing ads.") is None
+
+
+@pytest.mark.parametrize("text,outlet", [("The Verge", "The Verge"), ("Reuters", "Reuters"),
+                                         ("the team at TechCrunch", "TechCrunch"), ("OpenAI", None),
+                                         ("Apple", None), ("Tesla", None), ("Voxtral", None)])
+def test_names_news_outlet_in_short_texts(text, outlet):
+    from bot.filters import names_news_outlet
+    assert names_news_outlet(text) == outlet

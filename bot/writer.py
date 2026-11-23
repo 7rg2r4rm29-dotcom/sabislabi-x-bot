@@ -50,7 +50,7 @@ from urllib.parse import urlparse
 from .analytics import TOPICS
 from .config import POST_VERSIONS_MAX
 from .filters import (
-    clean_output, find_tech_jargon, hard_blocked, is_noise, is_too_similar, off_limits_term,
+    clean_output, find_tech_jargon, hard_blocked, is_noise, is_too_similar, names_news_outlet, off_limits_term,
     publish_problem, strip_thread_numbering, weighted_length,
 )
 from .llm import BOOL, INT, INT_LIST, STR, STR_LIST, schema
@@ -569,7 +569,61 @@ PICK_BRIEFS: dict[str, str] = {
     "thread-weekly": ("Thread to prepare: THE WEEK IN REVIEW. Pick the 5 to {n} stories of the week that sound "
                       "most like science fiction to a normal person. Put first the one closest to people's "
                       "daily life. Prefer stories the account has not told yet."),
+    "explainer": ("Video to prepare: A SHORT ANIMATED EXPLAINER (30 to 45 seconds, everything written on "
+                  "screen). Pick the ONE story a curious family would most want explained: how a new thing "
+                  "works, why it matters, what it changes in daily life — and that the articles explain well "
+                  "enough (how it works, steps, numbers, a quote). A story with nothing to explain beyond its "
+                  "headline is a bad pick. It can be a few days old. Put it first, then up to {m} other "
+                  "headlines about the SAME story (other sites), if there are any."),
 }
+
+# ---------------------------------------------------------------------------
+# Vidéo explicative animée (consigne du propriétaire, 23/11/2026) : Claude écrit le
+# script, bot/explainer.py l'anime.
+# ---------------------------------------------------------------------------
+EXPLAINER_SCENE_KINDS = ("fact", "steps", "compare", "quote")
+EXPLAINER_MIN_SCENES, EXPLAINER_MAX_SCENES = 2, 5
+EXPLAINER_POST_MAX = 200
+# Longueurs demandées à Claude ; le code tolère un peu plus (la mise en page, elle, est vérifiée).
+EXPLAINER_LIMITS = {"title": 80, "text": 135, "heading": 48, "big": 14, "item": 70, "side": 58, "quote": 145,
+                    "who": 48, "ending": 100}
+
+EXPLAINER_PROMPT = """You write short animated explainer videos for an international X account (English) with one promise: the future is arriving faster than people think, told in plain words. 30 to 45 seconds, no voice: everything is written on screen, big, and appears one scene after the other. Think of the best science show for families on TV: one curious question, then the answer in small, simple steps anyone can follow, and one detail people will repeat at dinner tonight.
+
+""" + AUDIENCE + """
+
+""" + PLAIN_WORDS + """
+
+""" + TRUTH + """
+
+""" + GROUNDING + """
+
+""" + NEWS_VOICE + """
+
+""" + OFF_LIMITS + """
+
+THE SCRIPT — scenes that appear one after the other:
+- title: the question or the surprising fact that opens the video, 70 characters at most ("How does a car know you're not watching the road?"). Never a teaser with nothing in it.
+- scenes: 2 to 5, one idea each. kind is one of:
+  - "fact": one or two short sentences (text, 120 characters at most); big: optional, a number or ONE word from the story shown huge above it (12 characters at most), "" if none.
+  - "steps": how it works, in 2 to 4 steps (items, 60 characters each at most), with a short heading in text (40 characters at most, e.g. "How it works").
+  - "compare": two sides shown side by side (left and right, 50 characters each at most: "Before: …" / "Now: …", "A human: …" / "The robot: …"), with a short heading in text (40 characters at most).
+  - "quote": the exact words of someone named in the story (text, 130 characters at most, copied from an item) and who said it (who, 40 characters at most: a person or a company, never a news site).
+  Fields a kind doesn't use are "" or [].
+- ending: what it means for a normal person, or a question to the viewer (90 characters at most).
+- Explain HOW or WHY only with what the items say. When they don't say how it works, never guess: show what it does, what is new, why it matters, and how far it is (a demo, a test, on sale).
+- Every word on screen is checked against the items before anything is published, exactly like a post.
+
+THE POST that carries the video — text: 200 characters at most, plain words: the hook of the story the video explains. Never "watch this", "thread" or "video below"; no link, no hashtag, no @mention. hook: the shape of its first line, one of: """ + ", ".join(HOOK_SHAPES) + """.
+
+visual_url: "[n]" to use the photo of story n as the video's background (the story you explain), or "" for none.
+source_ids: the numbers of the items the script relies on (at least one).
+reason: one short line in FRENCH (150 characters at most) for the account owner: what the video explains and why people will watch it to the end."""
+
+_EXPLAINER_SCENE = schema({"kind": {"type": "string", "enum": list(EXPLAINER_SCENE_KINDS)}, "text": STR, "big": STR,
+                           "items": STR_LIST, "left": STR, "right": STR, "who": STR})
+EXPLAINER_SCHEMA = schema({"title": STR, "scenes": {"type": "array", "items": _EXPLAINER_SCENE}, "ending": STR,
+                           "text": STR, "source_ids": INT_LIST, "visual_url": STR, "hook": STR, "reason": STR})
 
 # Le sujet de chaque post publié, pour apprendre ce qui marche (analytics.ensure_topics).
 TOPIC_PROMPT = ("You sort the posts of an X account that tells tech and AI news to the general public. For each "
@@ -1213,10 +1267,10 @@ class Writer:
             return re.sub(r"[^a-z0-9 ]+", "", lines[-1].lower()).strip() if len(lines) >= 2 else ""
 
         recent: list[str] = []
-        for k in ("tip", "news", "reactive"):
+        for k in ("tip", "news", "reactive", "explainer"):
             recent += [t for t in self.state.recent_texts(k)[-3:] if isinstance(t, str)]
         skip = getattr(self, "regen_item_id", None)
-        for it in self.state.items(kinds=("tip", "news", "reactive"),
+        for it in self.state.items(kinds=("tip", "news", "reactive", "explainer"),
                                    statuses=("awaiting", "approved", "publishing")):
             if not (skip and it.get("id") == skip):
                 recent += [t for t in (it.get("texts") or [])[:1] if isinstance(t, str)]
@@ -1242,7 +1296,7 @@ class Writer:
         du plus ancien au plus récent : une actu de 18 h 30 ne doit pas répéter le post
         réactif de 14 h, et la fin de la liste (ce que voient la rédaction en chef et le
         rédacteur) est bien ce que le compte a publié en dernier, tous types confondus."""
-        kinds = ("gm", "tip", "news", "reactive", "thread")
+        kinds = ("gm", "tip", "news", "reactive", "thread", "explainer")
         published = [p.get("text") for p in (self.state.data.get("published") or [])
                      if isinstance(p, dict) and p.get("kind") in kinds and isinstance(p.get("text"), str)]
         published = published[-60:]
@@ -1251,7 +1305,7 @@ class Writer:
                  if isinstance(t, str) and t[:500] not in published]
         texts += published
         skip = getattr(self, "regen_item_id", None)
-        for it in self.state.items(kinds=("gm", "tip", "news", "reactive", "thread"),
+        for it in self.state.items(kinds=("gm", "tip", "news", "reactive", "thread", "explainer"),
                                    statuses=("awaiting", "approved", "publishing")):
             if skip and it.get("id") == skip:
                 continue  # 🔄 : la version remplacée n'est pas un « autre post »
@@ -1915,6 +1969,169 @@ class Writer:
             return None
         log.info("Réactif : OUI — %s | %r", draft.reason, draft.texts[0][:120])
         return draft
+
+    # ==================================================================
+    # Vidéo explicative animée (consigne du propriétaire, 23/11/2026)
+    # ==================================================================
+    def draft_explainer(self, news: list[NewsItem], notes: list[str], perf: str) -> Draft | None:
+        """Le script d'une vidéo explicative (titre, 2 à 5 scènes, fin) et le post qui la
+        porte, tirés des articles, relus comme un post. La vidéo elle-même est faite plus
+        tard (bot/explainer.py). None : rien d'assez bon ni de vérifiable."""
+        try:
+            return self._draft_explainer(news or [], perf or "")
+        except Exception as e:  # noqa: BLE001
+            log.exception("draft_explainer a planté : %s", e)
+            return None
+
+    def _draft_explainer(self, news: list[NewsItem], perf: str) -> Draft | None:
+        pool = self._usable_items(news, MAX_ITEMS_PICK)
+        if not pool:
+            log.warning("Vidéo explicative : aucune actu exploitable")
+            return None
+        stories, why = self._pick("explainer", pool, MAX_STORIES_POST)
+        if not stories:
+            log.info("Vidéo explicative : la rédaction en chef ne retient aucune histoire (%s)", why or "-")
+            return None
+        self._read_articles(stories)
+        source_texts = [f"{it.title}. {it.summary} {it.body}".strip() for it in stories]
+        feedback = ""
+        for attempt in (1, 2):
+            user = self._explainer_user(stories, perf, feedback)
+            obj = self._ask(f"explainer{'-retry' if attempt > 1 else ''}", EXPLAINER_PROMPT, user,
+                            EXPLAINER_SCHEMA, effort=self._post_effort("explainer"))
+            if obj is None:
+                return None
+            plan, cand, problem = self._parse_explainer(obj, stories, source_texts)
+            if problem is None:
+                ok, issues = self._factcheck(self._screen_texts(plan) + cand.texts, cand.sources, [])
+                if ok is None:
+                    log.warning("Vidéo explicative : relecture indisponible, rien n'est proposé")
+                    return None
+                problem = None if ok else self._after_review(issues, attempt, "Vidéo explicative")
+            if problem is None:
+                log.info("Vidéo explicative retenue (%d scènes) : %s | %r", len(plan["scenes"]), cand.reason,
+                         plan["title"])
+                return Draft(kind="explainer", texts=cand.texts, visual=cand.visual, sources=cand.sources,
+                             reason=f"{cand.reason} · vidéo explicative", hook=cand.hook, video_plan=plan)
+            log.warning("Vidéo explicative refusée (essai %d/2) : %s", attempt, problem)
+            feedback = problem
+        return None
+
+    def _explainer_user(self, items: list[NewsItem], perf: str, feedback: str) -> str:
+        now = now_local()
+        today = f"{_WEEKDAYS_EN[now.weekday()]} {_MONTHS_EN[now.month - 1]} {now.day}"
+        recent_b = self._recent_block("Your recent posts (never tell the same story again):",
+                                      self.recent_all()[-8:], 8)
+        fix = (f"YOUR PREVIOUS SCRIPT WAS REFUSED — fix this, keep what was good:\n{_feedback_en(feedback)}\n\n"
+               if feedback else "")
+        return (f"Today is {today}.\n\n"
+                "STORIES chosen by the editor (numbered — your ONLY source of facts; written for tech people: "
+                "find what a curious family would want explained, and tell it in plain words):\n"
+                f"{self._items_block(items)}\n\n{self._perf_block(perf)}{recent_b}{fix}"
+                "Write the explainer video now: title, scenes, ending, and the post that carries it. Every fact "
+                "must be in the stories you cite. Fill every field of the JSON.")
+
+    @staticmethod
+    def _screen_texts(plan: dict) -> list[str]:
+        """Tout ce qui s'écrit à l'écran, dans l'ordre : c'est ce que le relecteur vérifie."""
+        out = [plan.get("title", "")]
+        for sc in plan.get("scenes") or []:
+            parts = [sc.get("big", ""), sc.get("text", ""), *(sc.get("items") or []), sc.get("left", ""),
+                     sc.get("right", "")]
+            if sc.get("kind") == "quote" and sc.get("who"):
+                parts = [f"\"{sc.get('text', '')}\" — {sc['who']}"]
+            out.append(" ".join(p for p in parts if p))
+        out.append(plan.get("ending", ""))
+        return [t for t in out if t]
+
+    def _parse_explainer(self, obj: dict, items: list[NewsItem],
+                         source_texts: list[str]) -> tuple[dict, _Candidate, str | None]:
+        cited = [items[i - 1] for i in _ids(obj.get("source_ids"), len(items))]
+        reason = _s(obj, "reason")[:200] or "vidéo explicative"
+        post, problem = self._vet(_s(obj, "text"), max_len=EXPLAINER_POST_MAX, sources=source_texts,
+                                  recent=self.recent_all()[-20:], plain=True)
+        cand = _Candidate(texts=[post], sources=cited, reason=reason, hook=hook_shape(obj.get("hook")))
+        plan: dict = {"title": "", "scenes": [], "ending": ""}
+        if problem:
+            return plan, cand, f"post : {problem}"
+        if not cited:
+            return plan, cand, "aucune source citée"
+        lim = EXPLAINER_LIMITS
+
+        def screen(label: str, raw: str, limit: int, *, quote: bool = False) -> tuple[str, str | None]:
+            text = " ".join(clean_output(raw or "").split())
+            # Sur l'écran, ni lien, ni sujet interdit, ni jargon, ni nom de média ; une citation
+            # reprend les mots de l'article (pas de contrôle de ressemblance avec la source).
+            why = publish_problem(text, sources=None, max_len=limit, allow_numbers=4, check_numbers=not quote,
+                                  plain=True)
+            return text, (f"{label} : {why}" if why else None)
+
+        title, problem = screen("titre", _s(obj, "title"), lim["title"])
+        if problem:
+            return plan, cand, problem
+        ending, problem = screen("fin", _s(obj, "ending"), lim["ending"])
+        if problem:
+            return plan, cand, problem
+        raw_scenes = [s for s in (obj.get("scenes") or []) if isinstance(s, dict)]
+        if not EXPLAINER_MIN_SCENES <= len(raw_scenes) <= EXPLAINER_MAX_SCENES:
+            return plan, cand, f"{len(raw_scenes)} scène(s) : il en faut {EXPLAINER_MIN_SCENES} à {EXPLAINER_MAX_SCENES}"
+        scenes = []
+        for n, s in enumerate(raw_scenes, start=1):
+            kind = str(s.get("kind") or "").strip().lower()
+            if kind not in EXPLAINER_SCENE_KINDS:
+                return plan, cand, f"scène {n} : genre inconnu ({kind!r})"
+            sc = {"kind": kind, "text": "", "big": "", "items": [], "left": "", "right": "", "who": ""}
+            checks: list[tuple[str, str, str, int, bool]] = []
+            if kind == "fact":
+                checks += [("text", "texte", _s(s, "text"), lim["text"], False)]
+                if _s(s, "big"):
+                    checks.append(("big", "mot en grand", _s(s, "big"), lim["big"], False))
+            elif kind == "steps":
+                if _s(s, "text"):
+                    checks.append(("text", "titre des étapes", _s(s, "text"), lim["heading"], False))
+                steps = [str(i) for i in (s.get("items") or []) if str(i or "").strip()]
+                if not 2 <= len(steps) <= 4:
+                    return plan, cand, f"scène {n} : {len(steps)} étape(s), il en faut 2 à 4"
+                checks += [(f"item{i}", f"étape {i + 1}", t, lim["item"], False) for i, t in enumerate(steps)]
+            elif kind == "compare":
+                if _s(s, "text"):
+                    checks.append(("text", "titre de la comparaison", _s(s, "text"), lim["heading"], False))
+                if not (_s(s, "left") and _s(s, "right")):
+                    return plan, cand, f"scène {n} : une comparaison demande deux côtés"
+                checks += [("left", "côté gauche", _s(s, "left"), lim["side"], False),
+                           ("right", "côté droit", _s(s, "right"), lim["side"], False)]
+            else:   # quote
+                if not (_s(s, "text") and _s(s, "who")):
+                    return plan, cand, f"scène {n} : une citation demande le texte et son auteur"
+                checks += [("text", "citation", _s(s, "text"), lim["quote"], True),
+                           ("who", "auteur de la citation", _s(s, "who"), lim["who"], False)]
+            for key, label, raw, limit, quote in checks:
+                text, why = screen(f"scène {n}, {label}", raw, limit, quote=quote)
+                if why:
+                    return plan, cand, why
+                outlet = names_news_outlet(text) if key == "who" else None
+                if outlet:
+                    return plan, cand, f"scène {n}, {label} : cite un média ({outlet})"
+                if key.startswith("item"):
+                    sc["items"].append(text)
+                else:
+                    sc[key] = text
+            if kind == "quote":
+                sc["text"] = sc["text"].strip("\"“”")
+            scenes.append(sc)
+        plan = {"title": title, "scenes": scenes, "ending": ending}
+        figure = ungrounded_number(" ".join(self._screen_texts(plan) + [post]), cited)
+        if figure:
+            return plan, cand, f"chiffre absent des sources ({figure})"
+        echo = self._echoes_recent(post)
+        if echo:
+            return plan, cand, echo
+        from .explainer import layout_problem
+        fits = layout_problem(plan)
+        if fits:
+            return plan, cand, f"ne tient pas à l'écran ({fits})"
+        cand.visual = self._photo_visual(obj, items, cited)
+        return plan, cand, None
 
     # ==================================================================
     # Texte de secours (jamais None)

@@ -421,6 +421,16 @@ _OUTLET_CITED_RES = (
 )
 
 
+_OUTLET_NAME_RE = re.compile(r"(?<![\w-])(?:" + _OUTLET_ALT + r")")
+
+
+def names_news_outlet(text: str) -> str | None:
+    """Le nom d'un média n'importe où dans un texte court : l'auteur d'une citation à l'écran
+    d'une vidéo (« — The Verge » est refusé, comme « The Verge reports » dans un post)."""
+    m = _OUTLET_NAME_RE.search(text or "")
+    return re.sub(r"\s+", " ", m.group(0)).strip() if m else None
+
+
 def news_outlet_cited(text: str) -> str | None:
     """Le passage où le post renvoie à un média (« TechCrunch reports », « according to a
     report »), ou None. Le compte donne la nouvelle lui-même."""

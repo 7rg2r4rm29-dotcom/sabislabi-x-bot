@@ -1596,3 +1596,106 @@ class TestWhatWorksAndTrends:
         bot.maybe_analytics()
         assert works_parts["analytics"].labeled == 0
         assert works_parts["analytics"].refreshes == 1                # les stats, elles, sont relevées
+
+
+# ---------------------------------------------------------------------------
+# Vidéos explicatives animées (consigne du propriétaire, 23/11/2026)
+# ---------------------------------------------------------------------------
+from bot.config import parse_explainer_slots  # noqa: E402
+
+
+class VideoWriter(StubWriter):
+    def __init__(self, ok: bool = True) -> None:
+        super().__init__()
+        self.ok = ok
+
+    def draft_explainer(self, news, notes, perf):
+        self.calls.append(("draft_explainer", "explainer", len(news), tuple(notes), perf))
+        if not self.ok:
+            return None
+        return Draft(kind="explainer", texts=["Your car can now tell you're not watching the road."],
+                     reason="stub", visual=Visual("photo", SHOT_URL),
+                     video_plan={"title": "How?", "scenes": [{"kind": "fact", "text": "It sees you."}],
+                                 "ending": "Would you trust it?"})
+
+
+class VideoMaker:
+    def __init__(self, result=("/tmp/explainer.mp4", "video", None), fail: bool = False) -> None:
+        self.result, self.fail = result, fail
+        self.calls: list[tuple] = []
+
+    def __call__(self, settings, draft, writer, tag):
+        self.calls.append((draft.kind, tag))
+        if self.fail:
+            raise RuntimeError("ffmpeg crashed")
+        return self.result
+
+
+def video_bot(settings, state, budget, parts, *, writer=None, maker=None) -> Bot:
+    p = dict(parts, writer=writer or VideoWriter())
+    bot = Bot(settings, llm=object(), x=FakeX(), telegram=FakeTelegram(), news=p["news"], state=state,
+              writer=p["writer"], approvals=p["approvals"], publisher=p["publisher"], comments=p["comments"],
+              radar=p["radar"], analytics=p["analytics"], budget=budget, prepare_visual=p["visual"],
+              rng=random.Random(0), prepare_explainer=maker if maker is not None else VideoMaker())
+    bot.trends = None
+    return bot
+
+
+class TestExplainerSlots:
+    def test_an_explainer_takes_the_place_of_the_nearest_post(self, settings, state, budget, parts, clock):
+        settings.explainer_slots = parse_explainer_slots("thu@13:30,fri@14:00")
+        bot = video_bot(settings, state, budget, parts)
+        clock(9, 0)                                           # jeudi
+        today = [(o.strftime("%a %H:%M"), s.kind) for o, s in bot._occurrences((0,))]
+        assert today == [("Thu 08:00", "gm"), ("Thu 13:30", "explainer"), ("Thu 18:00", "news")]
+        friday = [(o.strftime("%a %H:%M"), s.kind) for o, s in bot._occurrences((1,))]
+        assert friday == [("Fri 08:00", "gm"), ("Fri 14:00", "explainer"), ("Fri 18:00", "news")]
+        saturday = [s.kind for _o, s in bot._occurrences((2,))]
+        assert saturday == ["gm", "tip", "news"]              # pas de vidéo ce jour-là : rien ne change
+
+    def test_on_a_thread_day_the_thread_wins(self, settings, state, budget, parts, clock):
+        settings.explainer_slots = parse_explainer_slots("tue@15:00")
+        bot = video_bot(settings, state, budget, parts)
+        clock(9, 0, day=13)                                   # mardi : thread à 15:00
+        kinds = [s.kind for _o, s in bot._occurrences((0,))]
+        assert "explainer" not in kinds and "thread" in kinds
+
+    def test_the_video_is_drafted_then_made(self, settings, state, budget, parts, clock):
+        settings.explainer_slots = parse_explainer_slots("thu@13:30")
+        maker = VideoMaker()
+        settings.approval_mode = "auto"
+        bot = video_bot(settings, state, budget, parts, maker=maker)
+        assert settings.lead_for("explainer") == 90           # script, photo et vidéo : 1 h 30 avant
+        clock(11, 59)
+        assert bot.plan_slots() == 0
+        clock(12, 0)
+        assert bot.plan_slots() == 1
+        assert bot.writer.calls[0][0] == "draft_explainer"
+        assert maker.calls == [("explainer", "explainer_2026-10-15")]
+        item = parts["approvals"].created[0]
+        assert item["kind"] == "explainer" and item["slot_key"] == "explainer-thu-1330"
+        assert item["image_kind"] == "video" and item["image_path"] == "/tmp/explainer.mp4"
+        assert parts["visual"].calls == []                    # pas la recherche d'image d'un post
+
+    def test_a_failed_video_never_blocks_the_post(self, settings, state, budget, parts, clock):
+        settings.explainer_slots = parse_explainer_slots("thu@13:30")
+        bot = video_bot(settings, state, budget, parts, maker=VideoMaker(fail=True))
+        clock(13, 0)
+        assert bot.plan_slots() == 1
+        item = parts["approvals"].created[0]
+        assert item["kind"] == "explainer" and item["image_path"] is None
+
+    def test_nothing_worth_explaining_skips_the_slot(self, settings, state, budget, parts, clock):
+        settings.explainer_slots = parse_explainer_slots("thu@13:30")
+        bot = video_bot(settings, state, budget, parts, writer=VideoWriter(ok=False))
+        clock(13, 0)
+        bot.plan_slots()
+        assert parts["approvals"].created == []
+        assert state.slot_item_id("2026-10-15", "explainer-thu-1330") == SLOT_SKIPPED
+        assert any("rien d'assez fort" in n for n in parts["approvals"].notes)
+
+    def test_new_version_of_a_video(self, settings, state, budget, parts, clock):
+        maker = VideoMaker()
+        bot = video_bot(settings, state, budget, parts, maker=maker)
+        draft = bot.regenerate({"id": "e1", "kind": "explainer"})
+        assert draft is not None and draft.image_kind == "video" and maker.calls[0][0] == "explainer"

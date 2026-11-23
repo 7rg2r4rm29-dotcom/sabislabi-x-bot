@@ -36,8 +36,11 @@ POST_KINDS = ("gm", "tip", "news")
 # existe encore pour qui y tient.
 DEFAULT_POST_SLOTS = "tip@14:30,news@19:00"
 DEFAULT_THREAD_SLOTS = "tue@14:30,sun@16:00"
-DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240}
-AUTO_LEAD_MINUTES = {"thread": 90}   # mode automatique : 45 min avant pour un post, 90 pour un thread
+# Vidéos explicatives animées (23/11/2026) : aucune par défaut ; le serveur en a 3 par semaine.
+DEFAULT_EXPLAINER_SLOTS = ""
+DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240, "explainer": 240}
+# Vidéo explicative : script, photo, fabrication de la vidéo (quelques minutes sur le serveur).
+AUTO_LEAD_MINUTES = {"thread": 90, "explainer": 90}   # mode automatique : 45 min avant pour un post, 90 pour un thread
 
 # Modèles qui acceptent la bascule serveur en cas de refus (fallbacks: "default").
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
@@ -110,7 +113,7 @@ def parse_effort_or_empty(raw: str) -> str:
 @dataclass(frozen=True)
 class Slot:
     """Créneau de publication récurrent. `weekday` None = tous les jours."""
-    kind: str            # gm | tip | news | thread
+    kind: str            # gm | tip | news | thread | explainer
     at: dtime
     weekday: int | None = None
 
@@ -135,8 +138,7 @@ def parse_post_slots(raw: str) -> list[Slot]:
     return slots
 
 
-def parse_thread_slots(raw: str) -> list[Slot]:
-    """'tue@15:00,sun@18:00'"""
+def _parse_weekly_slots(raw: str, kind: str, name: str) -> list[Slot]:
     slots: list[Slot] = []
     for part in (raw or "").split(","):
         part = part.strip().lower()
@@ -144,9 +146,19 @@ def parse_thread_slots(raw: str) -> list[Slot]:
             continue
         day, _, hhmm = part.partition("@")
         if day not in WEEKDAYS:
-            raise ConfigError(f"THREAD_SLOTS : jour inconnu {day!r}")
-        slots.append(Slot("thread", parse_hhmm(hhmm), WEEKDAYS[day]))
+            raise ConfigError(f"{name} : jour inconnu {day!r}")
+        slots.append(Slot(kind, parse_hhmm(hhmm), WEEKDAYS[day]))
     return slots
+
+
+def parse_thread_slots(raw: str) -> list[Slot]:
+    """'tue@15:00,sun@18:00'"""
+    return _parse_weekly_slots(raw, "thread", "THREAD_SLOTS")
+
+
+def parse_explainer_slots(raw: str) -> list[Slot]:
+    """'mon@14:30,wed@14:30,fri@14:30' : les vidéos explicatives de la semaine."""
+    return _parse_weekly_slots(raw, "explainer", "EXPLAINER_SLOTS")
 
 
 def parse_leads(raw: str) -> dict[str, int]:
@@ -195,6 +207,7 @@ class Settings:
     # --- Planning ---
     post_slots: list[Slot] = field(default_factory=list)
     thread_slots: list[Slot] = field(default_factory=list)
+    explainer_slots: list[Slot] = field(default_factory=list)
     draft_leads: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_LEADS))
     approval_grace_minutes: int = 120
     quiet_hours: tuple[dtime, dtime] | None = None
@@ -383,6 +396,7 @@ def load_settings() -> Settings:
         post_versions=min(POST_VERSIONS_MAX, max(1, _env_int("POST_VERSIONS", 1))),
         post_slots=_lenient("POST_SLOTS", parse_post_slots, DEFAULT_POST_SLOTS, w),
         thread_slots=_lenient("THREAD_SLOTS", parse_thread_slots, DEFAULT_THREAD_SLOTS, w),
+        explainer_slots=_lenient("EXPLAINER_SLOTS", parse_explainer_slots, DEFAULT_EXPLAINER_SLOTS, w),
         draft_leads=parse_leads(_env("DRAFT_LEAD_MINUTES")),
         approval_grace_minutes=_env_int("APPROVAL_GRACE_MINUTES", 120),
         quiet_hours=_lenient("QUIET_HOURS", _quiet_hours, "23:30-07:30", w),

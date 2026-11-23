@@ -359,6 +359,14 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert "Claude interrogé 30 fois/jour au plus · à 10 min au moins d’un post prévu)" in txt
 
+    def test_config_summary_shows_the_explainer_videos(self, settings):
+        from bot.config import parse_explainer_slots
+        assert "vidéos explicatives : aucune ·" in "\n".join(bmain.config_summary(settings))
+        settings.explainer_slots = parse_explainer_slots("mon@14:30,wed@14:30,fri@14:30")
+        txt = "\n".join(bmain.config_summary(settings))
+        assert ("vidéos explicatives : lun. 14:30, mer. 14:30, ven. 14:30 (à la place du post prévu le plus "
+                "proche)") in txt
+
     def test_config_summary_shows_what_works_and_trends(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
         assert ("tendances du jour : oui (Google, Wikipédia, Hacker News, annonces X déjà lues) · "
@@ -548,6 +556,36 @@ class TestPreview:
         monkeypatch.setattr(analytics.Analytics, "performance_notes", lambda self: "Last 30 days, 6 posts: …")
         _c, _o, _t, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="tip")
         assert writer.perfs == ["Last 30 days, 6 posts: …"]
+
+    def test_preview_makes_the_explainer_video(self, settings, tmp_path, clock):
+        from bot.models import Draft
+        lines: list[str] = []
+        video = tmp_path / "explainer.mp4"
+        video.write_bytes(b"mp4")
+        made: list[tuple] = []
+
+        class VideoPreviewWriter(PreviewWriter):
+            def draft_explainer(self, news, notes, perf):
+                self.calls.append(("explainer", len(news), tuple(notes)))
+                return Draft(kind="explainer", texts=["Your car can now tell you're not watching the road."],
+                             video_plan={"title": "How?", "scenes": [], "ending": "?"})
+
+        def make(s, draft, writer, tag):
+            made.append((draft.kind, tag))
+            return str(video), "video", None
+
+        tg = FakeTelegram()
+        news = PreviewNews(["n1", "n2"])
+        writer = VideoPreviewWriter({})
+        code = bmain.run_preview(settings, "explainer", tmp_path / "state" / "state.json", llm=object(), news=news,
+                                 writer=writer, telegram=tg, prepare_visual=lambda *a: pytest.fail("photo"),
+                                 prepare_explainer=make, out=lines.append)
+        out = "\n".join(lines)
+        assert code == 0 and writer.calls == [("explainer", 2, ())]
+        assert made == [("explainer", "apercu_explainer")]
+        assert "--- vidéo explicative ---" in out and "Your car can now tell" in out
+        assert tg.photos and tg.photos[0].get("video") is True and tg.photos[0]["path"] == str(video)
+        assert news.calls[0]["max_age_hours"] is None and news.calls[1]["max_age_hours"] == 96
 
     def test_preview_shows_the_editor_what_works_and_the_trends(self, settings, tmp_path, clock, monkeypatch):
         from bot import analytics, trends

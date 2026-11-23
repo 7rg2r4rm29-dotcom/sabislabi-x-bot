@@ -25,7 +25,7 @@ from .x_api import contains_url, intent_post_url, intent_reply_url, tweet_url
 
 log = logging.getLogger("xbot.approvals")
 
-POST_KINDS = ("gm", "tip", "news", "thread", "reactive")
+POST_KINDS = ("gm", "tip", "news", "thread", "reactive", "explainer")
 MAX_REGEN = 3
 RESUME_DELAY_MINUTES = 3  # /reprendre : délai avant le départ des posts en retard
 COMMENT_AUTO_DELAY_MINUTES = 3  # COMMENTS_AUTO_REPLY : le temps de toucher ❌ avant l'envoi
@@ -40,6 +40,7 @@ KIND_LABELS = {
     "news": ("📰", "L'histoire du jour"),
     "thread": ("🧵", "Thread"),
     "reactive": ("⚡", "Ça vient de tomber"),
+    "explainer": ("🎬", "Vidéo explicative"),
     "comment_reply": ("💬", "Réponse à un commentaire"),
     "radar": ("🎯", "Radar"),
 }

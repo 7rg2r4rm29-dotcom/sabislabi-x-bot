@@ -841,3 +841,28 @@ class TestReviewFixes:
         utils._last_log_time = 0.0
         utils.touch_watchdog()
         assert utils._last_log_time > 0
+
+
+class TestExplainerSettings:
+    def test_parse_explainer_slots(self):
+        from bot.config import parse_explainer_slots
+        slots = cfg.parse_explainer_slots("mon@14:30, wed@14:30,FRI@14:30")
+        assert [(s.kind, s.weekday, s.at.strftime("%H:%M"), s.key) for s in slots] == [
+            ("explainer", 0, "14:30", "explainer-mon-1430"), ("explainer", 2, "14:30", "explainer-wed-1430"),
+            ("explainer", 4, "14:30", "explainer-fri-1430")]
+        assert parse_explainer_slots("") == []
+        with pytest.raises(cfg.ConfigError, match="EXPLAINER_SLOTS"):
+            parse_explainer_slots("someday@14:30")
+
+    def test_videos_are_off_by_default_and_drafted_early(self, monkeypatch):
+        monkeypatch.delenv("EXPLAINER_SLOTS", raising=False)
+        s = cfg.load_settings()
+        assert s.explainer_slots == []
+        monkeypatch.setenv("EXPLAINER_SLOTS", "mon@14:30,fri@14:30")
+        monkeypatch.setenv("APPROVAL_MODE", "auto")
+        s = cfg.load_settings()
+        assert [sl.weekday for sl in s.explainer_slots] == [0, 4]
+        assert s.lead_for("explainer") == 90 and s.lead_for("tip") == 45
+        monkeypatch.setenv("EXPLAINER_SLOTS", "nope")
+        s = cfg.load_settings()
+        assert s.explainer_slots == [] and any("EXPLAINER_SLOTS" in w for w in s.warnings)

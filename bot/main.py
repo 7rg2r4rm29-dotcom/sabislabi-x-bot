@@ -43,9 +43,9 @@ BUSY_AHEAD_MIN = 15      # publication prévue dans moins de 15 min → occupé
 BUSY_STALE_MIN = 30      # au-delà, un item en retard est considéré bloqué (bot arrêté), pas « en cours »
 
 KIND_FR = {"gm": "GM", "tip": "le futur arrive", "news": "l'histoire du jour", "thread": "thread",
-           "reactive": "ça vient de tomber",
+           "reactive": "ça vient de tomber", "explainer": "vidéo explicative",
            "comment_reply": "réponse à un commentaire"}
-PREVIEW_KINDS = ("tip", "news", "thread", "reactive")
+PREVIEW_KINDS = ("tip", "news", "thread", "reactive", "explainer")
 PREVIEW_DEFAULT = "tip,news"
 
 
@@ -126,7 +126,7 @@ def busy_check(state_path: str | Path | None = None, now=None) -> tuple[int, str
 # ---------------------------------------------------------------------------
 # --report : ce que le bot a vraiment écrit et publié (LECTURE SEULE, aucun secret)
 # ---------------------------------------------------------------------------
-POST_FAMILY = ("gm", "tip", "news", "thread", "reactive")
+POST_FAMILY = ("gm", "tip", "news", "thread", "reactive", "explainer")
 
 
 def report(state_path: str | Path | None = None, log_path: str | Path | None = None, n: int = 15) -> str:
@@ -255,6 +255,8 @@ def config_summary(settings) -> list[str]:
     posts = ", ".join(f"{sl.kind} {sl.at:%H:%M}" for sl in s.post_slots) or "aucun"
     threads = ", ".join(f"{jours[sl.weekday]} {sl.at:%H:%M}" for sl in s.thread_slots
                         if sl.weekday is not None) or "aucun"
+    videos = ", ".join(f"{jours[sl.weekday]} {sl.at:%H:%M}" for sl in s.explainer_slots
+                       if sl.weekday is not None) or "aucune"
     leads = ", ".join(f"{k} {v} min" for k, v in sorted(s.draft_leads.items()))
     quiet = f"{s.quiet_hours[0]:%H:%M}-{s.quiet_hours[1]:%H:%M}" if s.quiet_hours else "aucune"
     weekly = (f"{jours[s.weekly_report.weekday]} {s.weekly_report.at:%H:%M}"
@@ -279,7 +281,9 @@ def config_summary(settings) -> list[str]:
         f"Claude : {s.llm_model}, effort {s.llm_effort} (threads : {s.llm_effort_thread}"
         f"{f' · posts : {s.llm_effort_post}' if s.llm_effort_post else ''})"
         f"{f' · {s.post_versions} versions par post, la meilleure est gardée' if s.post_versions > 1 else ''}",
-        f"Créneaux : {posts} · threads : {threads} · aléa de publication 0-{s.publish_jitter_minutes} min",
+        f"Créneaux : {posts} · threads : {threads} · vidéos explicatives : {videos}"
+        f"{' (à la place du post prévu le plus proche)' if s.explainer_slots else ''}"
+        f" · aléa de publication 0-{s.publish_jitter_minutes} min",
         f"Rédaction à l'avance : {leads} · délai de validation {s.approval_grace_minutes} min · "
         f"heures calmes {quiet}",
         f"Réactif : {'oui' if s.reactive_enabled else 'non'} (max {s.reactive_max_per_day}/jour, "
@@ -596,7 +600,7 @@ def preview_kinds(raw: str) -> list[str]:
 
 def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, llm=None, news=None,
                 writer=None, telegram=None, prepare_visual: Callable | None = None,
-                out: Callable[[str], None] = print) -> int:
+                prepare_explainer: Callable | None = None, out: Callable[[str], None] = print) -> int:
     """Rédige un post de chaque type demandé, cherche la photo de l'actu et envoie le tout
     sur Telegram, pour voir ce que le bot publierait MAINTENANT. Rien n'est publié, et
     l'état du bot en service n'est pas touché : tout se passe sur une copie jetable
@@ -662,7 +666,7 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             # Les mêmes actus que le bot en service : 4 jours pour « le futur arrive » et les
             # threads, 7 jours pour la semaine en revue (fin de semaine), le frais sinon.
             weekly = kind == "thread" and utils.now_local().weekday() in WEEKLY_RECAP_WEEKDAYS
-            hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread") else None)
+            hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread", "explainer") else None)
             picked = items
             if hours:
                 try:
@@ -682,6 +686,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                 # Comme le bot en marche : jamais les annonces pour initiés (intérêt < 1).
                 picked = [it for it in picked if Bot._appeal(it) >= 1.0]
                 draft = writer.draft_reactive(picked, notes, perf)
+            elif kind == "explainer":
+                draft = writer.draft_explainer(picked, notes, perf)
             else:
                 draft = writer.draft_post(kind, picked, notes, perf)
             label = KIND_FR.get(kind, kind)
@@ -690,7 +696,15 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
                        "fréquent)") if kind == "reactive" else "Claude n'a rien proposé de publiable"
                 out(f"--- {label} : {why}.")
                 continue
-            res = prepare_visual(settings, draft, writer, f"apercu_{kind}")
+            if kind == "explainer":
+                # La vidéo animée, comme le bot en marche (la photo de l'actu en fond, si elle convient).
+                make = prepare_explainer
+                if make is None:
+                    from . import explainer
+                    make = explainer.prepare
+                res = make(settings, draft, writer, f"apercu_{kind}")
+            else:
+                res = prepare_visual(settings, draft, writer, f"apercu_{kind}")
             path, image_kind, second = (*res, None)[:3] if len(res) == 2 else res
             done += 1
             out(f"--- {label} ---")

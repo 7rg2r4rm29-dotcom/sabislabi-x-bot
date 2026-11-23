@@ -24,8 +24,8 @@ from .x_api import XError
 
 log = logging.getLogger("xbot.analytics")
 
-KINDS = ("gm", "tip", "news", "thread", "reactive")
-KIND_FR = {"gm": "gm", "tip": "futur", "news": "actu", "thread": "thread", "reactive": "à chaud",
+KINDS = ("gm", "tip", "news", "thread", "reactive", "explainer")
+KIND_FR = {"gm": "gm", "tip": "futur", "news": "actu", "thread": "thread", "reactive": "à chaud", "explainer": "vidéo",
            "comment_reply": "réponse"}
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 

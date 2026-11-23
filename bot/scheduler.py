@@ -35,6 +35,7 @@ log = logging.getLogger("xbot.scheduler")
 TICK_SLEEP_S = 20
 CLAUDE_ALERT_EVERY_MIN = 720   # alerte « crédit Claude » au plus toutes les 12 h
 THREAD_CLEAR_MIN = 180  # un jour de thread, pas d'autre post (hors gm) à moins de 3 h de lui
+EXPLAINER_CLEAR_MIN = 60  # une vidéo explicative prend la place du post prévu à moins d'1 h d'elle
 TICK_BUDGET_S = 240     # au-delà, les étapes facultatives attendent le tour suivant
 ERROR_SLEEP_S = 60
 WATCHDOG_S = 420
@@ -60,7 +61,8 @@ SLOT_MARKERS = (SLOT_PENDING, SLOT_SKIPPED, SLOT_FAILED)
 
 POST_KINDS = ("gm", "tip", "news")
 KIND_FR = {"gm": "☀️ GM", "tip": "🔮 le futur arrive", "news": "📰 l'histoire du jour", "thread": "🧵 thread",
-           "reactive": "⚡ ça vient de tomber", "comment_reply": "💬 réponse", "radar": "🎯 radar"}
+           "reactive": "⚡ ça vient de tomber", "explainer": "🎬 vidéo explicative", "comment_reply": "💬 réponse",
+           "radar": "🎯 radar"}
 JOURS_COURTS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 ITEM_STATUS_FR = {
@@ -131,7 +133,8 @@ class Bot:
     def __init__(self, settings, *, llm=None, x=None, telegram=None, news=None, state=None,
                  writer=None, approvals=None, publisher=None, comments=None, radar=None,
                  analytics=None, budget=None, prepare_visual: Callable | None = None,
-                 rng: random.Random | None = None, trends=None) -> None:
+                 rng: random.Random | None = None, trends=None,
+                 prepare_explainer: Callable | None = None) -> None:
         # Les modules lourds sont importés à la demande : un test (ou --busy-check)
         # qui fournit ses doublures n'a pas besoin de les charger.
         self.settings = settings
@@ -186,6 +189,7 @@ class Bot:
             trends = TrendWatch(settings, self.state)
         self.trends = trends
         self._prepare_visual = prepare_visual
+        self._prepare_explainer = prepare_explainer
         self.rng = rng or random.Random()
         # À part : tirer « post d'essai ou non » ne décale pas les autres tirages (self.rng).
         self.style_rng = random.Random()
@@ -211,7 +215,7 @@ class Bot:
         """Nouvelle version d'un post / thread / réactif, avec l'actu du moment
         (sans nouvelle lecture payante de l'API X : posts X en cache seulement)."""
         kind = str(item.get("kind") or "")
-        if kind not in POST_KINDS + ("thread", "reactive"):
+        if kind not in POST_KINDS + ("thread", "reactive", "explainer"):
             return None
         news = self._news(kind, use_x=False)
         if kind == "reactive":       # comme maybe_reactive : jamais les annonces pour initiés
@@ -463,16 +467,26 @@ class Bot:
             day = now + timedelta(days=off)
             threads = [at_local(day, sl.at) for sl in self.settings.thread_slots or []
                        if sl.weekday == day.weekday()]
+            # Vidéo explicative : elle prend la place du post prévu le plus proche (même nombre de
+            # posts par jour) ; un jour de thread, le thread passe avant elle.
+            explainers = [(at_local(day, sl.at), sl) for sl in getattr(self.settings, "explainer_slots", None) or []
+                          if sl.weekday == day.weekday()]
+            explainers = [(occ, sl) for occ, sl in explainers
+                          if not any(abs(minutes_between(occ, t)) < THREAD_CLEAR_MIN for t in threads)]
             for slot in self.settings.post_slots or []:
                 occ = at_local(day, slot.at)
                 # Jour de thread : le thread prend la place du post le plus proche (pas
                 # plus de 3 posts par jour, et jamais deux posts à moins de 3 h).
                 if slot.kind != "gm" and any(abs(minutes_between(occ, t)) < THREAD_CLEAR_MIN for t in threads):
                     continue
+                if slot.kind != "gm" and any(abs(minutes_between(occ, e)) < EXPLAINER_CLEAR_MIN
+                                             for e, _sl in explainers):
+                    continue
                 out.append((occ, slot))
             for slot in self.settings.thread_slots or []:
                 if slot.weekday == day.weekday():
                     out.append((at_local(day, slot.at), slot))
+            out += explainers
         out.sort(key=lambda p: p[0])
         return out
 
@@ -613,7 +627,7 @@ class Bot:
         # autres threads et le post « le futur arrive » puisent dans les 4 derniers
         # jours (une belle histoire ne périme pas en 36 h) ; l'actu, dans le frais.
         weekly = kind == "thread" and now_local().weekday() in WEEKLY_RECAP_WEEKDAYS
-        hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread") else None)
+        hours = 168 if weekly else (FUTURE_NEWS_HOURS if kind in ("tip", "thread", "explainer") else None)
         try:
             items = (self.news.collect(max_age_hours=hours, use_x=use_x) if hours
                      else self.news.collect(use_x=use_x)) or []
@@ -694,12 +708,16 @@ class Bot:
             return self.writer.draft_thread(news, notes, perf)
         if kind == "reactive":
             return self.writer.draft_reactive(news, notes, perf)
+        if kind == "explainer":
+            return self.writer.draft_explainer(news, notes, perf)
         return self.writer.draft_post(kind, news, notes, perf)
 
     def _visual(self, draft, tag: str) -> tuple[str | None, str | None, str | None]:
         """Image du post, comme un compte d'alertes info : la vidéo ou la photo de l'actu, et
         parfois une 2e image (drapeau, logo) ; sinon texte seul. Un sondage n'a pas d'image ;
         un post sans source non plus. (chemin, type, 2e image)."""
+        if getattr(draft, "kind", "") == "explainer" and getattr(draft, "video_plan", None):
+            return self._explainer_video(draft, tag)
         if getattr(draft, "poll", None) or getattr(draft, "visual", None) is None:
             return None, None, None
         fn = self._prepare_visual
@@ -717,6 +735,21 @@ class Bot:
         if not path:
             return None, None, None
         return path, kind, (second if kind == "photo" and isinstance(second, str) and second else None)
+
+    def _explainer_video(self, draft, tag: str) -> tuple[str | None, str | None, str | None]:
+        """La vidéo explicative animée (bot/explainer.py), avec la photo de l'actu en fond quand
+        il y en a une. Vidéo impossible : la photo seule, sinon texte seul."""
+        fn = self._prepare_explainer
+        if fn is None:
+            from . import explainer
+            fn = explainer.prepare
+        try:
+            res = fn(self.settings, draft, self.writer, tag)
+            path, kind = (tuple(res) + (None, None))[:2] if isinstance(res, tuple) else (None, None)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Vidéo explicative : erreur (%s), post en texte seul", e)
+            return None, None, None
+        return (path, kind, None) if path else (None, None, None)
 
     # ==================================================================
     # Post réactif (rare : la porte de Claude dit « non » la plupart du temps)

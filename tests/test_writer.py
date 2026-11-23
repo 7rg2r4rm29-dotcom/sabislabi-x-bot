@@ -2216,7 +2216,7 @@ class TestPrompts:
 
     def test_pick_briefs(self):
         assert set(wmod.PICK_BRIEFS) == {"news", "tip", "reactive", "thread-timely", "thread-future",
-                                         "thread-weekly"}
+                                         "thread-weekly", "explainer"}
         for key, brief in wmod.PICK_BRIEFS.items():
             assert "{" not in brief.format(n=4, m=3) and "}" not in brief.format(n=4, m=3), key
 
@@ -2328,3 +2328,129 @@ class TestWhatWorksAndTrends:
         w, llm = make_writer(settings, state, {})
         assert w.label_topics(["x"]) == []
         assert w.label_topics([]) == [] and len(llm.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Vidéo explicative animée (consigne du propriétaire, 23/11/2026)
+# ---------------------------------------------------------------------------
+def scene(kind: str, text: str = "", big: str = "", items=(), left: str = "", right: str = "",
+          who: str = "") -> dict:
+    return {"kind": kind, "text": text, "big": big, "items": list(items), "left": left, "right": right,
+            "who": who}
+
+
+def explainer_resp(**over) -> dict:
+    obj = {
+        "title": "How can anyone talk with ChatGPT out loud now?",
+        "scenes": [
+            scene("fact", "Voice chat with ChatGPT no longer needs a paid plan.", big="FREE"),
+            scene("steps", "What changes", items=["Before: you had to pay for it", "Now: every user gets it"]),
+            scene("quote", "Voice conversations no longer require a paid plan.", who="OpenAI"),
+        ],
+        "ending": "Who would you talk to first?",
+        "text": "Talking out loud with ChatGPT is now free for everyone. Here is what that changes.",
+        "source_ids": [1], "visual_url": "[1]", "hook": "NO X, NO Y", "reason": "la voix devient gratuite",
+    }
+    obj.update(over)
+    return obj
+
+
+def explainer_flow(*scripts: dict, factcheck=FC_OK, picks=(1,)) -> dict:
+    return {"pick-": pick(*picks), "explainer": list(scripts), "factcheck": factcheck}
+
+
+class TestExplainer:
+    def test_script_written_from_the_story(self, settings, state, items):
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp()))
+        d = w.draft_explainer(items, [], "")
+        assert d is not None and d.kind == "explainer"
+        assert d.texts == ["Talking out loud with ChatGPT is now free for everyone. Here is what that changes."]
+        assert d.video_plan["title"] == "How can anyone talk with ChatGPT out loud now?"
+        assert [s["kind"] for s in d.video_plan["scenes"]] == ["fact", "steps", "quote"]
+        assert d.video_plan["scenes"][0]["big"] == "FREE"
+        assert d.video_plan["ending"] == "Who would you talk to first?"
+        assert d.sources == [items[0]] and d.visual == Visual("photo", items[0].url)
+        assert d.hook == "NO X, NO Y" and d.reason.endswith("· vidéo explicative")
+        assert llm.labels() == ["pick-explainer", "explainer", "factcheck"]
+        call = llm.calls[1]
+        assert call["system"] == wmod.EXPLAINER_PROMPT
+        kinds = call["schema"]["properties"]["scenes"]["items"]["properties"]["kind"]["enum"]
+        assert kinds == ["fact", "steps", "compare", "quote"]
+        # Le relecteur vérifie TOUT ce qui s'écrit à l'écran, et le post.
+        fc = llm.calls[2]["user"]
+        assert "FREE Voice chat with ChatGPT" in fc and "Before: you had to pay for it" in fc
+        assert '"Voice conversations no longer require a paid plan." — OpenAI' in fc
+        assert "Talking out loud with ChatGPT is now free" in fc
+
+    def test_the_editor_is_asked_for_something_to_explain(self, settings, state, items):
+        w, llm = make_writer(settings, state, {"pick-": pick()})
+        assert w.draft_explainer(items, [], "") is None
+        assert "A SHORT ANIMATED EXPLAINER" in llm.calls[0]["user"]
+        assert llm.labels() == ["pick-explainer"]                     # rien de retenu : pas de script
+
+    def test_effort_and_style_models_like_a_post(self, settings, state, items):
+        settings.llm_effort_post = "high"
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp()))
+        w.draft_explainer(items, [], "OUR BEST RECENT POSTS — insist on what works")
+        call = llm.calls[1]
+        assert call["effort"] == "high" and "OUR BEST RECENT POSTS" in call["user"]
+
+    def test_a_refused_script_is_rewritten_once_with_the_reason(self, settings, state, items):
+        bad = explainer_resp(ending="Try it now on chatgpt.com")
+        w, llm = make_writer(settings, state, explainer_flow(bad, explainer_resp()))
+        d = w.draft_explainer(items, [], "")
+        assert d is not None and d.video_plan["ending"] == "Who would you talk to first?"
+        assert llm.labels() == ["pick-explainer", "explainer", "explainer-retry", "factcheck"]
+        assert "YOUR PREVIOUS SCRIPT WAS REFUSED" in llm.calls[2]["user"]
+
+    @pytest.mark.parametrize("over,why", [
+        ({"scenes": [scene("fact", "Voice chat is free for 72% of users.")] * 2}, "chiffre absent des sources"),
+        ({"scenes": [scene("quote", "It is free now.", who="The Verge")] * 2}, "cite un média"),
+        ({"scenes": [scene("steps", "How", items=["Just one step"])] * 2}, "étape"),
+        ({"scenes": [scene("compare", "What changes", left="Before: paid")] * 2}, "deux côtés"),
+        ({"scenes": [scene("fact", "Voice chat is free.")]}, "scène(s)"),
+        ({"scenes": [scene("fact", "Voice chat is free.")] * 6}, "scène(s)"),
+        ({"scenes": [scene("dance", "Voice chat is free.")] * 2}, "genre inconnu"),
+        ({"source_ids": []}, "aucune source"),
+        ({"title": "Pneumonoultramicroscopicsilicovolcanoconiosis is everywhere now"}, "ne tient pas"),
+        ({"text": ""}, "post : texte vide"),
+    ])
+    def test_scripts_that_break_the_rules_never_go_out(self, settings, state, items, caplog, over, why):
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(**over), explainer_resp(**over)))
+        assert w.draft_explainer(items, [], "") is None
+        assert "factcheck" not in llm.labels()
+        assert why in caplog.text
+
+    def test_a_quote_may_copy_the_article(self, settings, state, items):
+        quote = "OpenAI says voice conversations no longer require a paid plan."
+        w, _llm = make_writer(settings, state, explainer_flow(explainer_resp(
+            scenes=[scene("quote", quote, who="OpenAI"), scene("fact", "Every user gets it now.")])))
+        d = w.draft_explainer(items, [], "")
+        assert d is not None and d.video_plan["scenes"][0]["text"] == quote
+
+    def test_the_fact_checker_has_the_last_word(self, settings, state, items):
+        fails = fc_fail(issues="'FREE' is not what the item says", claims=[
+            {"claim": "free", "quote": "", "supported": False}])
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(), explainer_resp(),
+                                                              factcheck=[fails, fails]))
+        assert w.draft_explainer(items, [], "") is None
+        assert llm.labels() == ["pick-explainer", "explainer", "factcheck", "explainer-retry", "factcheck"]
+
+    def test_no_fact_check_no_video(self, settings, state, items):
+        w, _llm = make_writer(settings, state, {"pick-": pick(1), "explainer": explainer_resp(), "factcheck": None})
+        assert w.draft_explainer(items, [], "") is None
+
+    def test_claude_down_gives_nothing(self, settings, state, items):
+        w, _llm = make_writer(settings, state, {"pick-": pick(1)})
+        assert w.draft_explainer(items, [], "") is None
+
+    def test_explainers_count_as_recent_posts(self, settings, state):
+        w, _llm = make_writer(settings, state, {})
+        state.remember_text("explainer", "Talking out loud with ChatGPT is now free for everyone.")
+        assert "Talking out loud with ChatGPT is now free for everyone." in w.recent_all()
+
+    def test_prompt_rules(self):
+        p = wmod.EXPLAINER_PROMPT
+        assert "never guess" in p and "never a news site" in p and "no link, no hashtag, no @mention" in p
+        assert "FRENCH" in p and all(h in p for h in wmod.HOOK_SHAPES)
+        assert not contains_url(p)
