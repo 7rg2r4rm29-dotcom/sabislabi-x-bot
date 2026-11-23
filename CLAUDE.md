@@ -361,6 +361,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
      (il disait que les robots roulent encore, alors que le test de 10 semaines était fini), le second
      est passé ; photo de l'article (la page officielle, un PDF de JR East, répond 403) ; vidéo de
      7 scènes, 57 s, 2 Mo, fabriquée en 118 s ; envoyée sur Telegram. Coût : 0,32 $.
+  4. avec la voix off (23 h 15) : l'écran des Tesla « façon GTA » dessiné en direct par une IA ;
+     42 s de voix, vidéo de 50 s (7 scènes), voix ~85 s + vidéo 98 s ; envoyée sur Telegram. La
+     relecture avait accepté « GTA » (sigle non expliqué) au 2e essai : depuis `5b?`, « un peu
+     technique » n'est toléré qu'au 3e et dernier essai d'une vidéo.
 - Le flux The Guardian répond aussi 403 depuis le 23/11 (avec IEEE Spectrum 403 et The Debrief 404).
 - **@sabislabi est DÉJÀ abonné à X Premium** (le propriétaire l'a rappelé le 23/11/2026 ; vérifié par
   l'API : `verified_type` « blue », `subscription_type` « Premium »). Ne plus le lui proposer ; vérifier

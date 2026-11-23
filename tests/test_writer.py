@@ -2452,6 +2452,15 @@ class TestExplainer:
         assert "an everyday reader would stumble on" in second and "soft robot" in second
         assert "the post that carries the video was rejected: it was too close to a source's wording" in third
 
+    def test_jargon_is_only_tolerated_at_the_last_try(self, settings, state, items):
+        """Essai réel du 23/11/2026 : « GTA » accepté au 2e essai ; avec 3 essais, seulement au dernier."""
+        tech = fc_fail(ok=True, plain=False, hard_words='"GTA" is not explained')
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(), explainer_resp(), explainer_resp(),
+                                                              factcheck=[tech, tech, tech]))
+        d = w.draft_explainer(items, [], "")
+        assert d is not None
+        assert llm.labels().count("factcheck") == 3 and llm.labels().count("explainer-retry") == 2
+
     @pytest.mark.parametrize("problem,advice", [
         ("post : trop proche d'une source", "the post that carries the video was rejected: it was too close"),
         ("titre : trop long (90 > 80)", "the title of the video was rejected: it was too long (90"),

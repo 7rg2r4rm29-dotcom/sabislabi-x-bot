@@ -2033,7 +2033,9 @@ class Writer:
                 if ok is None:
                     log.warning("Vidéo explicative : relecture indisponible, rien n'est proposé")
                     return None
-                problem = None if ok else self._after_review(issues, attempt, "Vidéo explicative")
+                # « Un peu technique » n'est accepté qu'au dernier essai (3 essais : 2 pour le corriger).
+                last = attempt >= EXPLAINER_ATTEMPTS
+                problem = None if ok else self._after_review(issues, attempt if last else 1, "Vidéo explicative")
             if problem is None:
                 log.info("Vidéo explicative retenue (%d scènes) : %s | %r", len(plan["scenes"]), cand.reason,
                          plan["title"])
