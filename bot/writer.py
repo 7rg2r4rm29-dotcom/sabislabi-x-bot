@@ -1993,7 +1993,9 @@ class Writer:
             log.info("Vidéo explicative : la rédaction en chef ne retient aucune histoire (%s)", why or "-")
             return None
         self._read_articles(stories)
-        source_texts = [f"{it.title}. {it.summary} {it.body}".strip() for it in stories]
+        # Comme pour un post : le titre et le résumé (avec l'article entier, presque tous les mots
+        # d'un post s'y retrouvent, et tout serait « trop proche d'une source »).
+        source_texts = [_item_text(it) for it in stories]
         feedback = ""
         for attempt in (1, 2):
             user = self._explainer_user(stories, perf, feedback)

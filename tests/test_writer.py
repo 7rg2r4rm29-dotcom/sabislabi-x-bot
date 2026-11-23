@@ -2454,3 +2454,16 @@ class TestExplainer:
         assert "never guess" in p and "never a news site" in p and "no link, no hashtag, no @mention" in p
         assert "FRENCH" in p and all(h in p for h in wmod.HOOK_SHAPES)
         assert not contains_url(p)
+
+
+def test_explainer_post_is_not_compared_with_the_whole_article(settings, state, items):
+    """Essai réel du 23/11/2026 : comparé à l'article ENTIER, tout post était « trop proche d'une
+    source » (presque tous ses mots sont dans un long article). Comme un post : titre et résumé."""
+    post = "Talking out loud with ChatGPT is now free for everyone. Here is what that changes."
+    items[0].body = ("Talking out loud with ChatGPT is now free for everyone, here is what that changes for "
+                     "users. " + "OpenAI says voice conversations no longer require a paid plan. " * 20)
+    reader = Reader({items[0].url: items[0].body})
+    w, llm = make_writer(settings, state, explainer_flow(explainer_resp(text=post)), reader=reader)
+    d = w.draft_explainer(items, [], "")
+    assert d is not None and d.texts == [post]
+    assert llm.labels() == ["pick-explainer", "explainer", "factcheck"]
