@@ -73,7 +73,7 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 | **L'histoire du jour** 📰 : la nouveauté du jour qui intrigue tout le monde (« Amazon vient de dévoiler une caméra volante qui patrouille seule chez vous ») | 19 h, et une 2e histoire à 23 h | 2 h avant (45 min en auto) |
 | Thread 🧵 : une histoire racontée en grand le mardi et le jeudi, **« cette semaine, le futur s'est rapproché »** le dimanche | mardi et jeudi 14 h 30, dimanche 16 h | 4 h avant (1 h 30 en auto) |
 | **Ça vient de tomber** ⚡ : seulement pour une histoire dont tout le monde va parler (grande annonce d'un nom connu, première mondiale) | 3 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
-| **Vidéo explicative** 🎬 : une petite vidéo animée de 30 à 60 s qui explique une nouveauté, comme une émission de science pour toute la famille (texte en grand, étapes qui apparaissent, la photo de l'actu en fond) | lundi, mercredi et vendredi 14 h 30 sur ton serveur, à la place du « futur arrive » | 1 h 30 avant (en auto) |
+| **Vidéo explicative** 🎬 : une petite vidéo animée de 30 à 60 s qui explique une nouveauté, comme une émission de science pour toute la famille (texte en grand, étapes qui apparaissent, la photo de l'actu en fond, et une voix off en anglais qui lit ce qui est écrit) | lundi, mercredi et vendredi 14 h 30 sur ton serveur, à la place du « futur arrive » | 1 h 30 avant (en auto) |
 
 Trois posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
 19 h = leur pause de midi et la soirée en Europe, 23 h = leur après-midi). Rythme choisi par le
@@ -422,6 +422,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = « le futur arrive », `news` = « l'histoire du jour » ; `gm` existe encore si tu y tiens). Sur ton serveur depuis le 18/11/2026 : `tip@14:30,news@19:00,news@23:00` |
 | `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure). Sur ton serveur depuis le 18/11/2026 : `tue@14:30,thu@14:30,sun@16:00` |
 | `EXPLAINER_SLOTS` | vide | vidéos explicatives animées (jour@heure), à la place du post prévu le plus proche. Sur ton serveur depuis le 23/11/2026 : `mon@14:30,wed@14:30,fri@14:30` |
+| `EXPLAINER_VOICE_ENABLED` / `EXPLAINER_VOICE` | `false` / `af_heart` | voix off des vidéos explicatives (voix de synthèse Kokoro, gratuite, sur le serveur) ; `true` sur ton serveur depuis le 23/11/2026. Pour une voix d'homme : `EXPLAINER_VOICE=am_michael` |
 | `TRENDS_ENABLED` | `true` | regarder les tendances du jour (Google, Wikipédia, Hacker News, annonces X déjà lues) avant chaque choix d'histoire |
 | `MARKET_WATCH_ENABLED` | `false` | veille du marché : une fois par jour, ce qui fait réagir chez 5 gros comptes du même sujet (environ 0,25 $ par jour chez X ; comptes dans `market_accounts` de `config/settings.json`). `true` sur ton serveur depuis le 23/11/2026 |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240,explainer:240` | combien de minutes avant l'heure la carte arrive |

@@ -176,9 +176,24 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     `quote`), fin, post de 200 caractères ; contrôlé comme un post (`publish_problem` sur chaque écran,
     `ungrounded_number`, auteur d'une citation jamais un média `names_news_outlet`, mise en page réelle
     `layout_problem`, relecture `_factcheck`), une réécriture guidée, sinon créneau sauté ;
-  - animée par Pillow + ffmpeg (1080 × 1350, 24 i/s, 30 à 60 s, son muet) : photo de l'actu nette sous
-    le titre puis floue sous les explications, sinon fond bleu nuit ; 55 à 85 s de fabrication sur le
-    serveur ; vidéo impossible → la photo, sinon texte seul ; `--preview explainer` pour voir.
+  - animée par Pillow + ffmpeg (1080 × 1350, 24 i/s, 30 à 60 s) : photo de l'actu nette sous le titre
+    puis floue sous les explications, sinon fond bleu nuit ; 55 à 85 s de fabrication sur le serveur ;
+    vidéo impossible → la photo, sinon texte seul ; `--preview explainer` pour voir ;
+  - **voix off** (accord du propriétaire, 23/11/2026 : « Oui, ajoute-la ») : `bot/voice.py`, modèle
+    Kokoro (licence Apache 2.0) lu par le paquet `kokoro-onnx==0.6.1` sur le processeur, dans un
+    processus à part (`python -m bot.voice`). Fichiers du modèle dans `~/xbot-models/kokoro/` (HORS du
+    dossier du bot) : `kokoro-v1.0.onnx` (325 Mo) et `voices-v1.0.bin` (28 Mo), de
+    github.com/thewh1teagle/kokoro-onnx (« model-files-v1.0 »), empreintes dans `voice.MODEL_SHA256` ;
+    nouveau serveur : `bash ~/x-degen-bot/deploy/install_voice.sh`. Réglages : `EXPLAINER_VOICE_ENABLED`
+    (vrai sur le serveur, faux par défaut), `EXPLAINER_VOICE` (`af_heart` par défaut, la mieux notée ;
+    28 voix anglaises, par exemple `am_michael` pour un homme), `VOICE_MODEL_DIR`. Ce qui est dit = ce
+    qui est écrit (`explainer.narration` : titre, texte, étapes, côtés, « As X put it: … », fin, puis
+    « Follow for the future, explained. ») : rien de nouveau à relire. Les scènes se calent sur la voix
+    (`voice_timing` : 0,3 s avant, 0,35 s entre deux phrases, 0,6 s après ; chaque étape apparaît quand
+    elle est dite), piste mise en place par `narration_track`, AAC 128 k. Au-delà de 120 s, ou au
+    moindre problème : vidéo sans voix. Mesuré le 23/11 : 30 s de voix calculées en ~65 s, 670 Mo de
+    mémoire au plus ; vidéo de 38 s faite en 177 s en tout ; volume moyen −26 dB. `--check` dit une
+    phrase d'essai (« ✅ Voix off : prête »).
 - Les autres modules :
   - `bot/scheduler.py` : créneaux, posts « à chaud », 🔄 nouvelle version ;
   - `bot/approvals.py` : Telegram ;
@@ -447,5 +462,5 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     (`news_feeds`) et les consignes ;
   - regarder la portée des premières vidéos explicatives (type `explainer` dans `what_works`) contre les
     autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche ;
-  - une voix off pour les vidéos (modèle de voix gratuit à installer sur le serveur : à proposer au
-    propriétaire, avec le nom, la source et la taille du fichier).
+  - la voix off est installée (voir section 4) : l'assistant ne peut pas l'écouter lui-même ; demander
+    au propriétaire si la voix lui plaît (sinon `EXPLAINER_VOICE`, par exemple `am_michael`).
