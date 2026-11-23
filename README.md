@@ -73,6 +73,7 @@ Tout se passe dans Telegram. Chaque contenu arrive sous forme de **carte** avec 
 | **L'histoire du jour** 📰 : la nouveauté du jour qui intrigue tout le monde (« Amazon vient de dévoiler une caméra volante qui patrouille seule chez vous ») | 19 h, et une 2e histoire à 23 h | 2 h avant (45 min en auto) |
 | Thread 🧵 : une histoire racontée en grand le mardi et le jeudi, **« cette semaine, le futur s'est rapproché »** le dimanche | mardi et jeudi 14 h 30, dimanche 16 h | 4 h avant (1 h 30 en auto) |
 | **Ça vient de tomber** ⚡ : seulement pour une histoire dont tout le monde va parler (grande annonce d'un nom connu, première mondiale) | 3 par jour au plus, entre 12 h et 23 h 30 | dès qu'elle tombe |
+| **Vidéo explicative** 🎬 : une petite vidéo animée de 30 à 60 s qui explique une nouveauté, comme une émission de science pour toute la famille (texte en grand, étapes qui apparaissent, la photo de l'actu en fond) | lundi, mercredi et vendredi 14 h 30 sur ton serveur, à la place du « futur arrive » | 1 h 30 avant (en auto) |
 
 Trois posts par jour, aux heures où le public anglophone est en ligne (14 h 30 = matin aux États-Unis,
 19 h = leur pause de midi et la soirée en Europe, 23 h = leur après-midi). Rythme choisi par le
@@ -92,6 +93,26 @@ mieux faire, pas à publier plus.
 - **Un « ça vient de tomber » peut partir près d'un post prévu** : 10 minutes d'écart au lieu d'une
   heure. Avant, le bot ne regardait pas l'actu chaude de 18 h à 20 h, et une annonce américaine de 19 h
   attendait 20 h. Entre deux posts « ça vient de tomber », l'écart reste d'une heure.
+
+**Insister sur ce qui marche** (ta consigne du 23 novembre 2026 : « insiste seulement sur les posts qui
+marchent, dans le même style, tant que ça marche, et regarde les tendances à chaque fois ») :
+
+- **Le bot apprend de ses propres chiffres.** Chaque post est classé par sujet (jeux vidéo, IA qui étonne,
+  vie quotidienne, gadgets…). Le bot calcule ce qui fait plus de vues et de réactions que d'habitude, en
+  donnant plus de poids aux derniers jours : si un sujet ne marche plus, il est vite oublié. Le 23/11, ce
+  qui marchait le mieux : l'IA qui fait quelque chose d'étonnant (1,7 fois plus de portée), les jeux vidéo
+  (1,6x), la vie quotidienne (1,4x) ; moins bien : téléphones, lunettes et gadgets (0,8x).
+- **Le rédacteur en chef le sait** quand il choisit l'histoire, et **le rédacteur voit nos trois meilleurs
+  posts récents en entier**, pour écrire dans le même style.
+- **Un post prévu sur quatre essaie autre chose** : sinon le compte ne découvrirait jamais ce qui pourrait
+  marcher encore mieux.
+- **Jamais les sujets pour initiés**, même quand ils marchent (1,3x le 23/11, sans doute l'ancien public
+  tech du compte) : la ligne reste le grand public, sans jargon.
+- **Les tendances du jour, avant chaque choix** (gratuites, relues toutes les heures) : ce que le public
+  cherche sur Google aux États-Unis et au Royaume-Uni, les pages Wikipédia les plus lues la veille, ce dont
+  parle le public tech, et les annonces les plus aimées sur X. Une histoire liée à une tendance passe
+  devant, à force égale. Exemple : le 22/11, GTA VI et l'hypothèse de Riemann étaient parmi les dix pages
+  Wikipédia les plus lues… nos deux meilleurs posts du mois.
 
 **À qui on parle.** Une infirmière, un chauffeur de taxi, un étudiant qui joue aux jeux vidéo, un parent,
 un retraité : des gens qui ne suivent pas la tech et qui font défiler leur fil très vite. Ils ne s'arrêtent
@@ -395,7 +416,9 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 |---|---|---|
 | `POST_SLOTS` | `tip@14:30,news@19:00` | posts du jour (type@heure : `tip` = « le futur arrive », `news` = « l'histoire du jour » ; `gm` existe encore si tu y tiens). Sur ton serveur depuis le 18/11/2026 : `tip@14:30,news@19:00,news@23:00` |
 | `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure). Sur ton serveur depuis le 18/11/2026 : `tue@14:30,thu@14:30,sun@16:00` |
-| `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240` | combien de minutes avant l'heure la carte arrive |
+| `EXPLAINER_SLOTS` | vide | vidéos explicatives animées (jour@heure), à la place du post prévu le plus proche. Sur ton serveur depuis le 23/11/2026 : `mon@14:30,wed@14:30,fri@14:30` |
+| `TRENDS_ENABLED` | `true` | regarder les tendances du jour (Google, Wikipédia, Hacker News, annonces X déjà lues) avant chaque choix d'histoire |
+| `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240,explainer:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |
 | `RADAR_ENABLED` / `RADAR_MAX_PER_DAY` | `true` / `8` | suggestions de réponses aux gros comptes (`false` sur ton serveur depuis le 18/11/2026) |

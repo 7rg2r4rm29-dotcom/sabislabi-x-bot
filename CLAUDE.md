@@ -26,7 +26,15 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   d'écran d'article (abandonnée le 14/11), jamais le nom, le logo, le bandeau ou le filigrane d'un autre
   média ou d'une agence SUR l'image. Le propriétaire sait que reprendre ces photos n'est pas légal à
   proprement parler et accepte le risque de retraits ; `PRESS_MEDIA_ENABLED=false` revient aux seules
-  images officielles. Aucune maquette, aucune carte dessinée. Sans image sûre, texte seul.
+  images officielles. Aucune maquette, aucune carte dessinée pour les posts. Sans image sûre, texte seul.
+  Seule exception, voulue par le propriétaire le 23/11/2026 : les **vidéos explicatives animées** (texte
+  animé sur la photo de l'actu ou sur un fond bleu nuit, voir section 4).
+- **Ce qui marche** (consigne du propriétaire, 23/11/2026) : « insiste seulement sur les posts qui
+  marchent, dans le même style, tant que ça marche ; analyse le marché et les tendances à chaque fois ».
+  Le bot classe chaque post par sujet, mesure ce qui fait plus de vues et de réactions que d'habitude,
+  le dit à la rédaction en chef et montre nos meilleurs posts au rédacteur ; il lit les tendances du jour
+  avant chaque choix. Un post prévu sur quatre essaie autre chose. Les sujets pour initiés ne sont jamais
+  poussés, même quand ils marchent : la ligne reste le grand public.
 - **Mode** : `APPROVAL_MODE=auto`, donc les posts partent sans validation humaine. Telegram sert aux
   rapports et aux commandes. Depuis le 18/11/2026, les réponses aux commentaires sous NOS posts partent
   seules aussi (`COMMENTS_AUTO_REPLY=true`, 3 min pour toucher ❌), et le radar est coupé
@@ -38,7 +46,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - v4 (novembre 2026) : captures façon téléphone, ligne grand public, garde-fous renforcés
     (`7bb6b1b`, `e153686`, `7d5e462`) ;
   - v5 (14/11/2026) : image prise à la source (extrait vidéo, sinon photo officielle) au lieu des
-    captures, et le compte donne la nouvelle lui-même (aucun média cité, jamais de lien).
+    captures, et le compte donne la nouvelle lui-même (aucun média cité, jamais de lien) ;
+  - v6 (23/11/2026) : ce qui marche et tendances du jour (`3c81a52`, `14feb27`), vidéos explicatives
+    animées (`9e56d53`).
 
 ## 2. Où sont les choses
 
@@ -142,6 +152,31 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     propre, `Writer.photo_is_usable`) ;
   - en mode prudent (`PRESS_MEDIA_ENABLED=false`), crédit d'agence refusé d'office ; téléchargements
     bornés, jamais X ni une adresse privée (`public_host`) ; au moindre doute, texte seul.
+- **Ce qui marche** (`bot/analytics.py`, 23/11/2026) :
+  - sujet de chaque post (`TOPICS`, `published[*].topic`), classé par Claude en un appel court
+    (`Writer.label_topics`, `label-topics`) toutes les 6 h au plus (`ensure_topics`, optionnel) ;
+  - `what_works()` : portée par sujet, accroche, type et format, comparée à un post habituel ;
+    `post_score` = vues + 30 par interaction, poids divisé par deux tous les 7 jours, deux posts
+    « habituels » imaginaires par groupe, un post viral compté 4 fois la normale au plus ;
+  - `editor_notes()` pour la rédaction en chef (sujets qui marchent ≥ 1,15x sur 2 posts, qui tombent à
+    plat ≤ 0,85x sur 3 posts, meilleurs posts), `style_notes()` pour le rédacteur (nos 3 meilleurs posts
+    en entier, accroches qui marchent) ; jamais les sujets pour initiés (`OFF_LINE_TOPICS`) ;
+  - `Bot._context` avant chaque rédaction : 3 posts prévus sur 4 suivent ce qui marche, le 4e essaie
+    autre chose (`STYLE_TEST_SHARE`, noté `meta.style_test`) ; « à chaud » et 🔄 suivent toujours.
+- **Tendances du jour** (`bot/trends.py`, `TrendWatch.block()`, `TRENDS_ENABLED`) : recherches Google
+  qui montent (US, UK), pages Wikipédia les plus lues la veille, première page de Hacker News, annonces X
+  les plus aimées (cache déjà payé) ; gratuites, une fois par heure ; données à la rédaction en chef
+  seulement (`Writer.set_editor_context`), jamais au rédacteur : ce n'est pas une source de faits.
+- **Vidéos explicatives animées** (`bot/explainer.py`, `Writer.draft_explainer`, 23/11/2026) :
+  - `EXPLAINER_SLOTS` (vide par défaut) ; la vidéo prend la place du post prévu à moins d'1 h ; un jour
+    de thread, le thread passe avant ; rédigée 1 h 30 avant en mode auto ;
+  - script de Claude (`EXPLAINER_PROMPT`) : titre, 2 à 5 scènes (`fact`, `steps`, `compare`,
+    `quote`), fin, post de 200 caractères ; contrôlé comme un post (`publish_problem` sur chaque écran,
+    `ungrounded_number`, auteur d'une citation jamais un média `names_news_outlet`, mise en page réelle
+    `layout_problem`, relecture `_factcheck`), une réécriture guidée, sinon créneau sauté ;
+  - animée par Pillow + ffmpeg (1080 × 1350, 24 i/s, 30 à 60 s, son muet) : photo de l'actu nette sous
+    le titre puis floue sous les explications, sinon fond bleu nuit ; 55 à 85 s de fabrication sur le
+    serveur ; vidéo impossible → la photo, sinon texte seul ; `--preview explainer` pour voir.
 - Les autres modules :
   - `bot/scheduler.py` : créneaux, posts « à chaud », 🔄 nouvelle version ;
   - `bot/approvals.py` : Telegram ;
@@ -154,6 +189,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - `POST_SLOTS=tip@14:30,news@19:00,news@23:00` (« le futur arrive », « l'histoire du jour », une 2e
     histoire à 23 h = l'après-midi aux États-Unis) ;
   - `THREAD_SLOTS=tue@14:30,thu@14:30,sun@16:00` (le jeudi est un thread « histoire », comme le mardi) ;
+  - `EXPLAINER_SLOTS=mon@14:30,wed@14:30,fri@14:30` depuis le 23/11/2026 : vidéo explicative à la place
+    du « futur arrive » (le plus faible des posts prévus : 0,95x) ; le « futur arrive » ne reste que le
+    samedi ;
   - post « ça vient de tomber » : `REACTIVE_MAX_PER_DAY=3`, entre 12 h et 23 h 30. Depuis le
     19/11/2026, l'actu chaude est regardée toutes les 15 min (`REACTIVE_CHECK_EVERY_MINUTES=15`, 30
     avant) et Claude peut être interrogé 30 fois par jour (`REACTIVE_MAX_CHECKS_PER_DAY=30` ; à 6, le
@@ -224,13 +262,15 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
-  une vidéo fabriquée sur place ; Wikimedia aussi) ; 1405 tests au 19/11/2026. Sur le Mac, les tests
+  une vidéo fabriquée sur place ; Wikimedia aussi ; les vidéos explicatives sont fabriquées en petit avec
+  le vrai ffmpeg) ; 1493 tests sur le Mac au 23/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
 - **Sur le serveur** (`cd ~/x-degen-bot`, puis `.venv/bin/python -m bot.main …`) :
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
-  - `--preview tip,news` (ou `thread`, `reactive`) : brouillons, rien n'est publié ;
+  - `--preview tip,news` (ou `thread`, `reactive`, `explainer`) : brouillons, rien n'est publié
+    (`explainer` fabrique la vidéo pour de vrai et l'envoie sur Telegram) ;
   - `--report` : les chiffres ;
   - `--once <plan|publish|comments|radar|reactive|metrics|daily|weekly|poll>` : une seule étape.
 - **Telegram** : `/statut`, `/plan`, `/budget`, `/pause`, `/reprendre`, `/note <un fait réel>`, `/aide`.
@@ -280,7 +320,24 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     commits : `Claude <noreply@anthropic.com>` (config locale du clone). Un clone neuf doit reprendre ces
     trois réglages.
 
-## 8. État au 19/11/2026, limites connues, pistes
+## 8. État au 23/11/2026, limites connues, pistes
+
+- **Portée, bilan du 23/11/2026** (104 posts du 1er au 23/11, chiffres de l'API) : 20 à 60 vues par
+  post, médiane environ 40 ; en tout 37 likes, 30 réponses, 1 signet et **aucun partage**. Abonnés :
+  2 940 (4 511 fin octobre ; −1 440 le 31/10 et −101 le 18/11, deux ménages de X), hérités de la période
+  NFT : peu voient nos posts, presque personne ne réagit, donc X ne les pousse pas plus loin. Les mieux :
+  GTA VI (208 vues), la triche à l'examen en Corée (thread, 134), l'IA et le problème de maths de 1859
+  (109). Par sujet (calcul `what_works` du 23/11) : IA qui étonne 1,7x, jeux vidéo 1,6x, vie quotidienne
+  1,4x, sujets pour initiés 1,3x (jamais poussés : ligne grand public), gadgets 0,8x. Par type : threads
+  1,65x, « à chaud » 1,4x, « le futur arrive » 0,95x. Texte seul et photo : pas d'écart net.
+- **v6 installée le 23/11/2026** : ce qui marche + tendances (`3c81a52`, 1464 tests verts sur le
+  serveur, puis `14feb27`), vidéos explicatives (`9e56d53`). Premier classement par sujet fait par le
+  bot à 21 h 15 (120 posts). Première vidéo prévue le mercredi 25/11 à 14 h 30.
+- **Piste pour la portée, décision du propriétaire** : X Premium (environ 8 $ par mois aux États-Unis ;
+  une étude de Buffer sur 18 millions de posts donne environ 600 vues par post aux comptes Premium). La
+  « veille du marché » sur X (lire chaque jour les posts de gros comptes du même sujet) coûterait des
+  lectures payantes chez X : faite pour l'instant avec des sources gratuites (Google, Wikipédia, Hacker
+  News) et les annonces X déjà lues.
 
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
   au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
