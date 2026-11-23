@@ -108,6 +108,11 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
   marcher encore mieux.
 - **Jamais les sujets pour initiés**, même quand ils marchent (1,3x le 23/11, sans doute l'ancien public
   tech du compte) : la ligne reste le grand public, sans jargon.
+- **La veille du marché** (ton accord du 23/11 : tes crédits API couvrent la dépense) : une fois par
+  jour, le bot lit les derniers posts de 5 gros comptes qui racontent la tech et l'IA à tout le monde, et
+  montre au rédacteur en chef ceux qui font le plus réagir, pour s'inspirer du genre d'histoire, jamais
+  pour les copier. Environ 0,25 $ par jour chez X, compensés : les statistiques de nos posts sont
+  maintenant relues toutes les 6 heures au lieu de 3 (c'était le plus gros poste de dépense chez X).
 - **Les tendances du jour, avant chaque choix** (gratuites, relues toutes les heures) : ce que le public
   cherche sur Google aux États-Unis et au Royaume-Uni, les pages Wikipédia les plus lues la veille, ce dont
   parle le public tech, et les annonces les plus aimées sur X. Une histoire liée à une tendance passe
@@ -418,6 +423,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `THREAD_SLOTS` | `tue@14:30,sun@16:00` | threads (jour@heure). Sur ton serveur depuis le 18/11/2026 : `tue@14:30,thu@14:30,sun@16:00` |
 | `EXPLAINER_SLOTS` | vide | vidéos explicatives animées (jour@heure), à la place du post prévu le plus proche. Sur ton serveur depuis le 23/11/2026 : `mon@14:30,wed@14:30,fri@14:30` |
 | `TRENDS_ENABLED` | `true` | regarder les tendances du jour (Google, Wikipédia, Hacker News, annonces X déjà lues) avant chaque choix d'histoire |
+| `MARKET_WATCH_ENABLED` | `false` | veille du marché : une fois par jour, ce qui fait réagir chez 5 gros comptes du même sujet (environ 0,25 $ par jour chez X ; comptes dans `market_accounts` de `config/settings.json`). `true` sur ton serveur depuis le 23/11/2026 |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240,explainer:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |

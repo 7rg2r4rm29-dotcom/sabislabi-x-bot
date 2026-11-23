@@ -163,6 +163,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     en entier, accroches qui marchent) ; jamais les sujets pour initiés (`OFF_LINE_TOPICS`) ;
   - `Bot._context` avant chaque rédaction : 3 posts prévus sur 4 suivent ce qui marche, le 4e essaie
     autre chose (`STYLE_TEST_SHARE`, noté `meta.style_test`) ; « à chaud » et 🔄 suivent toujours.
+- **Veille du marché** (`TrendWatch.refresh_market`, `MARKET_WATCH_ENABLED`, 23/11/2026) : voir
+  section 8.
 - **Tendances du jour** (`bot/trends.py`, `TrendWatch.block()`, `TRENDS_ENABLED`) : recherches Google
   qui montent (US, UK), pages Wikipédia les plus lues la veille, première page de Hacker News, annonces X
   les plus aimées (cache déjà payé) ; gratuites, une fois par heure ; données à la rédaction en chef
@@ -345,11 +347,24 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
      est passé ; photo de l'article (la page officielle, un PDF de JR East, répond 403) ; vidéo de
      7 scènes, 57 s, 2 Mo, fabriquée en 118 s ; envoyée sur Telegram. Coût : 0,32 $.
 - Le flux The Guardian répond aussi 403 depuis le 23/11 (avec IEEE Spectrum 403 et The Debrief 404).
-- **Piste pour la portée, décision du propriétaire** : X Premium (environ 8 $ par mois aux États-Unis ;
-  une étude de Buffer sur 18 millions de posts donne environ 600 vues par post aux comptes Premium). La
-  « veille du marché » sur X (lire chaque jour les posts de gros comptes du même sujet) coûterait des
-  lectures payantes chez X : faite pour l'instant avec des sources gratuites (Google, Wikipédia, Hacker
-  News) et les annonces X déjà lues.
+- **@sabislabi est DÉJÀ abonné à X Premium** (le propriétaire l'a rappelé le 23/11/2026 ; vérifié par
+  l'API : `verified_type` « blue », `subscription_type` « Premium »). Ne plus le lui proposer ; vérifier
+  ce genre de chose par l'API AVANT de suggérer une dépense. La portée faible ne vient donc pas de là.
+- **Dépenses chez X : « les crédits API que j'ai couvrent le reste des dépenses »** (le propriétaire,
+  23/11/2026, en réponse à la proposition chiffrée de la veille du marché, environ 0,25 $ par jour) :
+  accord pour la veille. Le plafond du bot reste `X_BUDGET_MONTHLY_USD=30`.
+- **Veille du marché, installée le 23/11/2026** (`e5a8962`, 1544 tests verts sur le serveur ;
+  `MARKET_WATCH_ENABLED=true` sur le serveur, faux par défaut dans le code) : une fois par jour, à la
+  première rédaction, les 10 derniers posts de 5 gros comptes du même sujet (`market_accounts` de
+  `settings.json`, sinon `DEFAULT_MARKET_ACCOUNTS` : minchoi, rowancheung, kimmonismus, Rainmaker1973,
+  TheHumanoidHub), classés par réactions (likes + 2 × partages + réponses), ligne éditoriale appliquée,
+  montrés à la rédaction en chef seulement (« learn what kind of story and what angle works, never copy
+  them »). Lectures optionnelles : elles cèdent au budget X ; un compte introuvable est noté et n'est
+  plus cherché. Essai réel à petite dose le 23/11 (minchoi, 5 posts) : comptes et chiffres bien lus.
+  Payée par une économie : les statistiques de nos 50 derniers posts sont relues toutes les ~6 h au
+  lieu de 3 (`analytics.REFRESH_EVERY_MIN` 350 ; ces « owned reads » coûtaient 0,40 à 0,45 $ par jour,
+  le plus gros poste chez X ; les chiffres se stabilisent en 24 h). Dépense X avant : 0,50 à 0,92 $ par
+  jour du 17 au 23/11.
 
 - **Installé** : `main` `7d5e462` le 13/11 à 23 h 23, la correction de `--report` (heure de publication
   au lieu de l'heure de rédaction), puis le 14/11 la v5 : aucun média cité dans les posts, et l'image
@@ -430,4 +445,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Pistes** :
   - après une ou deux semaines, lire `--report` et les notes de performance, puis ajuster les sources
     (`news_feeds`) et les consignes ;
-  - X Premium, pour la portée : une dépense, donc la décision du propriétaire.
+  - regarder la portée des premières vidéos explicatives (type `explainer` dans `what_works`) contre les
+    autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche ;
+  - une voix off pour les vidéos (modèle de voix gratuit à installer sur le serveur : à proposer au
+    propriétaire, avec le nom, la source et la taille du fichier).
