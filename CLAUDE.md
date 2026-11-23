@@ -331,8 +331,20 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   1,4x, sujets pour initiés 1,3x (jamais poussés : ligne grand public), gadgets 0,8x. Par type : threads
   1,65x, « à chaud » 1,4x, « le futur arrive » 0,95x. Texte seul et photo : pas d'écart net.
 - **v6 installée le 23/11/2026** : ce qui marche + tendances (`3c81a52`, 1464 tests verts sur le
-  serveur, puis `14feb27`), vidéos explicatives (`9e56d53`). Premier classement par sujet fait par le
-  bot à 21 h 15 (120 posts). Première vidéo prévue le mercredi 25/11 à 14 h 30.
+  serveur, puis `14feb27`), vidéos explicatives (`9e56d53`, `0dc69d3`, `29f67f3` ; 1539 tests verts sur
+  le serveur, 1508 sur le Mac). Premier classement par sujet fait par le bot à 21 h 15 (120 posts).
+  Première vidéo prévue le mercredi 25/11 à 14 h 30.
+- **Essais réels des vidéos, 23/11 au soir** (`--preview explainer`, 0,22 à 0,40 $ chacun) :
+  1. post refusé deux fois « trop proche d'une source » : il était comparé à l'article ENTIER (presque
+     tous ses mots y sont) → comparé au titre et au résumé, comme un post (`0dc69d3`) ;
+  2. script jugé « un peu technique » (« soft robot » pas expliqué, « 15 ft/s »), puis post qui
+     recopiait le titre → consignes plus nettes (ses propres mots, unités en toutes lettres), motifs de
+     refus traduits en consignes anglaises (`_FEEDBACK_EN`, `_NESTED_FEEDBACK`), 3 essais (`29f67f3`) ;
+  3. réussi : les poubelles-robots de la gare de Shinjuku. La relecture a refusé le premier script
+     (il disait que les robots roulent encore, alors que le test de 10 semaines était fini), le second
+     est passé ; photo de l'article (la page officielle, un PDF de JR East, répond 403) ; vidéo de
+     7 scènes, 57 s, 2 Mo, fabriquée en 118 s ; envoyée sur Telegram. Coût : 0,32 $.
+- Le flux The Guardian répond aussi 403 depuis le 23/11 (avec IEEE Spectrum 403 et The Debrief 404).
 - **Piste pour la portée, décision du propriétaire** : X Premium (environ 8 $ par mois aux États-Unis ;
   une étude de Buffer sur 18 millions de posts donne environ 600 vues par post aux comptes Premium). La
   « veille du marché » sur X (lire chaque jour les posts de gros comptes du même sujet) coûterait des
