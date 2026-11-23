@@ -60,6 +60,9 @@ TOPICS: dict[str, tuple[str, str]] = {      # clé : (nom court, description don
     "insider": ("tools for developers & tech jargon",
                 "tools and models for developers or specialists, benchmarks, tech jargon"),
 }
+# Jamais poussés, même s'ils marchent : la ligne éditoriale vise le grand public, sans jargon
+# (le 23/11/2026, les sujets pour développeurs faisaient 1,3x, sans doute l'ancien public tech).
+OFF_LINE_TOPICS = ("insider",)
 ENGAGEMENT_WEIGHT = 30     # une interaction (like, réponse, partage, citation, signet) vaut 30 vues
 LIFT_CAP = 4.0             # un post viral compte, mais pas plus que 4 fois la normale
 PRIOR_POSTS = 2.0          # deux posts « habituels » imaginaires par groupe : un seul succès ne fait pas une règle
@@ -385,7 +388,7 @@ class Analytics:
                     for k, (sl, sw, n) in acc.items()}
 
         recent = [p for p in self._posts(BEST_DAYS) if (p.get("text") or "").strip()
-                  and post_score(p) >= base * WORKS]
+                  and post_score(p) >= base * WORKS and p.get("topic") not in OFF_LINE_TOPICS]
         recent.sort(key=post_score, reverse=True)
         best = [{"text": str(p.get("text") or ""), "kind": p.get("kind"),
                  "impressions": _m(p, "impressions"), "likes": _m(p, "likes"), "replies": _m(p, "replies"),
@@ -426,7 +429,7 @@ class Analytics:
         ww = self.what_works()
         if not ww:
             return ""
-        wins = self._winners(ww["topics"])[:4]
+        wins = [w for w in self._winners(ww["topics"]) if w[1] not in OFF_LINE_TOPICS][:4]
         flops = self._losers(ww["topics"])[:4]
         best = ww["best"]
         if not (wins or flops or best):

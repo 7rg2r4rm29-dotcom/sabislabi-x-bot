@@ -580,3 +580,16 @@ def test_ensure_topics_survives_claude_errors(an, state):
 
     assert an.ensure_topics(boom) == 0
     assert an.ensure_topics(None) == 0
+
+
+def test_developer_stories_are_never_pushed_even_when_they_work(an, state):
+    """La ligne éditoriale vise le grand public : les sujets pour initiés ne sont jamais
+    « ce qui marche », ni des modèles de style (23/11/2026 : 1,3x, l'ancien public tech)."""
+    for i in range(3):
+        topic_pub(state, f"d{i}", "insider", 200, days=2 + i, text=f"A new SDK for agents, take {i}.")
+    for i in range(4):
+        topic_pub(state, f"a{i}", "ai-apps", 40, days=2 + i)
+    assert an.what_works()["topics"]["insider"]["lift"] > 2.0
+    notes = an.editor_notes()
+    assert "developers" not in notes and "SDK" not in notes
+    assert "SDK" not in an.style_notes()
