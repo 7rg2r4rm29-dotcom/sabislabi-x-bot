@@ -42,6 +42,7 @@ ANALYTICS_EVERY_MIN = 180
 GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
 REACTIVE_MAX_CHECKS_PER_DAY = 6    # appels à Claude pour l'actu chaude, au plus par jour (défaut du réglage)
+STYLE_TEST_SHARE = 0.25            # posts prévus qui essaient autre chose que ce qui marche (1 sur 4)
 BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
@@ -130,7 +131,7 @@ class Bot:
     def __init__(self, settings, *, llm=None, x=None, telegram=None, news=None, state=None,
                  writer=None, approvals=None, publisher=None, comments=None, radar=None,
                  analytics=None, budget=None, prepare_visual: Callable | None = None,
-                 rng: random.Random | None = None) -> None:
+                 rng: random.Random | None = None, trends=None) -> None:
         # Les modules lourds sont importés à la demande : un test (ou --busy-check)
         # qui fournit ses doublures n'a pas besoin de les charger.
         self.settings = settings
@@ -180,8 +181,14 @@ class Bot:
             from .analytics import Analytics
             analytics = Analytics(settings, self.state, self.x, self.budget)
         self.analytics = analytics
+        if trends is None and getattr(settings, "trends_enabled", True):
+            from .trends import TrendWatch
+            trends = TrendWatch(settings, self.state)
+        self.trends = trends
         self._prepare_visual = prepare_visual
         self.rng = rng or random.Random()
+        # À part : tirer « post d'essai ou non » ne décale pas les autres tirages (self.rng).
+        self.style_rng = random.Random()
         self._stop = False
         self._ticks = 0
         self._optional_pause_logged = False
@@ -213,7 +220,8 @@ class Bot:
         # à la version qu'elle remplace.
         self.writer.regen_item_id = item.get("id")
         try:
-            draft = self._write(kind, news, self._notes(), self._perf())
+            perf, _test = self._context(kind, test_ok=False)
+            draft = self._write(kind, news, self._notes(), perf)
         finally:
             self.writer.regen_item_id = None
         if draft is not None and getattr(draft, "texts", None):
@@ -510,11 +518,12 @@ class Bot:
         try:
             news = self._news(kind)
             notes = self._notes()
-            perf = self._perf()
+            perf, style_test = self._context(kind)
             draft = None
             for attempt in (1, 2):
                 draft = self._write(kind, news, notes, perf)
                 if draft is not None and getattr(draft, "texts", None):
+                    self._mark_style_test(draft, style_test)
                     break
                 draft = None
                 log.warning("Créneau %s : pas de brouillon (essai %d/2)", slot.key, attempt)
@@ -629,12 +638,56 @@ class Bot:
             log.warning("Notes perso illisibles (%s)", e)
             return []
 
-    def _perf(self) -> str:
+    def _perf(self, test: bool = False) -> str:
+        """Pour le rédacteur : les notes de performance, puis nos meilleurs posts comme
+        modèles de style (ou, pour un post d'essai, la liberté d'essayer autre chose)."""
+        parts: list[str] = []
         try:
-            return self.analytics.performance_notes() or ""
+            parts.append(self.analytics.performance_notes() or "")
         except Exception as e:  # noqa: BLE001
             log.warning("Notes de performance indisponibles (%s)", e)
-            return ""
+        fn = getattr(self.analytics, "style_notes", None)
+        if callable(fn):
+            try:
+                parts.append(fn(test) or "")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Modèles de style indisponibles (%s)", e)
+        return "\n".join(p.strip() for p in parts if p and p.strip())
+
+    def _context(self, kind: str, *, test_ok: bool = True) -> tuple[str, bool]:
+        """Avant chaque rédaction (consigne du propriétaire, 23/11/2026 : insister sur ce qui
+        marche, et regarder les tendances à chaque fois) : la rédaction en chef reçoit ce qui
+        marche sur le compte et les tendances du jour ; le rédacteur, nos meilleurs posts
+        comme modèles de style. Trois posts prévus sur quatre suivent ce qui marche ; le
+        quatrième essaie autre chose (`STYLE_TEST_SHARE`), sinon le compte ne découvrirait
+        jamais ce qui pourrait marcher mieux. Les posts « à chaud » et les 🔄 nouvelles
+        versions suivent toujours ce qui marche. Retourne (notes du rédacteur, essai ?)."""
+        test = bool(test_ok and self.style_rng.random() < STYLE_TEST_SHARE)
+        blocks: list[str] = []
+        fn = getattr(self.analytics, "editor_notes", None)
+        if callable(fn):
+            try:
+                blocks.append(fn(test) or "")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Ce qui marche : notes indisponibles (%s)", e)
+        if self.trends is not None:
+            try:
+                blocks.append(self.trends.block() or "")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Tendances indisponibles (%s)", e)
+        setter = getattr(self.writer, "set_editor_context", None)
+        if callable(setter):
+            setter("\n\n".join(b.strip() for b in blocks if b and b.strip()))
+        log.info("Rédaction %s : %s", kind,
+                 "post d'essai (autre chose que ce qui marche)" if test else "suit ce qui marche")
+        return self._perf(test), test
+
+    @staticmethod
+    def _mark_style_test(draft, test: bool) -> None:
+        try:
+            draft.style_test = bool(test)
+        except AttributeError:
+            pass
 
     def _write(self, kind: str, news: list, notes: list[str], perf: str):
         if kind == "thread":
@@ -783,7 +836,8 @@ class Bot:
         # La rédaction en chef ne lit que ce qui peut parler à tout le monde : les annonces
         # pour développeurs, entreprises ou investisseurs ne valent jamais un post immédiat.
         news = [it for it in news if self._appeal(it) >= 1.0]
-        draft = self.writer.draft_reactive(news, self._notes(), self._perf())
+        perf, _test = self._context("reactive", test_ok=False)
+        draft = self.writer.draft_reactive(news, self._notes(), perf)
         if draft is None or not getattr(draft, "texts", None):
             log.info("Réactif : rien d'assez fort pour l'instant")
             return 0
@@ -801,6 +855,11 @@ class Bot:
     # Statistiques, rapports, ménage
     # ==================================================================
     def maybe_analytics(self) -> int:
+        updated = self._refresh_stats()
+        self._label_topics()
+        return updated
+
+    def _refresh_stats(self) -> int:
         fn = getattr(self.analytics, "maybe_refresh", None)
         if callable(fn):
             return int(fn() or 0)
@@ -809,6 +868,17 @@ class Bot:
             return 0
         self.state.set_last_run("analytics")
         return int(self.analytics.refresh_metrics() or 0)
+
+    def _label_topics(self) -> int:
+        """Classe par sujet les posts qui n'en ont pas encore (un appel court à Claude, toutes
+        les 6 h au plus) : c'est ce qui dit quels sujets marchent. Optionnel : cède au budget."""
+        fn = getattr(self.analytics, "ensure_topics", None)
+        labeler = getattr(self.writer, "label_topics", None)
+        if not callable(fn) or not callable(labeler):
+            return 0
+        if self._claude_down() or not self._claude_optional_ok():
+            return 0
+        return int(fn(labeler) or 0)
 
     def _reports(self) -> dict:
         rep = self.state.data.get("reports")

@@ -359,6 +359,13 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert "Claude interrogé 30 fois/jour au plus · à 10 min au moins d’un post prévu)" in txt
 
+    def test_config_summary_shows_what_works_and_trends(self, settings):
+        txt = "\n".join(bmain.config_summary(settings))
+        assert ("tendances du jour : oui (Google, Wikipédia, Hacker News, annonces X déjà lues) · "
+                "3 posts prévus sur 4 suivent ce qui marche") in txt
+        settings.trends_enabled = False
+        assert "tendances du jour : non" in "\n".join(bmain.config_summary(settings))
+
     def test_config_summary_shows_the_claude_cap(self, settings):
         assert "Claude : 35 $/mois au plus" in "\n".join(bmain.config_summary(settings))
         settings.claude_budget_monthly_usd = 0
@@ -541,6 +548,20 @@ class TestPreview:
         monkeypatch.setattr(analytics.Analytics, "performance_notes", lambda self: "Last 30 days, 6 posts: …")
         _c, _o, _t, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="tip")
         assert writer.perfs == ["Last 30 days, 6 posts: …"]
+
+    def test_preview_shows_the_editor_what_works_and_the_trends(self, settings, tmp_path, clock, monkeypatch):
+        from bot import analytics, trends
+        monkeypatch.setattr(analytics.Analytics, "editor_notes", lambda self, explore=False: "WHAT WORKS: games")
+        monkeypatch.setattr(analytics.Analytics, "style_notes", lambda self, explore=False: "OUR BEST RECENT POSTS")
+        monkeypatch.setattr(trends.TrendWatch, "block", lambda self: "TRENDING TODAY — GTA VI")
+        contexts: list[str] = []
+        PreviewWriter.set_editor_context = lambda self, text: contexts.append(text)
+        try:
+            _c, _o, _t, writer, _n, _v = self._run(settings, tmp_path, {}, kinds="tip")
+        finally:
+            del PreviewWriter.set_editor_context
+        assert contexts == ["WHAT WORKS: games\n\nTRENDING TODAY — GTA VI"]
+        assert writer.perfs[0].endswith("OUR BEST RECENT POSTS")
 
     def test_drafts_are_shown_and_sent_but_nothing_is_published(self, settings, tmp_path, clock):
         from bot.models import Draft, Visual

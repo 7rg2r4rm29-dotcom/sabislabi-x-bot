@@ -95,13 +95,15 @@ def test_refresh_remembers_format_from_item(an, state, fake_x):
     it = state.new_item("tip", ["t"], image_path="/tmp/a.jpg", image_kind="shot",
                         meta={"used_notes": ["I tried X"], "angle": "", "hook": "THE NUMBER",
                               "card": {"type": "steps", "title": "T"}})          # vieille carte : ignorée
-    th = state.new_item("thread", ["a", "b", "c"], meta={"angle": "future"})
+    th = state.new_item("thread", ["a", "b", "c"], meta={"angle": "future", "style_test": True})
     pub(state, "1", "tip", "tip", item_id=it["id"])
     pub(state, "2", "thread", "thread", item_id=th["id"])
     fake_x.recent_posts = [api_tweet("1", 10), api_tweet("2", 20)]
     an.refresh_metrics()
     f1, f2 = state.data["published"][0]["fmt"], state.data["published"][1]["fmt"]
-    assert set(f1) == {"media", "image_kind", "genre", "hook", "notes", "fallback", "tweets"}   # plus de « card »
+    assert set(f1) == {"media", "image_kind", "genre", "hook", "notes", "fallback", "tweets",
+                       "test"}                                                       # plus de « card »
+    assert f1["test"] is False and f2["test"] is True        # post d'essai (pas « ce qui marche »)
     assert f1["media"] == "image" and f1["notes"] is True and f1["image_kind"] == "shot"
     assert f1["hook"] == "THE NUMBER" and f2["hook"] == ""
     assert f1["genre"] == ""                                 # le genre ne concerne que les threads
@@ -447,3 +449,134 @@ def test_performance_notes_keep_their_promised_length(an, state, fake_x):
     # résumé, types, réponses, formats, accroches, heures, meilleur post : 7 lignes au plus
     assert len(notes.splitlines()) <= 7, notes
     assert "≤ 7 lignes" in an.performance_notes.__doc__
+
+
+# ---------------------------------------------------------------------------
+# Ce qui marche (consigne du propriétaire, 23/11/2026)
+# ---------------------------------------------------------------------------
+def topic_pub(state, tid: str, topic: str, imp: int, *, days: float = 2, kind: str = "news",
+              text: str | None = None, **eng) -> dict:
+    p = pub(state, tid, kind, text or f"Story {tid}", days=days, metrics=m(imp, **eng))
+    p["topic"] = topic
+    return p
+
+
+def _mixed_month(state):
+    # Jeux vidéo : 3 posts à 200 vues ; business : 4 posts à 20 vues ; applis d'IA : 4 posts à 40.
+    for i in range(3):
+        topic_pub(state, f"g{i}", "games", 200, days=2 + i, text=f"GTA VI is finally out, take {i}.")
+    for i in range(4):
+        topic_pub(state, f"b{i}", "business", 20, days=2 + i)
+    for i in range(4):
+        topic_pub(state, f"a{i}", "ai-apps", 40, days=2 + i)
+
+
+def test_post_score_counts_interactions():
+    p = {"metrics": m(100, likes=2, replies=1, reposts=1, bookmarks=1, quotes=1)}
+    assert amod.post_score(p) == 100 + 30 * 6
+    assert amod.post_score({}) == 0
+
+
+def test_what_works_needs_five_measured_posts(an, state):
+    for i in range(4):
+        topic_pub(state, f"p{i}", "games", 100, days=2 + i)
+    assert an.what_works() == {}
+    assert an.editor_notes() == "" and an.style_notes() == ""
+
+
+def test_topics_that_work_and_topics_that_fall_flat(an, state):
+    _mixed_month(state)
+    ww = an.what_works()
+    assert ww["baseline"] == 40
+    assert ww["topics"]["games"]["lift"] > 2.0 and ww["topics"]["games"]["count"] == 3
+    assert ww["topics"]["business"]["lift"] < amod.FLOPS
+    assert 0.9 <= ww["topics"]["ai-apps"]["lift"] <= 1.1
+    assert ww["best"][0]["text"].startswith("GTA VI is finally out")
+
+
+def test_one_lucky_post_is_not_a_rule(an, state):
+    topic_pub(state, "v", "robots", 400, days=2, text="A tiny machine did something wild.")
+    for i in range(6):
+        topic_pub(state, f"n{i}", "ai-apps", 40, days=2 + i)
+    lift = an.what_works()["topics"]["robots"]["lift"]
+    assert 1.5 < lift < 2.5                       # 10 fois la normale → compté 4 fois, puis tempéré
+    assert "Stories our readers react to" not in an.editor_notes()   # un seul post : pas encore une règle
+
+
+def test_what_stopped_working_fades(an, state):
+    """« Tant que ça marche » : les jeux marchaient il y a trois semaines, plus maintenant."""
+    for i in range(3):
+        topic_pub(state, f"old{i}", "games", 300, days=20 + i)
+    for i in range(3):
+        topic_pub(state, f"new{i}", "games", 10, days=2 + i)
+    for i in range(4):
+        topic_pub(state, f"n{i}", "ai-apps", 40, days=2 + i)
+    assert an.what_works()["topics"]["games"]["lift"] < 1.0
+
+
+def test_editor_notes_follow_what_works(an, state):
+    _mixed_month(state)
+    notes = an.editor_notes()
+    assert notes.startswith("WHAT WORKS ON THIS ACCOUNT")
+    assert "Stories our readers react to: video games & play (" in notes
+    assert "Stories that fall flat with them: tech business & money raised (" in notes
+    assert "GTA VI is finally out" in notes
+    assert "THIS PICK FOLLOWS WHAT WORKS" in notes and "TEST" not in notes
+    test = an.editor_notes(explore=True)
+    assert "THIS PICK IS A TEST" in test and "FOLLOWS WHAT WORKS" not in test
+
+
+def test_style_notes_show_our_best_posts_in_full(an, state):
+    _mixed_month(state)
+    for p in state.data["published"]:
+        if p["tweet_id"].startswith("g"):
+            p["fmt"] = {"media": "image", "hook": "THE NUMBER"}
+    state.data["published"][0]["metrics"]["likes"] = 3
+    state.data["published"][1]["metrics"].update(likes=1, replies=1, bookmarks=2)
+    notes = an.style_notes()
+    assert notes.startswith("OUR BEST RECENT POSTS — insist on what works")
+    assert "  • (200 views, 3 likes) GTA VI is finally out, take 0." in notes
+    assert "  • (200 views, 1 like, 1 reply, 2 bookmarks) GTA VI is finally out, take 1." in notes
+    assert notes.count("  • ") == 3
+    assert 'First-line shapes that work best here: "THE NUMBER"' in notes
+    assert "vues" not in notes                                    # anglais
+    test = an.style_notes(explore=True)
+    assert test.startswith("THIS POST IS A TEST") and "GTA" not in test
+
+
+def test_only_posts_better_than_usual_are_style_models(an, state):
+    for i in range(6):
+        topic_pub(state, f"n{i}", "ai-apps", 40, days=2 + i)
+    assert an.what_works()["best"] == []
+    assert "OUR BEST RECENT POSTS" not in an.style_notes()
+
+
+def test_ensure_topics_labels_each_post_once(an, state, clock):
+    pub(state, "1", "news", "GTA VI is out", metrics=m(10))
+    pub(state, "2", "tip", "A robot folds laundry", metrics=None)      # pas encore mesuré : classé aussi
+    p3 = pub(state, "3", "news", "Already sorted", metrics=m(10))
+    p3["topic"] = "science"
+    seen = []
+
+    def labeler(texts):
+        seen.append(list(texts))
+        return ["games", "robots"]
+
+    assert an.ensure_topics(labeler) == 2
+    assert seen == [["GTA VI is out", "A robot folds laundry"]]
+    assert [p.get("topic") for p in state.data["published"]] == ["games", "robots", "science"]
+    pub(state, "4", "news", "A new one", metrics=m(10))
+    assert an.ensure_topics(labeler) == 0                        # 6 h entre deux classements
+    clock(17, 0)
+    assert an.ensure_topics(lambda texts: ["nonsense"]) == 0     # sujet inconnu : ignoré
+    assert state.data["published"][3].get("topic") is None
+
+
+def test_ensure_topics_survives_claude_errors(an, state):
+    pub(state, "1", "news", "GTA VI is out", metrics=m(10))
+
+    def boom(texts):
+        raise RuntimeError("claude down")
+
+    assert an.ensure_topics(boom) == 0
+    assert an.ensure_topics(None) == 0

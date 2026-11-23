@@ -234,6 +234,9 @@ class Settings:
 
     # --- Sources d'actu ---
     x_news_accounts_enabled: bool = True
+    # Tendances du jour pour la rédaction en chef (Google Trends, Wikipédia, Hacker News,
+    # annonces X déjà lues) : gratuites, relevées une fois par heure (bot/trends.py).
+    trends_enabled: bool = True
 
     # --- Budget API X (dollars) ---
     x_budget_daily_usd: float = 1.50
@@ -407,6 +410,7 @@ def load_settings() -> Settings:
         radar_window=_lenient("RADAR_WINDOW", parse_window, "08:00-01:00", w),
         radar_min_likes_per_min=_env_float("RADAR_MIN_LIKES_PER_MIN", 1.0),
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
+        trends_enabled=_env_bool("TRENDS_ENABLED", True),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),

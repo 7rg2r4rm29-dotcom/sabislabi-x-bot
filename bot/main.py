@@ -290,7 +290,9 @@ def config_summary(settings) -> list[str]:
         f"Radar : {'oui' if s.radar_enabled else 'non'} ({len(s.radar_accounts)} comptes, "
         f"max {s.radar_max_per_day}/jour)",
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
-        f"({'lus' if s.x_news_accounts_enabled else 'non lus'})",
+        f"({'lus' if s.x_news_accounts_enabled else 'non lus'}) · tendances du jour : "
+        f"{'oui (Google, Wikipédia, Hacker News, annonces X déjà lues)' if s.trends_enabled else 'non'} · "
+        "3 posts prévus sur 4 suivent ce qui marche",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois · "
         f"Claude : {f'{s.claude_budget_monthly_usd:.0f} $/mois au plus' if s.claude_budget_monthly_usd > 0 else 'sans plafond'}",
         f"Images : vidéo {'oui' if s.videos_enabled else 'non'}"
@@ -635,11 +637,25 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
             items = []
         out(f"=== Aperçu : {len(items)} actus lues, {len(kinds)} post(s) à rédiger — RIEN n'est publié ===")
         notes = [str(n.get("text")) for n in state.active_notes() if n.get("text")]
+        editor = ""
         try:   # comme le bot en marche : les notes de performance (copie de l'état, aucun appel à X)
             from .analytics import Analytics
-            perf = Analytics(settings, state, None, None).performance_notes() or ""
+            an = Analytics(settings, state, None, None)
+            perf = an.performance_notes() or ""
+            perf = "\n".join(p for p in (perf, an.style_notes() or "") if p)
+            editor = an.editor_notes() or ""
         except Exception:  # noqa: BLE001
             perf = ""
+        trends_b = ""
+        if settings.trends_enabled:
+            try:   # … et les tendances du jour (lecture gratuite)
+                from .trends import TrendWatch
+                trends_b = TrendWatch(settings, state).block()
+            except Exception:  # noqa: BLE001
+                trends_b = ""
+        setter = getattr(writer, "set_editor_context", None)
+        if callable(setter):
+            setter("\n\n".join(b for b in (editor, trends_b) if b))
         done = 0
         from .scheduler import FUTURE_NEWS_HOURS, NEWS_PER_POST, NEWS_PER_THREAD, WEEKLY_RECAP_WEEKDAYS, Bot
         for kind in kinds:

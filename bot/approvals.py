@@ -252,6 +252,7 @@ class Approvals:
             "sources": sources,
             "used_notes": list(getattr(draft, "used_notes", None) or []),
             "from_fallback": bool(draft.from_fallback),
+            "style_test": bool(getattr(draft, "style_test", False)),   # post d'essai (pas « ce qui marche »)
             "scheduled_at": iso(publish_at),
         }
         if image_path and image_path2 and image_kind == "photo":
@@ -975,6 +976,7 @@ class Approvals:
                 meta["sources"] = [s.brief() if hasattr(s, "brief") else dict(s) for s in srcs]
             meta["used_notes"] = list(getattr(result, "used_notes", None) or [])
             meta["from_fallback"] = bool(getattr(result, "from_fallback", False))
+            meta["style_test"] = bool(getattr(result, "style_test", False))
             self._swap_image(item, meta, result)
         meta["edited"] = False
         meta["warnings"] = []

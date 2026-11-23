@@ -15,6 +15,7 @@ les chiffres bougent encore beaucoup (cold start ~2 h, puis diffusion).
 from __future__ import annotations
 
 import logging
+import statistics
 from datetime import timedelta
 
 from .telegram import esc
@@ -39,6 +40,37 @@ IGNORED_TIP_MIN = 5        # nb mini de brouillons clos pour juger
 IGNORED_TIP_RATIO = 0.6
 
 METRIC_KEYS = ("impressions", "likes", "replies", "reposts", "quotes", "bookmarks")
+
+# « Ce qui marche » (consigne du propriétaire, 23/11/2026 : insister sur les posts qui
+# marchent, dans le même style, tant que ça marche). Chaque post reçoit un sujet (Claude le
+# classe une fois, `ensure_topics`) ; sa « portée » compte les vues ET les interactions.
+TOPICS: dict[str, tuple[str, str]] = {      # clé : (nom court, description donnée à Claude)
+    "games": ("video games & play", "video games, play, toys and fun"),
+    "cars": ("cars & getting around", "cars, driving, taxis and getting around (self-driving, electric, flying)"),
+    "robots": ("robots", "robots and machines doing things in the real world"),
+    "ai-feats": ("AI doing astonishing things",
+                 "an AI doing something astonishing: solving, discovering, creating, beating people"),
+    "ai-apps": ("new features in AI apps",
+                "a new feature in AI apps and assistants people use (ChatGPT, Gemini, Claude, Siri, Alexa…)"),
+    "gadgets": ("phones, glasses & devices", "phones, glasses, watches, TVs and other devices"),
+    "daily-life": ("home, family, school & money", "home, family, school, work, shopping and money in daily life"),
+    "privacy-safety": ("privacy, scams & tech going wrong", "privacy, scams, security, and AI or tech going wrong"),
+    "science": ("science, health & space", "science, health, space and the body, when AI is not the point"),
+    "business": ("tech business & money raised", "companies, money raised, deals, prices and the tech industry"),
+    "insider": ("tools for developers & tech jargon",
+                "tools and models for developers or specialists, benchmarks, tech jargon"),
+}
+ENGAGEMENT_WEIGHT = 30     # une interaction (like, réponse, partage, citation, signet) vaut 30 vues
+LIFT_CAP = 4.0             # un post viral compte, mais pas plus que 4 fois la normale
+PRIOR_POSTS = 2.0          # deux posts « habituels » imaginaires par groupe : un seul succès ne fait pas une règle
+HALF_LIFE_DAYS = 7.0       # « tant que ça marche » : un post d'il y a 7 jours pèse moitié moins
+WORKS, FLOPS = 1.15, 0.85  # au-dessus : ça marche ; en dessous : ça tombe à plat
+MIN_WORKS_N = 2            # au moins 2 posts pour dire qu'un sujet marche
+MIN_FLOPS_N = 3            # au moins 3 pour dire qu'il ne marche pas
+STYLE_EXAMPLES = 3         # nos meilleurs posts, montrés au rédacteur comme modèles de style
+STYLE_TEXT_MAX = 320
+TOPIC_LABEL_EVERY_MIN = 360
+TOPIC_LABEL_BATCH = 120
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +110,13 @@ def stats(posts: list[dict]) -> dict:
         "avg_bookmarks": round(tot["bookmarks"] / n, 2) if n else 0.0,
         "engagement_rate": round(eng / tot["impressions"], 4) if tot["impressions"] else 0.0,
     }
+
+
+def post_score(p: dict) -> float:
+    """La portée d'un post : ses vues, plus 30 vues par interaction (like, réponse, partage,
+    citation, signet) — X pousse les posts qui font réagir, pas seulement ceux qu'on voit."""
+    eng = sum(_m(p, k) for k in ("likes", "replies", "reposts", "quotes", "bookmarks"))
+    return float(_m(p, "impressions") + ENGAGEMENT_WEIGHT * eng)
 
 
 def excerpt(text: str, n: int = 90) -> str:
@@ -172,6 +211,7 @@ class Analytics:
             "hook": str(meta.get("hook") or ""),
             "notes": bool(meta.get("used_notes")),
             "fallback": bool(meta.get("from_fallback")),
+            "test": bool(meta.get("style_test")),
             "tweets": len(it.get("texts") or []),
         }
 
@@ -271,6 +311,184 @@ class Analytics:
         self.state.data["performance"] = perf
         self.state.flush()
         return perf
+
+    # ==================================================================
+    # Ce qui marche : sujets, accroches, formats (consigne du 23/11/2026)
+    # ==================================================================
+    def ensure_topics(self, labeler) -> int:
+        """Donne un sujet (TOPICS) aux posts des 30 derniers jours qui n'en ont pas encore :
+        un seul appel à Claude (`labeler(textes) -> sujets`, dans le même ordre), toutes les
+        6 h au plus. Retourne le nombre de posts classés ; ne lève jamais d'exception."""
+        if not callable(labeler):
+            return 0
+        try:
+            since = self.state.minutes_since("topics")
+            if since is not None and since < TOPIC_LABEL_EVERY_MIN:
+                return 0
+            todo = [p for p in self._posts(AGG_DAYS, settled=False, with_metrics=False)
+                    if p.get("topic") not in TOPICS and (p.get("text") or "").strip()][-TOPIC_LABEL_BATCH:]
+            if not todo:
+                return 0
+            self.state.set_last_run("topics")
+            labels = labeler([str(p.get("text") or "") for p in todo]) or []
+            n = 0
+            for p, topic in zip(todo, labels):
+                if topic in TOPICS:
+                    p["topic"] = topic
+                    n += 1
+            self.state.flush()
+            log.info("Stats : %d post(s) classé(s) par sujet sur %d", n, len(todo))
+            return n
+        except Exception as e:  # noqa: BLE001
+            log.warning("Stats : classement des posts par sujet impossible (%s)", e)
+            return 0
+
+    def what_works(self) -> dict:
+        """Ce qui marche sur CE compte, sur 30 jours : pour chaque sujet, forme d'accroche,
+        type de post et format, la portée moyenne comparée à un post habituel (1.0), vues et
+        interactions comprises (`post_score`). Les posts récents pèsent plus (moitié moins
+        tous les 7 jours : « tant que ça marche ») ; un groupe d'un ou deux posts reste
+        proche de 1.0 (deux posts « habituels » imaginaires) ; un post viral compte au plus
+        4 fois la normale. `best` : nos meilleurs posts des 14 derniers jours, s'ils ont
+        fait mieux que d'habitude. {} tant qu'il y a moins de 5 posts mesurés."""
+        posts = self._posts(AGG_DAYS)
+        if len(posts) < MIN_POSTS_FOR_NOTES:
+            return {}
+        scores = [post_score(p) for p in posts]
+        base = statistics.median(scores)
+        if base <= 0:
+            return {}
+        now = now_local()
+
+        def weight(p: dict) -> float:
+            dt = parse_iso(p.get("created_at"))
+            age = max(0.0, (now - dt).total_seconds() / 86400.0) if dt is not None else float(AGG_DAYS)
+            return 0.5 ** (age / HALF_LIFE_DAYS)
+
+        weights = [weight(p) for p in posts]
+
+        def fmt_of(p: dict) -> dict:
+            f = p.get("fmt")
+            return f if isinstance(f, dict) else {}
+
+        def table(key) -> dict:
+            acc: dict[str, list] = {}
+            for p, s, w in zip(posts, scores, weights):
+                k = key(p)
+                if not k:
+                    continue
+                a = acc.setdefault(str(k), [0.0, 0.0, 0])
+                a[0] += w * min(LIFT_CAP, s / base)
+                a[1] += w
+                a[2] += 1
+            return {k: {"lift": round((sl + PRIOR_POSTS) / (sw + PRIOR_POSTS), 2), "count": n}
+                    for k, (sl, sw, n) in acc.items()}
+
+        recent = [p for p in self._posts(BEST_DAYS) if (p.get("text") or "").strip()
+                  and post_score(p) >= base * WORKS]
+        recent.sort(key=post_score, reverse=True)
+        best = [{"text": str(p.get("text") or ""), "kind": p.get("kind"),
+                 "impressions": _m(p, "impressions"), "likes": _m(p, "likes"), "replies": _m(p, "replies"),
+                 "reposts": _m(p, "reposts") + _m(p, "quotes"), "bookmarks": _m(p, "bookmarks"),
+                 "lift": round(post_score(p) / base, 2)} for p in recent[:STYLE_EXAMPLES]]
+        return {
+            "baseline": base,
+            "posts": len(posts),
+            "topics": table(lambda p: p.get("topic") if p.get("topic") in TOPICS else None),
+            "hooks": table(lambda p: fmt_of(p).get("hook")),
+            "kinds": table(lambda p: p.get("kind")),
+            "formats": table(lambda p: fmt_of(p).get("media")),
+            "best": best,
+        }
+
+    @staticmethod
+    def _winners(table: dict, n_min: int = MIN_WORKS_N) -> list[tuple[float, str, int]]:
+        return sorted(((v["lift"], k, v["count"]) for k, v in (table or {}).items()
+                       if v["lift"] >= WORKS and v["count"] >= n_min), reverse=True)
+
+    @staticmethod
+    def _losers(table: dict, n_min: int = MIN_FLOPS_N) -> list[tuple[float, str, int]]:
+        return sorted((v["lift"], k, v["count"]) for k, v in (table or {}).items()
+                      if v["lift"] <= FLOPS and v["count"] >= n_min)
+
+    def editor_notes(self, explore: bool = False) -> str:
+        """Pour la rédaction en chef (anglais) : les sujets qui marchent et ceux qui tombent à
+        plat sur ce compte, nos meilleurs posts récents, et la consigne du choix — suivre ce
+        qui marche ou, pour un post d'essai (`explore`), essayer autre chose. "" sans chiffres.
+        Ne lève jamais d'exception."""
+        try:
+            return self._editor_notes(explore)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Stats : notes pour la rédaction en chef impossibles : %s", e)
+            return ""
+
+    def _editor_notes(self, explore: bool) -> str:
+        ww = self.what_works()
+        if not ww:
+            return ""
+        wins = self._winners(ww["topics"])[:4]
+        flops = self._losers(ww["topics"])[:4]
+        best = ww["best"]
+        if not (wins or flops or best):
+            return ""
+        lines = [f"WHAT WORKS ON THIS ACCOUNT (our own numbers over the last {AGG_DAYS} days: views, plus "
+                 "likes, replies, reposts and bookmarks; 1.0x = our usual post):"]
+        if wins:
+            lines.append("- Stories our readers react to: " + ", ".join(
+                f"{TOPICS[t][0]} ({lift:.1f}x, {n} posts)" for lift, t, n in wins) + ".")
+        if flops:
+            lines.append("- Stories that fall flat with them: " + ", ".join(
+                f"{TOPICS[t][0]} ({lift:.1f}x, {n} posts)" for lift, t, n in flops) + ".")
+        if best:
+            lines.append("- Our best recent posts: " + "; ".join(
+                f"\"{excerpt(b['text'], 110)}\" ({en_int(b['impressions'])} views)" for b in best) + ".")
+        if explore:
+            lines.append("THIS PICK IS A TEST: choose the strongest story whatever its kind (only avoid the kinds "
+                         "that fall flat), so the account learns what else works.")
+        else:
+            lines.append("THIS PICK FOLLOWS WHAT WORKS: when the list has a strong story of a kind our readers "
+                         "react to, or one like our best posts, put it first. Never pick a weak story just for "
+                         "its kind.")
+        return "\n".join(lines)
+
+    def style_notes(self, explore: bool = False) -> str:
+        """Pour le rédacteur (anglais) : nos meilleurs posts récents, en entier, comme modèles
+        de STYLE (première ligne, longueur, rythme), et les formes d'accroche qui marchent.
+        Pour un post d'essai (`explore`) : la liberté d'essayer un autre style. "" sans
+        chiffres. Ne lève jamais d'exception."""
+        try:
+            return self._style_notes(explore)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Stats : modèles de style impossibles : %s", e)
+            return ""
+
+    def _style_notes(self, explore: bool) -> str:
+        ww = self.what_works()
+        if not ww:
+            return ""
+        if explore:
+            return ("THIS POST IS A TEST: you may try a different style from our usual one (another kind of first "
+                    "line, another rhythm), still in plain words and still true, so the account learns what else "
+                    "works.")
+        lines: list[str] = []
+        best = ww["best"]
+        if best:
+            lines.append("OUR BEST RECENT POSTS — insist on what works: write in the same style (the same kind of "
+                         "first line, the same length and rhythm, the same plain words), never copy their words:")
+            for b in best:
+                extra = "".join(f", {b[k]} {many if b[k] > 1 else one}"
+                                for k, one, many in (("likes", "like", "likes"), ("replies", "reply", "replies"),
+                                                     ("reposts", "repost", "reposts"),
+                                                     ("bookmarks", "bookmark", "bookmarks")) if b.get(k))
+                text = " ".join(b["text"].split())
+                if len(text) > STYLE_TEXT_MAX:
+                    text = text[: STYLE_TEXT_MAX - 1].rstrip() + "…"
+                lines.append(f"  • ({en_int(b['impressions'])} views{extra}) {text}")
+        hooks = self._winners(ww["hooks"])[:2]
+        if hooks:
+            lines.append("First-line shapes that work best here: " + ", ".join(
+                f"\"{k}\" ({lift:.1f}x, {n} posts)" for lift, k, n in hooks) + ". Use one when it fits the story.")
+        return "\n".join(lines)
 
     # ==================================================================
     # Notes pour Claude (anglais)

@@ -190,6 +190,13 @@ class TestConfig:
         monkeypatch.setenv("CLAUDE_BUDGET_MONTHLY_USD", "abc")
         assert cfg.load_settings().claude_budget_monthly_usd == 35.0
 
+    def test_trends_setting(self, monkeypatch):
+        """23/11/2026 : les tendances du jour, regardées avant chaque choix ; TRENDS_ENABLED=false les coupe."""
+        monkeypatch.delenv("TRENDS_ENABLED", raising=False)
+        assert cfg.load_settings().trends_enabled is True
+        monkeypatch.setenv("TRENDS_ENABLED", "false")
+        assert cfg.load_settings().trends_enabled is False
+
     def test_quality_settings(self, monkeypatch):
         """19/11/2026 : plusieurs versions par post, plus de réflexion pour les écrire, actu chaude
         regardée plus souvent. Sans réglage, le bot se comporte comme avant."""

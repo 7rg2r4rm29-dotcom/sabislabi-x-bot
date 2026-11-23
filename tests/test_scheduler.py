@@ -1448,3 +1448,151 @@ def test_plan_tells_the_truth_in_auto_mode(settings, state, budget, parts, clock
     assert "Mode automatique : chaque post part à son heure" in make_bot(settings, state, budget, parts).plan_text()
     settings.approval_mode = "telegram"
     assert "sans ta réponse, rien n'est publié" in make_bot(settings, state, budget, parts).plan_text()
+
+
+# ---------------------------------------------------------------------------
+# Ce qui marche et tendances du jour (consigne du propriétaire, 23/11/2026)
+# ---------------------------------------------------------------------------
+class ContextWriter(StubWriter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.contexts: list[str] = []
+        self.labels_asked: list[list[str]] = []
+        self.drafts: list = []
+
+    def _next(self, family: str, kind: str):
+        d = super()._next(family, kind)
+        self.drafts.append(d)
+        return d
+
+    def set_editor_context(self, text: str) -> None:
+        self.contexts.append(text)
+
+    def label_topics(self, texts):
+        self.labels_asked.append(list(texts))
+        return ["games"] * len(texts)
+
+
+class WorksAnalytics(StubAnalytics):
+    def __init__(self) -> None:
+        super().__init__()
+        self.labeled = 0
+
+    def editor_notes(self, explore=False):
+        return "WHAT WORKS ON THIS ACCOUNT: video games" + (" · THIS PICK IS A TEST" if explore else "")
+
+    def style_notes(self, explore=False):
+        return "THIS POST IS A TEST" if explore else "OUR BEST RECENT POSTS: GTA VI is out"
+
+    def ensure_topics(self, labeler):
+        self.labeled += 1
+        return len([t for t in labeler(["GTA VI is out"]) if t])
+
+
+class StubTrends:
+    def __init__(self, text: str = "TRENDING TODAY — Grand Theft Auto VI (308,867 views)") -> None:
+        self.text = text
+        self.calls = 0
+
+    def block(self) -> str:
+        self.calls += 1
+        return self.text
+
+
+class _Draw:
+    """style_rng qui tire toujours la même valeur (< 0.25 : post d'essai)."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def random(self) -> float:
+        return self.value
+
+
+@pytest.fixture
+def works_parts(parts):
+    return dict(parts, writer=ContextWriter(), analytics=WorksAnalytics())
+
+
+def works_bot(settings, state, budget, parts, draw: float = 0.9) -> Bot:
+    bot = make_bot(settings, state, budget, parts)
+    bot.trends = StubTrends()
+    bot.style_rng = _Draw(draw)
+    return bot
+
+
+class TestWhatWorksAndTrends:
+    def test_each_slot_follows_what_works_and_looks_at_trends(self, settings, state, budget, works_parts, clock):
+        bot = works_bot(settings, state, budget, works_parts)
+        clock(21, 0)
+        assert bot.plan_slots() == 1
+        w = works_parts["writer"]
+        assert w.contexts == ["WHAT WORKS ON THIS ACCOUNT: video games\n\n"
+                              "TRENDING TODAY — Grand Theft Auto VI (308,867 views)"]
+        assert w.calls[0][4] == "tutorials do 2x better\nOUR BEST RECENT POSTS: GTA VI is out"
+        assert w.drafts[0].style_test is False
+        assert bot.trends.calls == 1
+
+    def test_one_planned_post_in_four_tries_something_else(self, settings, state, budget, works_parts, clock):
+        bot = works_bot(settings, state, budget, works_parts, draw=0.1)
+        clock(21, 0)
+        assert bot.plan_slots() == 1
+        w = works_parts["writer"]
+        assert "THIS PICK IS A TEST" in w.contexts[0] and "TRENDING TODAY" in w.contexts[0]
+        assert w.calls[0][4].endswith("THIS POST IS A TEST")
+        assert w.drafts[0].style_test is True
+        assert sched.STYLE_TEST_SHARE == 0.25
+
+    def test_breaking_news_always_follows_what_works(self, settings, state, budget, works_parts, clock):
+        works_parts["writer"].default_reactive = True
+        bot = works_bot(settings, state, budget, works_parts, draw=0.0)
+        clock(16, 0)
+        assert bot.maybe_reactive() == 1
+        w = works_parts["writer"]
+        assert "TEST" not in w.contexts[-1] and "TRENDING TODAY" in w.contexts[-1]
+        assert w.calls[-1][0] == "draft_reactive" and "OUR BEST RECENT POSTS" in w.calls[-1][4]
+
+    def test_new_version_follows_what_works(self, settings, state, budget, works_parts, clock):
+        bot = works_bot(settings, state, budget, works_parts, draw=0.0)
+        bot.regenerate({"id": "t1", "kind": "news"})
+        assert "TEST" not in works_parts["writer"].contexts[-1]
+
+    def test_without_trends_or_numbers_the_editor_gets_nothing_new(self, settings, state, budget, parts, clock):
+        bot = make_bot(settings, state, budget, dict(parts, writer=ContextWriter()))
+        bot.trends = StubTrends("")
+        clock(21, 0)
+        assert bot.plan_slots() == 1
+        assert parts["writer"].calls == [] and bot.writer.contexts == [""]
+        assert bot.writer.calls[0][4] == "tutorials do 2x better"      # comme avant
+
+    def test_trends_can_be_switched_off(self, settings, state, budget, parts):
+        settings.trends_enabled = False
+        assert make_bot(settings, state, budget, parts).trends is None
+        settings.trends_enabled = True
+        from bot.trends import TrendWatch
+        assert isinstance(make_bot(settings, state, budget, parts).trends, TrendWatch)
+
+    def test_failing_helpers_never_stop_a_slot(self, settings, state, budget, works_parts, clock):
+        class Broken:
+            def block(self):
+                raise RuntimeError("trends down")
+
+        bot = works_bot(settings, state, budget, works_parts)
+        bot.trends = Broken()
+        works_parts["analytics"].editor_notes = lambda explore=False: 1 / 0
+        clock(21, 0)
+        assert bot.plan_slots() == 1
+        assert works_parts["writer"].contexts == [""]
+
+    def test_stats_step_sorts_posts_by_topic(self, settings, state, budget, works_parts):
+        bot = make_bot(settings, state, budget, works_parts)
+        bot.maybe_analytics()
+        assert works_parts["analytics"].labeled == 1
+        assert works_parts["writer"].labels_asked == [["GTA VI is out"]]
+
+    def test_topic_sorting_yields_to_a_tight_claude_budget(self, settings, state, budget, works_parts):
+        bot = make_bot(settings, state, budget, works_parts)
+        bot.llm = _BudgetLLM(spent=30.0, optional=False)
+        bot.maybe_analytics()
+        assert works_parts["analytics"].labeled == 0
+        assert works_parts["analytics"].refreshes == 1                # les stats, elles, sont relevées

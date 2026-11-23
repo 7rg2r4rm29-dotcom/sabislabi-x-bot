@@ -105,8 +105,16 @@ class FakeWeb:
             return 200, self.pages[url]
         return 404, ""
 
+    def trend_requests(self) -> list[str]:
+        """Les tendances du jour (Google, Wikipédia, Hacker News) : ce ne sont pas des articles."""
+        return [u for u in self.requests if any(h in u for h in TREND_HOSTS)]
+
     def articles_read(self) -> list[str]:
-        return [u for u in self.requests if u not in (FEED_URL, ROBOT_SOURCE, SCAN_SOURCE)]
+        return [u for u in self.requests if u not in (FEED_URL, ROBOT_SOURCE, SCAN_SOURCE)
+                and u not in self.trend_requests()]
+
+
+TREND_HOSTS = ("trends.google.com", "wikimedia.org", "hn.algolia.com")
 
 
 @pytest.fixture
@@ -285,6 +293,12 @@ def test_simulated_day(feed_settings, state, budget, clock, web):
     assert labels.count("pick-tip") == 1 and labels.count("pick-news") == 1
     assert web.articles_read() == [ROBOT_URL, SCAN_URL]
     assert not any("x.com" in u or "twitter.com" in u for u in web.requests)
+    # 5 bis. Avant chaque choix, les tendances du jour (gratuites) : une fois par heure au plus,
+    #        et une source en panne (ici : 404 partout) n'empêche rien.
+    google_us = [u for u in web.trend_requests() if u.endswith("geo=US")]
+    assert 1 <= len(google_us) <= 27                     # la journée simulée dure 27 h
+    assert any("wikimedia.org" in u for u in web.trend_requests())
+    assert any("hn.algolia.com" in u for u in web.trend_requests())
     post_calls = {c["label"]: c["user"] for c in d.llm.calls if c["label"] in ("post-tip", "post-news")}
     assert ROBOT_FACT in post_calls["post-tip"] and SCAN_TITLE not in post_calls["post-tip"]
     assert SCAN_FACT in post_calls["post-news"]
