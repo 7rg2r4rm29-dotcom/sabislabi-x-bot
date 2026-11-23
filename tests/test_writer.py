@@ -2431,10 +2431,47 @@ class TestExplainer:
     def test_the_fact_checker_has_the_last_word(self, settings, state, items):
         fails = fc_fail(issues="'FREE' is not what the item says", claims=[
             {"claim": "free", "quote": "", "supported": False}])
-        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(), explainer_resp(),
-                                                              factcheck=[fails, fails]))
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(), explainer_resp(), explainer_resp(),
+                                                              factcheck=[fails, fails, fails]))
         assert w.draft_explainer(items, [], "") is None
-        assert llm.labels() == ["pick-explainer", "explainer", "factcheck", "explainer-retry", "factcheck"]
+        assert llm.labels() == ["pick-explainer", "explainer", "factcheck", "explainer-retry", "factcheck",
+                                "explainer-retry", "factcheck"]
+        assert wmod.EXPLAINER_ATTEMPTS == 3
+
+    def test_a_third_try_after_two_refusals(self, settings, state, items):
+        """Essai réel du 23/11/2026 : refusé « trop technique », puis « trop proche d'une source »."""
+        tech = fc_fail(ok=True, plain=False, hard_words='"soft robot" is never explained')
+        copy = explainer_resp(text="Voice mode is now available to all ChatGPT users")    # le titre, recopié
+        w, llm = make_writer(settings, state, explainer_flow(explainer_resp(), copy, explainer_resp(),
+                                                              factcheck=[tech, FC_OK]))
+        d = w.draft_explainer(items, [], "")
+        assert d is not None
+        assert llm.labels() == ["pick-explainer", "explainer", "factcheck", "explainer-retry", "explainer-retry",
+                                "factcheck"]
+        second, third = llm.calls[3]["user"], llm.calls[4]["user"]
+        assert "an everyday reader would stumble on" in second and "soft robot" in second
+        assert "the post that carries the video was rejected: it was too close to a source's wording" in third
+
+    @pytest.mark.parametrize("problem,advice", [
+        ("post : trop proche d'une source", "the post that carries the video was rejected: it was too close"),
+        ("titre : trop long (90 > 80)", "the title of the video was rejected: it was too long (90"),
+        ("fin : contient un lien ou un nom de domaine", "the ending of the video was rejected: it contained a link"),
+        ("scène 2, étape 1 : trop technique (API)", 'scene 2 (step 1) was rejected: it used tech jargon ("API")'),
+        ("scène 3, auteur de la citation : cite un média (The Verge)", "scene 3 (quote author) was rejected"),
+        ("scène 1, mot en grand : trop long (20 > 14)", "scene 1 (big word) was rejected: it was too long"),
+        ("ne tient pas à l'écran (titre trop long)", "too long to fit on the screen (titre trop long): shorten"),
+        ("6 scène(s) : il en faut 2 à 5", "the script had 6 scenes: write 2 to 5"),
+        ("scène 1 : 1 étape(s), il en faut 2 à 4", "scene 1 had 1 steps: write 2 to 4"),
+        ("scène 2 : une comparaison demande deux côtés", "scene 2 is a comparison: fill both left and right"),
+        ("scène 4 : une citation demande le texte et son auteur", "scene 4 is a quote"),
+        ("scène 2 : genre inconnu ('dance')", "scene 2 has an unknown kind"),
+    ])
+    def test_video_refusals_become_clear_advice(self, problem, advice):
+        assert advice in wmod._feedback_en(problem)
+
+    def test_prompt_asks_for_own_words_and_plain_units(self):
+        p = wmod.EXPLAINER_PROMPT
+        assert "in YOUR OWN words" in p and "never \"15 ft/s\"" in p and "explain an unusual term" in p
 
     def test_no_fact_check_no_video(self, settings, state, items):
         w, _llm = make_writer(settings, state, {"pick-": pick(1), "explainer": explainer_resp(), "factcheck": None})

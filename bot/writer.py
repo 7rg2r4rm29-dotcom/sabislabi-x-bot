@@ -584,6 +584,7 @@ PICK_BRIEFS: dict[str, str] = {
 EXPLAINER_SCENE_KINDS = ("fact", "steps", "compare", "quote")
 EXPLAINER_MIN_SCENES, EXPLAINER_MAX_SCENES = 2, 5
 EXPLAINER_POST_MAX = 200
+EXPLAINER_ATTEMPTS = 3       # le script, puis deux réécritures guidées au plus
 # Longueurs demandées à Claude ; le code tolère un peu plus (la mise en page, elle, est vérifiée).
 EXPLAINER_LIMITS = {"title": 80, "text": 135, "heading": 48, "big": 14, "item": 70, "side": 58, "quote": 145,
                     "who": 48, "ending": 100}
@@ -612,9 +613,10 @@ THE SCRIPT — scenes that appear one after the other:
   Fields a kind doesn't use are "" or [].
 - ending: what it means for a normal person, or a question to the viewer (90 characters at most).
 - Explain HOW or WHY only with what the items say. When they don't say how it works, never guess: show what it does, what is new, why it matters, and how far it is (a demo, a test, on sale).
+- Plain words on every screen: explain an unusual term the first time you use it ("a soft robot, made of a rubber-like material") or don't use it; write units in full words ("15 feet per second", never "15 ft/s").
 - Every word on screen is checked against the items before anything is published, exactly like a post.
 
-THE POST that carries the video — text: 200 characters at most, plain words: the hook of the story the video explains. Never "watch this", "thread" or "video below"; no link, no hashtag, no @mention. hook: the shape of its first line, one of: """ + ", ".join(HOOK_SHAPES) + """.
+THE POST that carries the video — text: 200 characters at most, plain words, in YOUR OWN words — never the headline's or the article's sentences (a post that repeats them is refused): the hook of the story the video explains. Never "watch this", "thread" or "video below"; no link, no hashtag, no @mention. hook: the shape of its first line, one of: """ + ", ".join(HOOK_SHAPES) + """.
 
 visual_url: "[n]" to use the photo of story n as the video's background (the story you explain), or "" for none.
 source_ids: the numbers of the items the script relies on (at least one).
@@ -781,11 +783,29 @@ _FEEDBACK_EN = (
     (r"^thread trop long \((\d+)", "the thread had {0} tweets: write 4 to 7, and make any count announced "
                                     "in tweet 1 match what follows"),
     (r"^tweet (\d+) : (.*)", "tweet {0} was rejected: {1}"),
+    # Vidéo explicative : où est le problème (le post, le titre, la fin, une scène), puis lequel.
+    (r"^post : (.*)", "the post that carries the video was rejected: {0}"),
+    (r"^titre : (.*)", "the title of the video was rejected: {0}"),
+    (r"^fin : (.*)", "the ending of the video was rejected: {0}"),
+    (r"^scène (\d+), ([^:]+) : (.*)", "scene {0} ({1}) was rejected: {2}"),
+    (r"^ne tient pas à l'écran \((.*)\)", "a text is too long to fit on the screen ({0}): shorten it"),
+    (r"^(\d+) scène\(s\) : il en faut (\d+) à (\d+)", "the script had {0} scenes: write {1} to {2}"),
+    (r"^scène (\d+) : (\d+) étape\(s\)", "scene {0} had {1} steps: write 2 to 4"),
+    (r"^scène (\d+) : une comparaison", "scene {0} is a comparison: fill both left and right"),
+    (r"^scène (\d+) : une citation", "scene {0} is a quote: give the exact words and who said them"),
+    (r"^scène (\d+) : genre inconnu", "scene {0} has an unknown kind: use fact, steps, compare or quote"),
     (r"^vérification factuelle : (.*)", "a fact-checker found unsupported claims: {0}. Remove them or "
                                         "say only what the cited stories say — and rebuild the text around "
                                         "it: the correction goes in the middle, never pasted on as the "
                                         "last line"),
 )
+
+
+# Motifs qui en contiennent un autre (leur dernier morceau est lui-même traduit).
+_NESTED_FEEDBACK = ("^tweet", "^post", "^titre", "^fin", "^scène (\\d+), ")
+_SCENE_PARTS_EN = {"texte": "text", "mot en grand": "big word", "titre des étapes": "steps heading",
+                   "titre de la comparaison": "comparison heading", "côté gauche": "left side",
+                   "côté droit": "right side", "citation": "quote", "auteur de la citation": "quote author"}
 
 
 def _feedback_en(problem: str) -> str:
@@ -794,8 +814,12 @@ def _feedback_en(problem: str) -> str:
     for pattern, template in _FEEDBACK_EN:
         m = re.match(pattern, problem or "", re.S)
         if m:
-            groups = [(_feedback_en(g) if pattern.startswith("^tweet") and i == 1 else g)
-                      for i, g in enumerate(m.groups())]
+            groups = list(m.groups())
+            if pattern.startswith(_NESTED_FEEDBACK):
+                groups[-1] = _feedback_en(groups[-1])
+            if pattern.startswith("^scène (\\d+), "):
+                part = groups[1].strip()
+                groups[1] = _SCENE_PARTS_EN.get(part) or re.sub(r"^étape (\d+)$", r"step \1", part)
             return template.format(*groups)
     return problem or "rejected by the automatic checks"
 
@@ -1997,7 +2021,7 @@ class Writer:
         # d'un post s'y retrouvent, et tout serait « trop proche d'une source »).
         source_texts = [_item_text(it) for it in stories]
         feedback = ""
-        for attempt in (1, 2):
+        for attempt in range(1, EXPLAINER_ATTEMPTS + 1):
             user = self._explainer_user(stories, perf, feedback)
             obj = self._ask(f"explainer{'-retry' if attempt > 1 else ''}", EXPLAINER_PROMPT, user,
                             EXPLAINER_SCHEMA, effort=self._post_effort("explainer"))
@@ -2015,7 +2039,7 @@ class Writer:
                          plan["title"])
                 return Draft(kind="explainer", texts=cand.texts, visual=cand.visual, sources=cand.sources,
                              reason=f"{cand.reason} · vidéo explicative", hook=cand.hook, video_plan=plan)
-            log.warning("Vidéo explicative refusée (essai %d/2) : %s", attempt, problem)
+            log.warning("Vidéo explicative refusée (essai %d/%d) : %s", attempt, EXPLAINER_ATTEMPTS, problem)
             feedback = problem
         return None
 
