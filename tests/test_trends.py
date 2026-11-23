@@ -219,3 +219,94 @@ def test_x_most_liked_reads_only_the_cache(state):
 
 def test_block_stays_short(tw):
     assert len(tw.block()) < tmod.MAX_GOOGLE * 2 * 120 + 3000
+
+
+# ---------------------------------------------------------------------------
+# Veille du marché : gros comptes du même sujet, une fois par jour (lectures X payantes)
+# ---------------------------------------------------------------------------
+from bot.trends import engagement, market_row  # noqa: E402
+from bot.x_api import XError  # noqa: E402
+from tests.fakes import FakeX, make_tweet  # noqa: E402
+
+
+def niche_tweet(tid: str, text: str, likes: int, hours_ago: float = 3, reposts: int = 0) -> dict:
+    tw = make_tweet(tid, text, created_at=iso(now_local() - timedelta(hours=hours_ago)), likes=likes)
+    tw["public_metrics"]["retweet_count"] = reposts
+    return tw
+
+
+@pytest.fixture
+def niche_x():
+    x = FakeX()
+    x.ids_map = {"minchoi": "101", "rainmaker1973": "202"}
+    x.user_posts_map = {
+        "101": [niche_tweet("1", "This robot dog just learned to open doors by itself https://t.co/x", 9000,
+                            reposts=800),
+                niche_tweet("2", "Vote for your favourite candidate in the election", 50000)],      # politique
+        "202": [niche_tweet("3", "A 3D printer that builds a house in 24 hours", 20000, reposts=3000),
+                niche_tweet("4", "An old viral clip", 99000, hours_ago=60)],                      # trop vieux
+    }
+    return x
+
+
+@pytest.fixture
+def market_tw(settings, state, niche_x):
+    settings.market_watch_enabled = True
+    settings.market_accounts = ["minchoi", "Rainmaker1973", "unknownhandle"]
+    return TrendWatch(settings, state, http_get=FakeGet(fail=True), x=niche_x)
+
+
+def test_market_watch_is_off_by_default(settings, state, niche_x):
+    assert settings.market_watch_enabled is False
+    tw = TrendWatch(settings, state, http_get=FakeGet(fail=True), x=niche_x)
+    assert tw.refresh_market() is False and tw.block() == "" and niche_x.calls == []
+    settings.market_watch_enabled = True
+    assert TrendWatch(settings, state, http_get=FakeGet(fail=True)).refresh_market() is False   # sans client X
+
+
+def test_market_watch_reads_each_account_once_a_day(market_tw, niche_x, state, clock):
+    b = market_tw.block()
+    assert niche_x.calls[0] == ("user_ids", ("minchoi", "Rainmaker1973", "unknownhandle"))
+    assert [c for c in niche_x.calls if c[0] == "user_posts"] == [("user_posts", "101", None),
+                                                                ("user_posts", "202", None)]
+    assert "What gets people reacting in our niche on X" in b and "never copy them" in b
+    assert b.index('@Rainmaker1973 "A 3D printer') < b.index('@minchoi "This robot dog')   # le plus de réactions
+    assert "(20,000 likes, 3,000 reposts)" in b and "t.co" not in b
+    assert "election" not in b and "old viral clip" not in b
+    n = len(niche_x.calls)
+    clock(20, 0)
+    market_tw.block()
+    assert len(niche_x.calls) == n                         # une seule lecture payante par jour
+    clock(11, 0, day=16)
+    market_tw.block()
+    new = niche_x.calls[n:]
+    assert not any(c[0] == "user_ids" for c in new)        # identifiants gardés, l'introuvable aussi
+    assert new == [("user_posts", "101", None), ("user_posts", "202", None)]
+    assert state.data["trends"]["market"]["ids"] == {"minchoi": "101", "rainmaker1973": "202", "unknownhandle": ""}
+
+
+def test_market_watch_yields_to_the_x_budget(market_tw, niche_x, state):
+    def refuse(*a, **kw):
+        niche_x.calls.append(("user_posts",))
+        raise XError("budget", "Budget du jour pour les lectures atteint")
+
+    niche_x.user_posts = refuse
+    assert market_tw.refresh_market() is True
+    assert len([c for c in niche_x.calls if c[0] == "user_posts"]) == 1    # arrêt au premier refus
+    assert market_tw.block() == ""                                         # rien de lu : rien à montrer
+    assert state.data["trends"]["market"]["checked_at"]                    # et pas de nouvel essai tout de suite
+
+
+def test_stale_market_readings_are_not_shown(market_tw, clock):
+    market_tw.refresh_market()
+    assert "our niche" in market_tw._block()
+    clock(23, 30, day=16)                                                   # plus de 36 h après
+    assert "our niche" not in market_tw._block()
+
+
+def test_market_rows_and_engagement():
+    row = market_row("@minchoi", niche_tweet("9", "Robots fold laundry now https://t.co/y", 100, reposts=10))
+    assert row["handle"] == "minchoi" and row["text"] == "Robots fold laundry now" and row["reposts"] == 10
+    assert engagement(row) == 100 + 2 * 10
+    assert market_row("x", {"id": "1", "text": "RT @someone: hello"}) is None
+    assert market_row("x", {"text": "no id"}) is None

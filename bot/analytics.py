@@ -29,7 +29,9 @@ KIND_FR = {"gm": "gm", "tip": "futur", "news": "actu", "thread": "thread", "reac
            "comment_reply": "réponse"}
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 
-REFRESH_EVERY_MIN = 170
+# Toutes les ~6 h (3 h avant le 23/11/2026) : relire nos 50 derniers posts coûtait 0,45 $ par jour,
+# le plus gros poste chez X ; les chiffres se stabilisent en 24 h. L'économie paie la veille du marché.
+REFRESH_EVERY_MIN = 350
 SETTLE_HOURS = 24          # un post compte dans les agrégats après 24 h
 AGG_DAYS = 30              # fenêtre des agrégats par type / heure / format
 BEST_DAYS = 14             # fenêtre du meilleur / pire post

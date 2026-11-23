@@ -83,10 +83,10 @@ def test_maybe_refresh_interval(an, state, fake_x, clock):
     fake_x.recent_posts = [api_tweet("1", 100)]
     clock(10, 0)
     assert an.maybe_refresh() == 1
-    clock(12, 0)
-    assert an.maybe_refresh() == 0                      # 120 min < 170
+    clock(15, 49)
+    assert an.maybe_refresh() == 0                      # 349 min < 350 : environ toutes les 6 h
     assert len([c for c in fake_x.calls if c == ("my_recent_posts",)]) == 1
-    clock(12, 51)
+    clock(15, 51)
     assert an.maybe_refresh() == 1
     assert len([c for c in fake_x.calls if c == ("my_recent_posts",)]) == 2
 

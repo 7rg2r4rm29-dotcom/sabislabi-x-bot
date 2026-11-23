@@ -38,6 +38,9 @@ DEFAULT_POST_SLOTS = "tip@14:30,news@19:00"
 DEFAULT_THREAD_SLOTS = "tue@14:30,sun@16:00"
 # Vidéos explicatives animées (23/11/2026) : aucune par défaut ; le serveur en a 3 par semaine.
 DEFAULT_EXPLAINER_SLOTS = ""
+# Veille du marché (23/11/2026) : de gros comptes qui racontent la tech et l'IA à tout le monde,
+# lus une fois par jour (lectures payantes : coupée par défaut, allumée sur le serveur).
+DEFAULT_MARKET_ACCOUNTS = ("minchoi", "rowancheung", "kimmonismus", "Rainmaker1973", "TheHumanoidHub")
 DEFAULT_LEADS = {"gm": 660, "tip": 150, "news": 120, "thread": 240, "explainer": 240}
 # Vidéo explicative : script, photo, fabrication de la vidéo (quelques minutes sur le serveur).
 AUTO_LEAD_MINUTES = {"thread": 90, "explainer": 90}   # mode automatique : 45 min avant pour un post, 90 pour un thread
@@ -250,6 +253,10 @@ class Settings:
     # Tendances du jour pour la rédaction en chef (Google Trends, Wikipédia, Hacker News,
     # annonces X déjà lues) : gratuites, relevées une fois par heure (bot/trends.py).
     trends_enabled: bool = True
+    # Veille du marché : ce qui fait réagir chez de gros comptes du même sujet (lectures X payantes,
+    # une fois par jour : MARKET_WATCH_ENABLED ; comptes : `market_accounts` de settings.json).
+    market_watch_enabled: bool = False
+    market_accounts: list[str] = field(default_factory=lambda: list(DEFAULT_MARKET_ACCOUNTS))
 
     # --- Budget API X (dollars) ---
     x_budget_daily_usd: float = 1.50
@@ -425,6 +432,7 @@ def load_settings() -> Settings:
         radar_min_likes_per_min=_env_float("RADAR_MIN_LIKES_PER_MIN", 1.0),
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         trends_enabled=_env_bool("TRENDS_ENABLED", True),
+        market_watch_enabled=_env_bool("MARKET_WATCH_ENABLED", False),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),
@@ -439,6 +447,7 @@ def load_settings() -> Settings:
         image_quality=_env("IMAGE_QUALITY", "medium") or "medium",
         radar_accounts=_handles(js.get("radar_accounts"), w),
         x_news_accounts=_handles(js.get("x_news_accounts"), w),
+        market_accounts=_handles(js.get("market_accounts"), w) or list(DEFAULT_MARKET_ACCOUNTS),
         news_feeds=[f for f in (js.get("news_feeds") or []) if isinstance(f, dict) and f.get("url")],
         blacklist_users=[u.lower().lstrip("@") for u in (js.get("blacklist", {}).get("users") or [])],
         blacklist_keywords=[k.lower() for k in (js.get("blacklist", {}).get("keywords") or [])],

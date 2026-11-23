@@ -11,11 +11,18 @@ Relevé au plus une fois par heure (`TRENDS_EVERY_MIN`) et rangé dans
 disparaît du bloc. Sans aucune source, le bloc est vide et la rédaction fait comme avant.
 Ne lève jamais d'exception.
 
+Veille du marché (consigne du propriétaire, 23/11/2026 : « analyse le marché… pour capturer ce
+qui marche et ce qui ramène de l'engagement » ; il paie les lectures X avec ses crédits) : une fois
+par jour, les derniers posts de quelques gros comptes qui racontent la tech et l'IA à tout le monde
+(`market_accounts`, `MARKET_WATCH_ENABLED`), classés par réactions. Lectures X payantes (0,005 $ le
+post, 10 par compte) et optionnelles : elles cèdent au budget X.
+
 Les tendances ne sont JAMAIS une source de faits : elles aident seulement la rédaction en
 chef à choisir, parmi les actus du jour, celle qui parlera le plus aux gens.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -45,6 +52,12 @@ MAX_HN = 6
 MAX_X = 5
 X_LIKED_HOURS = 48
 KEEP_PER_SOURCE = 30             # ce qui est gardé dans l'état (le bloc en montre moins)
+MARKET_EVERY_H = 24              # veille du marché : une lecture par jour (payante)
+MARKET_POSTS_PER_ACCOUNT = 10
+MARKET_KEEP_HOURS = 48
+MARKET_KEEP = 60
+MAX_MARKET = 6
+MARKET_STOP_KINDS = {"budget", "rate_limited", "credits", "auth", "network", "server", "dry_run"}
 
 # Pages de Wikipédia qui ne sont pas des articles (accueil, recherche, images du jour…).
 WIKI_SKIP_PREFIXES = ("Special:", "Wikipedia:", "File:", "Portal:", "Help:", "Category:", "Template:",
@@ -184,6 +197,39 @@ def x_most_liked(cache, now, hours: int = X_LIKED_HOURS, n: int = MAX_X) -> list
     return rows[:n]
 
 
+def engagement(row: dict) -> int:
+    """Réactions d'un post : likes, partages (comptés double : ils emmènent le post plus loin)
+    et réponses."""
+    def n(key: str) -> int:
+        try:
+            return int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return n("likes") + 2 * n("reposts") + n("replies")
+
+
+def market_row(handle: str, tw: dict) -> dict | None:
+    """Un post de la veille du marché, tel qu'on le garde ; None s'il est inutilisable ou hors
+    ligne éditoriale."""
+    if not isinstance(tw, dict) or not tw.get("id"):
+        return None
+    text = _clean(_URL_RE.sub("", html.unescape(str(tw.get("text") or ""))))
+    if not text or text.startswith("RT @") or not acceptable(text):
+        return None
+    from .sources import parse_datetime
+    created = parse_datetime(tw.get("created_at"))
+    pm = tw.get("public_metrics") or {}
+
+    def n(key: str) -> int:
+        try:
+            return int(pm.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {"id": str(tw["id"]), "handle": str(handle).lstrip("@"), "text": text[:600],
+            "created_at": iso(created) if created else "", "likes": n("like_count"),
+            "reposts": n("retweet_count") + n("quote_count"), "replies": n("reply_count")}
+
+
 def _short(text: str, n: int) -> str:
     t = _clean(text)
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
@@ -194,10 +240,11 @@ def _num(n: int) -> str:
 
 
 class TrendWatch:
-    def __init__(self, settings, state, http_get: HttpGet | None = None) -> None:
+    def __init__(self, settings, state, http_get: HttpGet | None = None, x=None) -> None:
         self.settings = settings
         self.state = state
         self._get = http_get
+        self.x = x                     # client X : seulement pour la veille du marché (lectures payantes)
 
     # ------------------------------------------------------------------
     def enabled(self) -> bool:
@@ -276,6 +323,85 @@ class TrendWatch:
         log.info("Tendances : %s", ", ".join(found) if found else "aucune source lisible")
         return True
 
+    # ------------------------------------------------------------------
+    # Veille du marché : gros comptes du même sujet, une fois par jour
+    # ------------------------------------------------------------------
+    def market_enabled(self) -> bool:
+        return (bool(getattr(self.settings, "market_watch_enabled", False)) and self.x is not None
+                and bool(getattr(self.settings, "market_accounts", None)))
+
+    def _market(self) -> dict:
+        data = self._data()
+        m = data.get("market")
+        if not isinstance(m, dict):
+            m = data["market"] = {}
+        return m
+
+    def refresh_market(self, force: bool = False) -> bool:
+        """Lit les derniers posts des comptes de la veille, une fois par 24 h au plus. True si
+        la lecture a eu lieu. Ne lève jamais d'exception."""
+        if not self.market_enabled():
+            return False
+        m = self._market()
+        now = now_local()
+        last = parse_iso(m.get("checked_at"))
+        if not force and last is not None and now - last < timedelta(hours=MARKET_EVERY_H):
+            return False
+        m["checked_at"] = iso(now)                 # marqué AVANT : jamais deux lectures payantes de suite
+        self.state.flush()
+        handles = list(self.settings.market_accounts)
+        ids = {str(k).lower(): str(v) for k, v in (m.get("ids") or {}).items()} if isinstance(m.get("ids"), dict) \
+            else {}
+        missing = [h for h in handles if h.lower() not in ids]
+        if missing:
+            try:
+                found = {str(k).lower(): str(v) for k, v in (self.x.user_ids(missing) or {}).items()}
+                # Un compte introuvable est noté comme tel (""), pour ne pas le chercher chaque jour.
+                ids.update({h.lower(): found.get(h.lower(), "") for h in missing})
+            except Exception as e:  # noqa: BLE001
+                log.info("Veille : comptes introuvables (%s)", getattr(e, "kind", type(e).__name__))
+        rows = {str(r.get("id")): r for r in (m.get("rows") or []) if isinstance(r, dict) and r.get("id")}
+        read = 0
+        for h in handles:
+            uid = ids.get(h.lower())
+            if not uid:
+                continue
+            try:
+                tweets, _newest = self.x.user_posts(uid, max_results=MARKET_POSTS_PER_ACCOUNT, optional=True)
+            except Exception as e:  # noqa: BLE001
+                kind = getattr(e, "kind", type(e).__name__)
+                log.info("Veille : @%s illisible (%s)", h, kind)
+                if kind in MARKET_STOP_KINDS:
+                    break
+                continue
+            read += 1
+            for tw in tweets or []:
+                row = market_row(h, tw)
+                if row is not None:
+                    rows[row["id"]] = row
+        limit = now - timedelta(hours=MARKET_KEEP_HOURS)
+        kept = [r for r in rows.values() if (parse_iso(r.get("created_at")) or limit) > limit]
+        kept.sort(key=engagement, reverse=True)
+        m["ids"] = ids
+        m["rows"] = kept[:MARKET_KEEP]
+        if read:
+            m["at"] = iso(now)
+        self.state.flush()
+        log.info("Veille : %d compte(s) lu(s) sur %d, %d post(s) gardé(s)", read, len(handles), len(m["rows"]))
+        return True
+
+    def _market_rows(self, now) -> list[dict]:
+        m = self._data().get("market")
+        if not isinstance(m, dict):
+            return []
+        at = parse_iso(m.get("at"))
+        if at is None or now - at > timedelta(hours=MARKET_EVERY_H + 12):
+            return []
+        limit = now - timedelta(hours=MARKET_KEEP_HOURS)
+        rows = [r for r in (m.get("rows") or []) if isinstance(r, dict)
+                and (parse_iso(r.get("created_at")) or limit) > limit]
+        return sorted(rows, key=engagement, reverse=True)
+
     def _rows(self, key: str, now) -> list[dict]:
         entry = self._data().get(key)
         if not isinstance(entry, dict):
@@ -294,6 +420,10 @@ class TrendWatch:
             self.refresh()
         except Exception as e:  # noqa: BLE001
             log.warning("Tendances : relevé impossible (%s)", e)
+        try:
+            self.refresh_market()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Veille : lecture impossible (%s)", e)
         try:
             return self._block()
         except Exception as e:  # noqa: BLE001
@@ -317,6 +447,13 @@ class TrendWatch:
         if hn:
             lines.append("- Hacker News front page (the tech crowd): " + "; ".join(
                 f"\"{_short(r.get('title', ''), 80)}\" ({_num(r.get('points') or 0)} points)" for r in hn))
+        market = self._market_rows(now)[:MAX_MARKET]
+        if market:
+            lines.append(f"- What gets people reacting in our niche on X (big accounts telling tech and AI news to "
+                         f"everyone, last {MARKET_KEEP_HOURS} h, most reactions first — learn what kind of story "
+                         "and what angle works, never copy them): " + "; ".join(
+                             f"@{r['handle']} \"{_short(r['text'], 110)}\" ({_num(r.get('likes') or 0)} likes, "
+                             f"{_num(r.get('reposts') or 0)} reposts)" for r in market))
         liked = x_most_liked(self.state.data.get("news_x_cache"), now)
         if liked:
             lines.append(f"- Most-liked official posts on X (last {X_LIKED_HOURS} h): " + "; ".join(

@@ -370,7 +370,9 @@ class TestMain:
     def test_config_summary_shows_what_works_and_trends(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
         assert ("tendances du jour : oui (Google, Wikipédia, Hacker News, annonces X déjà lues) · "
-                "3 posts prévus sur 4 suivent ce qui marche") in txt
+                "veille du marché : non · 3 posts prévus sur 4 suivent ce qui marche") in txt
+        settings.market_watch_enabled = True
+        assert "veille du marché : 5 comptes, une fois par jour" in "\n".join(bmain.config_summary(settings))
         settings.trends_enabled = False
         assert "tendances du jour : non" in "\n".join(bmain.config_summary(settings))
 

@@ -186,7 +186,7 @@ class Bot:
         self.analytics = analytics
         if trends is None and getattr(settings, "trends_enabled", True):
             from .trends import TrendWatch
-            trends = TrendWatch(settings, self.state)
+            trends = TrendWatch(settings, self.state, x=self.x)      # x : la veille du marché
         self.trends = trends
         self._prepare_visual = prepare_visual
         self._prepare_explainer = prepare_explainer

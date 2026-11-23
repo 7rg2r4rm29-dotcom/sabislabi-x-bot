@@ -296,6 +296,7 @@ def config_summary(settings) -> list[str]:
         f"Actu : {len(s.news_feeds)} flux + {len(s.x_news_accounts)} comptes X "
         f"({'lus' if s.x_news_accounts_enabled else 'non lus'}) · tendances du jour : "
         f"{'oui (Google, Wikipédia, Hacker News, annonces X déjà lues)' if s.trends_enabled else 'non'} · "
+        f"veille du marché : {f'{len(s.market_accounts)} comptes, une fois par jour' if s.market_watch_enabled else 'non'} · "
         "3 posts prévus sur 4 suivent ce qui marche",
         f"Budget API X : {s.x_budget_daily_usd:.2f} $/jour, {s.x_budget_monthly_usd:.0f} $/mois · "
         f"Claude : {f'{s.claude_budget_monthly_usd:.0f} $/mois au plus' if s.claude_budget_monthly_usd > 0 else 'sans plafond'}",
