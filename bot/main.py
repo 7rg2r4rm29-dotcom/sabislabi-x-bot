@@ -283,6 +283,7 @@ def config_summary(settings) -> list[str]:
         f"{f' · {s.post_versions} versions par post, la meilleure est gardée' if s.post_versions > 1 else ''}",
         f"Créneaux : {posts} · threads : {threads} · vidéos explicatives : {videos}"
         f"{' (à la place du post prévu le plus proche)' if s.explainer_slots else ''}"
+        f"{f', voix off {s.explainer_voice}' if s.explainer_slots and s.explainer_voice_enabled else ''}"
         f" · aléa de publication 0-{s.publish_jitter_minutes} min",
         f"Rédaction à l'avance : {leads} · délai de validation {s.approval_grace_minutes} min · "
         f"heures calmes {quiet}",
@@ -325,7 +326,8 @@ def _x_reason(e) -> str:
 
 
 def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | None = None,
-              videos: Callable | None = None, out: Callable[[str], None] = print) -> int:
+              videos: Callable | None = None, voice: Callable | None = None,
+              out: Callable[[str], None] = print) -> int:
     """Vérifie Telegram, l'API X (≈ 0,01 $), Claude et le dessin des images. 0 si
     tout va bien, 1 sinon (des images impossibles ne bloquent pas : les posts
     partiraient simplement sans image). N'écrit JAMAIS dans l'état du bot en
@@ -471,6 +473,19 @@ def run_check(settings, *, telegram=None, x=None, llm=None, images: Callable | N
             parts["videos"] = "bad"
             out(f"⚠️ Vidéos : le découpage des extraits ne marche pas ({why}). Les posts garderaient la photo. "
                 "Sur le serveur : .venv/bin/python -m pip install imageio-ffmpeg")
+        # --- Voix off des vidéos explicatives (jamais bloquant : sans elle, les vidéos partent muettes)
+        if getattr(settings, "explainer_voice_enabled", False):
+            try:
+                if voice is None:
+                    from . import voice as voicemod
+                    voice = voicemod.self_test
+                spoke, why = voice(settings)
+            except Exception as e:  # noqa: BLE001
+                spoke, why = False, type(e).__name__
+            if spoke:
+                out(f"✅ Voix off : prête ({why})")
+            else:
+                out(f"⚠️ Voix off : {why}. Les vidéos explicatives partiraient sans voix.")
     finally:
         tmp.cleanup()
     out("=== Résultat : " + ("tout est OK ✅" if ok else "au moins un problème ❌") + " ===")

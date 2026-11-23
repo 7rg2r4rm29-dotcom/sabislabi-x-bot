@@ -866,3 +866,16 @@ class TestExplainerSettings:
         monkeypatch.setenv("EXPLAINER_SLOTS", "nope")
         s = cfg.load_settings()
         assert s.explainer_slots == [] and any("EXPLAINER_SLOTS" in w for w in s.warnings)
+
+
+def test_voice_settings(monkeypatch):
+    """23/11/2026 : voix off des vidéos explicatives ; coupée par défaut, voix « af_heart »."""
+    for k in ("EXPLAINER_VOICE_ENABLED", "EXPLAINER_VOICE", "VOICE_MODEL_DIR"):
+        monkeypatch.delenv(k, raising=False)
+    s = cfg.load_settings()
+    assert (s.explainer_voice_enabled, s.explainer_voice, s.voice_model_dir) == (False, "af_heart", "")
+    monkeypatch.setenv("EXPLAINER_VOICE_ENABLED", "true")
+    monkeypatch.setenv("EXPLAINER_VOICE", " AM_Michael ")
+    monkeypatch.setenv("VOICE_MODEL_DIR", "/opt/voices")
+    s = cfg.load_settings()
+    assert (s.explainer_voice_enabled, s.explainer_voice, s.voice_model_dir) == (True, "am_michael", "/opt/voices")

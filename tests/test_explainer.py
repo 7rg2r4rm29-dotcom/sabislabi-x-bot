@@ -205,3 +205,137 @@ def test_prepare_never_raises(settings, monkeypatch):
     monkeypatch.setattr(ex, "render", boom)
     assert ex.prepare(settings, _draft(visual=None), None) == (None, None, None)
     assert ex.prepare(settings, Draft(kind="explainer", texts=["x"]), None) == (None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# Voix off (accord du propriétaire, 23/11/2026)
+# ---------------------------------------------------------------------------
+import array  # noqa: E402
+import math  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+import wave  # noqa: E402
+
+from bot import voice as vmod  # noqa: E402
+
+
+def tone_voice(seconds_per_word: float = 0.3, calls: list | None = None):
+    """Voix simulée : un vrai son (pas du silence), 0,3 s par mot, comme une voix posée."""
+    def speak(texts, folder):
+        if calls is not None:
+            calls.append(list(texts))
+        out = []
+        for i, text in enumerate(texts):
+            secs = max(0.5, seconds_per_word * len(text.split()))
+            path = folder / f"beat_{i:03d}.wav"
+            pcm = array.array("h", [int(8000 * math.sin(k / 3)) for k in range(int(secs * 8000))])
+            vmod.write_wav(path, pcm.tobytes(), 8000)
+            out.append((path, secs))
+        return out
+    return speak
+
+
+def mean_volume(path) -> float:
+    res = subprocess.run([visuals.ffmpeg_exe(), "-hide_banner", "-nostdin", "-i", str(path), "-af", "volumedetect",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=60)
+    m = re.search(r"mean_volume:\s*(-?[\d.]+) dB", res.stderr or "")
+    return float(m.group(1)) if m else -999.0
+
+
+def test_what_the_voice_says():
+    said = [ex.narration(sc) for sc in ex.scenes_of(PLAN)]
+    assert said[0] == [PLAN["title"]]
+    assert said[1] == [PLAN["scenes"][0]["text"]]                       # le mot en grand n'est pas lu
+    assert said[2] == ["How it works"] + PLAN["scenes"][1]["items"]
+    assert said[3] == ["What changes", PLAN["scenes"][2]["left"], PLAN["scenes"][2]["right"]]
+    assert said[4] == ["As Tesla put it: It works even when the driver wears sunglasses."]
+    assert said[5] == [PLAN["ending"], ex.FOLLOW]
+
+
+def test_scenes_follow_the_voice():
+    scenes = ex.scenes_of(PLAN)
+    spoken = [[2.0], [4.0], [1.0, 2.0, 2.0, 2.0], [1.0, 2.0, 2.0], [3.0], [2.0, 1.5]]
+    timed, placed = ex.voice_timing(scenes, spoken)
+    lead, gap, tail = ex.VOICE_LEAD_S, ex.VOICE_GAP_S, ex.VOICE_TAIL_S
+    assert timed[0].seconds == max(ex.SCENE_MIN_S, lead + 2.0 + tail)
+    assert timed[2].seconds == pytest.approx(lead + 7.0 + 3 * gap + tail)
+    # chaque étape apparaît juste avant d'être dite
+    first_item = lead + 1.0 + gap
+    assert timed[2].starts == pytest.approx([first_item - ex.VOICE_EARLY_S, first_item + 2 + gap - ex.VOICE_EARLY_S,
+                                             first_item + 4 + 2 * gap - ex.VOICE_EARLY_S])
+    assert len(timed[3].starts) == 2 and timed[3].starts[1] > timed[3].starts[0]
+    assert timed[5].starts == pytest.approx([lead + 2.0 + gap - ex.VOICE_EARLY_S])     # la signature, au « Follow »
+    assert placed[0] == (pytest.approx(lead), 0, 0)
+    assert placed[1][0] == pytest.approx(timed[0].seconds + lead)
+    assert scenes[2].starts == []                                                    # les scènes d'origine intactes
+
+
+def test_the_layout_uses_the_voice_starts():
+    sc = ex.Scene("steps", text="How it works", items=["One thing", "Another thing"], starts=[1.0, 3.5])
+    els = ex.Layout(*SMALL).elements(sc)
+    assert [e.start for e in els] == [0.1, 1.0, 3.5]
+
+
+def test_no_voice_beyond_two_minutes():
+    scenes = ex.scenes_of(PLAN)
+    assert ex.voice_timing(scenes, [[30.0]] * len(scenes)) is None
+
+
+def test_narration_track_places_each_sentence(tmp_path):
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    vmod.write_wav(a, array.array("h", [1000] * 800).tobytes(), 8000)          # 0,1 s
+    vmod.write_wav(b, array.array("h", [-2000] * 800).tobytes(), 8000)
+    out = tmp_path / "track.wav"
+    assert ex.narration_track([(0.5, a), (2.0, b)], 3.0, out) == 8000
+    with wave.open(str(out)) as w:
+        frames = array.array("h")
+        frames.frombytes(w.readframes(w.getnframes()))
+    assert len(frames) == 24000
+    assert frames[3999] == 0 and frames[4000] == 1000 and frames[4799] == 1000 and frames[4800] == 0
+    assert frames[16000] == -2000 and frames[-1] == 0
+
+
+@needs_ffmpeg
+def test_render_with_the_voice(tmp_path):
+    calls: list = []
+    out = tmp_path / "v.mp4"
+    assert ex.render(PLAN, out, size=SMALL, fps=4, voice=tone_voice(calls=calls)) is None
+    assert calls == [[text for sc in ex.scenes_of(PLAN) for text in ex.narration(sc)]]   # une seule synthèse
+    expected = ex.total_seconds(ex._with_voice(ex.scenes_of(PLAN), tone_voice(), tmp_path)[0])
+    info = visuals.probe_video(visuals.ffmpeg_exe(), out)
+    assert info.audio and abs(info.duration - expected) < 1.0
+    assert mean_volume(out) > -60                                          # la voix est bien dans la vidéo
+
+
+@needs_ffmpeg
+def test_a_failed_voice_never_blocks_the_video(tmp_path):
+    out = tmp_path / "v.mp4"
+    assert ex.render(PLAN, out, size=SMALL, fps=2, voice=lambda texts, folder: None) is None
+    assert visuals.probe_video(visuals.ffmpeg_exe(), out).audio and mean_volume(out) < -80     # piste muette
+
+    def broken(texts, folder):
+        raise RuntimeError("onnxruntime crashed")
+
+    assert ex.render(PLAN, tmp_path / "w.mp4", size=SMALL, fps=2, voice=broken) is None
+
+
+def test_prepare_speaks_only_when_the_voice_is_ready(settings, monkeypatch):
+    seen = []
+
+    def fake_render(plan, out, photo=None, **kw):
+        seen.append(kw.get("voice"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"mp4")
+        return None
+
+    monkeypatch.setattr(ex, "render", fake_render)
+    ex.prepare(settings, _draft(visual=None), None)
+    assert seen[-1] is None                                                 # voix coupée : vidéo muette
+    settings.explainer_voice_enabled = True
+    monkeypatch.setattr(vmod, "problem", lambda s: None)
+    spoken = []
+    monkeypatch.setattr(vmod, "synthesize", lambda s, texts, folder: spoken.append((s, texts)) or [])
+    ex.prepare(settings, _draft(visual=None), None)
+    assert callable(seen[-1])
+    seen[-1](["Hello."], Path("/tmp"))
+    assert spoken == [(settings, ["Hello."])]

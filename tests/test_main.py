@@ -222,6 +222,17 @@ class TestCheck:
         assert "garderaient la photo" in out and "pip install imageio-ffmpeg" in out
         assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok videos=bad"
 
+    def test_the_voice_is_checked_when_it_is_on_and_never_blocks(self, secret_settings):
+        code, out, _ = _check(secret_settings, images=lambda: (True, ""), voice=lambda s: pytest.fail("coupée"))
+        assert code == 0 and "Voix off" not in out                         # voix coupée : rien à vérifier
+        secret_settings.explainer_voice_enabled = True
+        code, out, _ = _check(secret_settings, images=lambda: (True, ""), voice=lambda s: (True, "af_heart, 1.2 s"))
+        assert code == 0 and "✅ Voix off : prête (af_heart, 1.2 s)" in out
+        code, out, _ = _check(secret_settings, images=lambda: (True, ""),
+                              voice=lambda s: (False, "paquet kokoro-onnx absent"))
+        assert code == 0 and "⚠️ Voix off : paquet kokoro-onnx absent. Les vidéos explicatives partiraient sans voix." in out
+        assert out.splitlines()[-1] == "PARTS telegram=ok x=ok claude=ok images=ok videos=ok"   # l'installateur lit ça
+
     def test_check_really_cuts_a_test_clip(self, secret_settings, monkeypatch):
         from bot import visuals
         calls: list[int] = []
@@ -366,6 +377,14 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert ("vidéos explicatives : lun. 14:30, mer. 14:30, ven. 14:30 (à la place du post prévu le plus "
                 "proche)") in txt
+
+    def test_config_summary_shows_the_voice(self, settings):
+        from bot.config import parse_explainer_slots
+        settings.explainer_slots = parse_explainer_slots("mon@14:30")
+        assert "voix off" not in "\n".join(bmain.config_summary(settings))
+        settings.explainer_voice_enabled = True
+        assert "(à la place du post prévu le plus proche), voix off af_heart" in "\n".join(
+            bmain.config_summary(settings))
 
     def test_config_summary_shows_what_works_and_trends(self, settings):
         txt = "\n".join(bmain.config_summary(settings))

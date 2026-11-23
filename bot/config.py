@@ -257,6 +257,10 @@ class Settings:
     # une fois par jour : MARKET_WATCH_ENABLED ; comptes : `market_accounts` de settings.json).
     market_watch_enabled: bool = False
     market_accounts: list[str] = field(default_factory=lambda: list(DEFAULT_MARKET_ACCOUNTS))
+    # Voix off des vidéos explicatives (Kokoro, sur le serveur : bot/voice.py) ; coupée par défaut.
+    explainer_voice_enabled: bool = False
+    explainer_voice: str = "af_heart"
+    voice_model_dir: str = ""             # vide : ~/xbot-models/kokoro
 
     # --- Budget API X (dollars) ---
     x_budget_daily_usd: float = 1.50
@@ -433,6 +437,9 @@ def load_settings() -> Settings:
         x_news_accounts_enabled=_env_bool("X_NEWS_ACCOUNTS_ENABLED", True),
         trends_enabled=_env_bool("TRENDS_ENABLED", True),
         market_watch_enabled=_env_bool("MARKET_WATCH_ENABLED", False),
+        explainer_voice_enabled=_env_bool("EXPLAINER_VOICE_ENABLED", False),
+        explainer_voice=_env("EXPLAINER_VOICE", "af_heart").strip().lower() or "af_heart",
+        voice_model_dir=_env("VOICE_MODEL_DIR", "").strip(),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),

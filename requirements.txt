@@ -11,5 +11,8 @@ Pillow>=11.0
 imageio-ffmpeg>=0.5.1
 tzdata
 pytest>=8
+# kokoro-onnx : la voix off des vidéos explicatives (modèle Kokoro, licence Apache 2.0, sur le
+# processeur du serveur). Ses fichiers (354 Mo) s'installent une fois : deploy/install_voice.sh.
+kokoro-onnx==0.6.1
 # Optionnel : photos IA (openai). Sans lui, le bot fonctionne normalement.
 openai>=1.50

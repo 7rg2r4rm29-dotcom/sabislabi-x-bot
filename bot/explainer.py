@@ -21,7 +21,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import subprocess
+import tempfile
 import time
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -79,6 +81,9 @@ class Scene:
     right: str = ""
     who: str = ""                   # quote : qui l'a dit
     seconds: float = 0.0
+    # Avec la voix off : quand apparaissent les étapes, les deux côtés comparés ou la signature
+    # (au moment où la voix les dit). Vide : les départs habituels.
+    starts: list[float] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +146,116 @@ def scenes_of(plan: dict) -> list[Scene]:
 
 def total_seconds(scenes: list[Scene]) -> float:
     return sum(sc.seconds for sc in scenes)
+
+
+# ---------------------------------------------------------------------------
+# Voix off : ce qui est dit dans chaque scène, et le calage des scènes sur la voix
+# ---------------------------------------------------------------------------
+VOICE_LEAD_S = 0.3           # silence avant la première phrase d'une scène
+VOICE_GAP_S = 0.35           # entre deux phrases d'une même scène
+VOICE_TAIL_S = 0.6           # après la dernière, avant la scène suivante
+VOICE_EARLY_S = 0.15         # une étape apparaît juste avant d'être dite
+VOICE_TOTAL_MAX_S = 120.0    # au-delà, la vidéo part sans voix (X accepte 140 s)
+
+
+def narration(sc: Scene) -> list[str]:
+    """Les phrases dites pendant la scène, dans l'ordre : le texte écrit à l'écran (jamais autre
+    chose : tout ce qui est dit a été relu). Le mot en grand d'un fait n'est pas lu."""
+    if sc.kind in ("title", "fact"):
+        return [sc.text]
+    if sc.kind == "steps":
+        return ([sc.text] if sc.text else []) + list(sc.items)
+    if sc.kind == "compare":
+        return ([sc.text] if sc.text else []) + [sc.left, sc.right]
+    if sc.kind == "quote":
+        return [f"As {sc.who} put it: {sc.text}"]
+    if sc.kind == "end":
+        return [sc.text, FOLLOW]
+    return []
+
+
+def voice_timing(scenes: list[Scene], spoken: list[list[float]]) -> tuple[list[Scene], list[tuple[float, int, int]]] | None:
+    """Cale les scènes sur la voix. `spoken[i]` : la durée de chaque phrase de la scène i. Rend
+    (scènes recalées, [(départ dans la vidéo, scène, phrase)]) ; None si la vidéo dépasserait
+    VOICE_TOTAL_MAX_S."""
+    out: list[Scene] = []
+    placed: list[tuple[float, int, int]] = []
+    t0 = 0.0
+    for i, sc in enumerate(scenes):
+        durations = spoken[i] if i < len(spoken) else []
+        t = VOICE_LEAD_S
+        starts: list[float] = []
+        for j, secs in enumerate(durations):
+            starts.append(t)
+            placed.append((t0 + t, i, j))
+            t += secs + VOICE_GAP_S
+        seconds = max(SCENE_MIN_S, t - VOICE_GAP_S + VOICE_TAIL_S) if durations else sc.seconds
+        new = dataclasses.replace(sc, seconds=seconds, starts=[])
+        if sc.kind == "steps":
+            first_item = 1 if sc.text else 0
+            new.starts = [max(0.0, s - VOICE_EARLY_S) for s in starts[first_item:]]
+        elif sc.kind == "compare":
+            first_side = 1 if sc.text else 0
+            new.starts = [max(0.0, s - VOICE_EARLY_S) for s in starts[first_side:first_side + 2]]
+        elif sc.kind == "end" and len(starts) >= 2:
+            new.starts = [max(0.0, starts[1] - VOICE_EARLY_S)]
+        out.append(new)
+        t0 += seconds
+    if t0 > VOICE_TOTAL_MAX_S:
+        return None
+    return out, placed
+
+
+def narration_track(placed: list[tuple[float, Path]], total_s: float, out: Path) -> int:
+    """La piste de voix de toute la vidéo : chaque phrase posée à son heure, du silence ailleurs
+    (WAV mono 16 bits). Rend la fréquence d'échantillonnage. Lève une exception si un fichier est
+    illisible ou de format inattendu."""
+    rate = 0
+    clips: list[tuple[float, bytes]] = []
+    for at, path in placed:
+        with wave.open(str(path), "rb") as w:
+            if w.getnchannels() != 1 or w.getsampwidth() != 2:
+                raise ValueError("voix : format inattendu")
+            if rate and w.getframerate() != rate:
+                raise ValueError("voix : fréquences différentes")
+            rate = w.getframerate()
+            clips.append((at, w.readframes(w.getnframes())))
+    if not rate:
+        raise ValueError("voix : aucune phrase")
+    buf = bytearray(int(total_s * rate) * 2)
+    for at, pcm in clips:
+        start = int(at * rate) * 2
+        chunk = pcm[: max(0, len(buf) - start)]
+        buf[start:start + len(chunk)] = chunk
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(buf))
+    return rate
+
+
+def _with_voice(scenes: list[Scene], voice: Callable, workdir: Path) -> tuple[list[Scene], Path] | None:
+    """(scènes recalées, piste de voix) ; None : vidéo sans voix (le bot le dit dans le journal)."""
+    beats = [(i, j, text) for i, sc in enumerate(scenes) for j, text in enumerate(narration(sc)) if text]
+    if not beats:
+        return None
+    spoken = voice([text for _i, _j, text in beats], workdir)
+    if not spoken or len(spoken) != len(beats):
+        return None
+    per_scene: list[list[float]] = [[] for _ in scenes]
+    files: dict[tuple[int, int], Path] = {}
+    for (i, j, _text), (path, secs) in zip(beats, spoken):
+        per_scene[i].append(float(secs))
+        files[(i, len(per_scene[i]) - 1)] = Path(path)
+    timed = voice_timing(scenes, per_scene)
+    if timed is None:
+        log.warning("Vidéo explicative : avec la voix, plus de %.0f s : vidéo sans voix", VOICE_TOTAL_MAX_S)
+        return None
+    new_scenes, placed = timed
+    track = workdir / "narration.wav"
+    narration_track([(at, files[(i, j)]) for at, i, j in placed], total_seconds(new_scenes), track)
+    return new_scenes, track
 
 
 def layout_problem(plan: dict) -> str | None:
@@ -332,7 +447,8 @@ class Layout:
             asc, desc = nf.getmetrics()
             d.text(((dot - nf.getlength(num)) / 2, (dot - asc - desc) / 2), num, font=nf, fill=INK)
             row.alpha_composite(txt, (dot + self.s(30), max(0, (dot - txt.height) // 2) if txt.height < dot else 0))
-            out.append((row, self.margin, 0.5 + i * STEP_S, self.s(30), False))
+            start = sc.starts[i] if i < len(sc.starts) else 0.5 + i * STEP_S
+            out.append((row, self.margin, start, self.s(30), False))
         return self._centered(out, self.s(170), self.h - self.s(120), self.s(40))
 
     def _compare(self, sc: Scene) -> list[Element]:
@@ -362,8 +478,9 @@ class Layout:
         blocks.append((row, self.margin, 0.0, 0, False))
         els = self._centered(blocks, self.s(170), self.h - self.s(120), self.s(40))
         y = els[-1].y
-        els[-1] = Element(left_el, self.margin, y, 0.4, self.s(30))
-        els.append(Element(right_el, self.margin + box_w + gap, y, 1.4, self.s(30)))
+        left_at, right_at = (sc.starts + [0.4, 1.4])[:2] if len(sc.starts) >= 2 else (0.4, 1.4)
+        els[-1] = Element(left_el, self.margin, y, left_at, self.s(30))
+        els.append(Element(right_el, self.margin + box_w + gap, y, right_at, self.s(30)))
         return els
 
     def _quote(self, sc: Scene) -> list[Element]:
@@ -390,8 +507,9 @@ class Layout:
         els = self._centered([(main, self.margin, 0.1, self.s(30), False)], self.s(170), self.h - self.s(330),
                              0)
         y = self.h - self.s(260)
-        els.append(Element(sig, self.margin, y, 0.9, self.s(20)))
-        els.append(Element(fol, self.margin, y + sig.height + self.s(14), 1.1, self.s(20)))
+        sig_at = sc.starts[0] if sc.starts else 0.9
+        els.append(Element(sig, self.margin, y, sig_at, self.s(20)))
+        els.append(Element(fol, self.margin, y + sig.height + self.s(14), sig_at + 0.2, self.s(20)))
         return els
 
 
@@ -529,11 +647,12 @@ def frames(scenes: list[Scene], photo: Path | None = None, *, size: tuple[int, i
 
 
 def render(plan: dict, out: Path, photo: Path | None = None, *, exe: str | None = None,
-           size: tuple[int, int] = (W, H), fps: int = FPS) -> str | None:
-    """Fait la vidéo `out` (MP4 H.264, son muet AAC, lecture immédiate). None si c'est fait,
-    sinon la raison, en français. Ne lève jamais d'exception."""
+           size: tuple[int, int] = (W, H), fps: int = FPS, voice: Callable | None = None) -> str | None:
+    """Fait la vidéo `out` (MP4 H.264, son AAC, lecture immédiate). None si c'est fait, sinon la
+    raison, en français. `voice(textes, dossier) -> [(wav, secondes)]` : la voix off (sinon, ou si
+    elle échoue, une piste muette). Ne lève jamais d'exception."""
     try:
-        return _render(plan, out, photo, exe=exe, size=size, fps=fps)
+        return _render(plan, out, photo, exe=exe, size=size, fps=fps, voice=voice)
     except Exception as e:  # noqa: BLE001
         log.exception("Vidéo explicative : erreur inattendue : %s", e)
         from .visuals import _safe_unlink
@@ -560,13 +679,29 @@ def _last_line(err: bytes, default) -> str:
 
 
 def _render(plan: dict, out: Path, photo: Path | None, *, exe: str | None, size: tuple[int, int],
-            fps: int) -> str | None:
-    from .visuals import _safe_unlink, ffmpeg_exe, probe_video
+            fps: int, voice: Callable | None = None) -> str | None:
+    from .visuals import ffmpeg_exe
     exe = exe or ffmpeg_exe()
     if not exe:
         return "ffmpeg absent"
+    with tempfile.TemporaryDirectory(prefix="xbot-voice-") as tmp:
+        return _render_in(plan, out, photo, exe=exe, size=size, fps=fps, voice=voice, workdir=Path(tmp))
+
+
+def _render_in(plan: dict, out: Path, photo: Path | None, *, exe: str, size: tuple[int, int], fps: int,
+               voice: Callable | None, workdir: Path) -> str | None:
+    from .visuals import _safe_unlink, probe_video
     try:
         scenes = scenes_of(plan)
+        track = None
+        if voice is not None:
+            try:
+                voiced = _with_voice(scenes, voice, workdir)
+            except Exception as e:  # noqa: BLE001 — la voix ne doit jamais empêcher la vidéo
+                log.warning("Vidéo explicative : voix inutilisable (%s), vidéo sans voix", type(e).__name__)
+                voiced = None
+            if voiced is not None:
+                scenes, track = voiced
         images = frames(scenes, photo, size=size, fps=fps)
         first = next(images)                       # la mise en page est vérifiée ici
     except LayoutError as e:
@@ -578,10 +713,11 @@ def _render(plan: dict, out: Path, photo: Path | None, *, exe: str | None, size:
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [exe, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps), "-i", "pipe:0",
-           "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+           *(["-i", str(track)] if track else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]),
            "-map", "0:v:0", "-map", "1:a:0", "-shortest",
            "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-pix_fmt", "yuv420p", "-crf", "21",
-           "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
+           "-c:a", "aac", "-b:a", "128k" if track else "64k", "-ac", "2", "-ar", "44100",
+           "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
     t0 = time.monotonic()
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -611,8 +747,8 @@ def _render(plan: dict, out: Path, photo: Path | None, *, exe: str | None, size:
     if info is None or info.duration < 2.0 or out.stat().st_size > VIDEO_MAX_BYTES:
         _safe_unlink(out)
         return "vidéo inutilisable"
-    log.info("Vidéo explicative faite : %d scènes, %.0f s, %.1f Mo, en %.0f s", len(scenes), info.duration,
-             out.stat().st_size / 1e6, time.monotonic() - t0)
+    log.info("Vidéo explicative faite : %d scènes, %.0f s, %.1f Mo, %s, en %.0f s", len(scenes), info.duration,
+             out.stat().st_size / 1e6, "avec la voix off" if track else "sans voix", time.monotonic() - t0)
     return None
 
 
@@ -647,7 +783,12 @@ def prepare(settings, draft, writer, tag: str = "explainer", *,
                 photo = Path(path)
         folder = utils.MEDIA_DIR / "explainers"
         out = folder / f"{visuals._safe_tag(tag)}_{time.strftime('%Y%m%d-%H%M%S')}.mp4"
-        why = render(plan, out, photo)
+        from . import voice as voicemod
+        why_no_voice = voicemod.problem(settings)
+        speak = None if why_no_voice else (lambda texts, d: voicemod.synthesize(settings, texts, d))
+        if why_no_voice and getattr(settings, "explainer_voice_enabled", False):
+            log.warning("Vidéo explicative sans voix : %s", why_no_voice)
+        why = render(plan, out, photo, voice=speak)
         if why is None:
             visuals._cleanup_old(folder, EXPLAINERS_KEEP)
             return str(out), "video", None
