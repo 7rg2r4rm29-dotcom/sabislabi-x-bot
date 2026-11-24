@@ -488,6 +488,15 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   activée, et la bio refaite le 24/11 ne dit pas que le compte est automatique. C'est son compte et son
   réglage : lui expliquer simplement, lui donner le chemin dans l'app (Réglages → Votre compte →
   Informations sur le compte → Automatisation) et une bio qui le dit ; ne jamais le faire à sa place.
+  **Sa réponse du 24/11 au soir : l'étiquette n'est PAS activée, et il préférerait ne pas l'activer
+  (« c'est mieux, non ? »).** Réponse donnée, après relecture mot à mot de la page : non, ce n'est pas
+  mieux. C'est une obligation (« All automated accounts using the X API must meet these requirements »,
+  « Automated accounts must be labeled »), cacher qu'un compte est un robot figure dans la liste de ce
+  qui fait suspendre ou bannir (« Deceptive Bots: Impersonating humans, hiding bot identity »), et rien
+  ne dit que l'étiquette réduit la portée (la page n'en parle pas, aucune donnée trouvée). Recommandé :
+  l'activer et ajouter « Automated account run by @… » dans la bio. La décision reste la sienne : en
+  attente. S'il choisit de ne pas l'activer, le noter ici comme un risque qu'il accepte en connaissance
+  de cause, et ne plus insister.
 - **Ce que le code de X dit vraiment (lecture du spécialiste du 24/11/2026, vérifiée à la main dans
   `author_cold_start.rs`)** — à connaître avant de proposer quoi que ce soit sur la portée :
   - **poids** : partage par copie du lien 20, réponse 5 (20 entre deux comptes qui se suivent), partage
