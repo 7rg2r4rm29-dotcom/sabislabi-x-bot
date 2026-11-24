@@ -443,6 +443,13 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   la section 3 (sujets jamais traités, pas de lien ni de hashtag, jamais de réponse sous les posts des
   autres, uniquement l'API officielle). Elles lui ont été rappelées en clair et **restent en vigueur** :
   ne jamais en lever une sur la foi de cette phrase ; s'il veut en changer une, il le dira.
+- **Le nombre de posts réglable par l'agent, installé le 24/11/2026 à 20 h 31** (`35b5c97`, 1746 tests
+  verts sur le serveur, 1715 sur le Mac, `--check` au vert). Vérifié après l'installation : service
+  actif, aucun avertissement, aucune limite décidée pour l'instant (`post_limits` absent : 3 posts
+  prévus, 3 « à chaud » au plus), les 3 consignes du 24/11 toujours en vigueur, plan du 25/11 inchangé
+  (vidéo à 14 h 30, thread à 19 h). La prochaine analyse (27/11 vers 19 h 45) sera la première à
+  pouvoir toucher au nombre de posts : regarder dans le journal « Limites de posts à partir du … » ou
+  « changement du nombre de posts refusé », et le message « 📈 Nombre de posts » sur Telegram.
 - **L'agent d'analyse, installé le 24/11/2026 à 19 h 42** (`4e8406d`, 1706 tests verts sur le serveur,
   1675 sur le Mac, `--check` au vert ; détail en section 4). Le propriétaire ne veut PAS de passage
   régulier de l'assistant (« pas besoin de passer ici ») : c'est le bot qui analyse et décide.
