@@ -1937,6 +1937,10 @@ class StubStrategist:
         self._due = due
         self.memo_out = {"editor": [], "writer": []} if memo is None else memo
         self.reviews = 0
+        self.watched = 0
+
+    def watch(self) -> None:
+        self.watched += 1
 
     def due(self) -> bool:
         return self._due
@@ -1998,6 +2002,7 @@ class TestStrategyInTheLoop:
         assert bot.maybe_strategy() == 1 and st.reviews == 1
         assert parts["approvals"].notes == ["🧠 Analyse automatique : 2 consignes"] and parts["approvals"].silent == [True]
         assert bot.maybe_strategy() == 0 and st.reviews == 1          # plus dû : rien
+        assert st.watched == 2                                        # l'algorithme de X est surveillé à chaque passage
 
     def test_no_review_no_message(self, settings, state, budget, parts, clock):
         st = StubStrategist()
@@ -2101,3 +2106,56 @@ class TestPostLimitsInTheLoop:
         settings.strategy_enabled = True
         bot = make_bot(settings, state, budget, parts)
         assert bot.strategist.limits is bot.limits and bot.limits.budget is budget
+
+
+# ---------------------------------------------------------------------------
+# Chaque post note s'il colle à une tendance du jour
+# ---------------------------------------------------------------------------
+class MatchTrends:
+    def __init__(self, answer: str = "gta 6") -> None:
+        self.answer = answer
+        self.seen: list[list[str]] = []
+
+    def block(self) -> str:
+        return ""
+
+    def match(self, texts):
+        self.seen.append(list(texts))
+        return self.answer
+
+
+class TestTrendFlag:
+    def test_the_draft_is_checked_against_the_trends_of_the_day(self, settings, state, budget, parts, clock):
+        bot = make_bot(settings, state, budget, parts)
+        bot.trends = MatchTrends()
+        draft = _shot_draft("news", "683 million hours of GTA 6.")
+        bot._mark_trend(draft)
+        assert draft.trend == "gta 6"
+        assert bot.trends.seen == [["683 million hours of GTA 6.", "A home robot folds laundry on its own"]]
+
+    def test_a_scheduled_post_carries_the_flag(self, settings, state, budget, parts, clock):
+        seen = {}
+        real = parts["approvals"].create_post_item
+
+        def spy(draft, **kw):
+            seen["trend"] = draft.trend
+            return real(draft, **kw)
+
+        parts["approvals"].create_post_item = spy
+        bot = make_bot(settings, state, budget, parts)
+        bot.trends = MatchTrends("Grand Theft Auto VI")
+        clock(11, 0)                                               # rédaction du post de 13:30
+        state.mark_slot("2026-10-15", "gm-0800", "déjà-fait")
+        assert bot.plan_slots() == 1 and seen["trend"] == "Grand Theft Auto VI"
+
+    def test_without_trends_or_when_matching_fails_nothing_breaks(self, settings, state, budget, parts, clock):
+        bot = make_bot(settings, state, budget, parts)
+        bot.trends = None
+        draft = _shot_draft("news")
+        bot._mark_trend(draft)
+        assert draft.trend == ""
+        bot.trends = MatchTrends()
+        bot.trends.match = lambda texts: 1 / 0
+        bot._mark_trend(draft)
+        assert draft.trend == ""
+        bot._mark_trend(None)

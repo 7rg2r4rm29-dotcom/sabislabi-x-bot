@@ -58,10 +58,30 @@ class FakeBlock:
     def __init__(self, text: str) -> None:
         self.text = text
         self.refreshed = 0
+        self.changed = False                     # X a-t-il changé quelque chose depuis la dernière analyse ?
+        self.brief_wanted = False
+        self.briefs = 0
 
     def refresh(self, force: bool = False):
         self.refreshed += 1
         return True
+
+    def changed_since(self, when) -> bool:
+        return self.changed
+
+    def brief_due(self) -> bool:
+        return self.brief_wanted
+
+    def make_brief(self, writer) -> bool:
+        self.briefs += 1
+        self.brief_wanted = False
+        return True
+
+    def brief_fr(self) -> str:
+        return "X récompense surtout les réponses et les citations."
+
+    def brief(self):
+        return {"at": "x"} if self.briefs else None
 
     def block(self) -> str:
         return self.text
@@ -380,3 +400,53 @@ def test_without_the_limits_module_the_field_is_ignored(settings, state, clock):
     writer = FakeWriter(proposal(limits=MORE_BREAKING))
     memo = make(settings, state, writer).review()
     assert memo["limits"] is None and memo["limits_note"] == "" and writer.limits_seen == ""
+
+
+# ---------------------------------------------------------------------------
+# S'adapter à l'algorithme : le spécialiste relit le code, et l'analyse n'attend pas trois jours
+# ---------------------------------------------------------------------------
+def test_the_algorithm_is_watched_every_day_for_free(settings, state, clock):
+    st = make(settings, state)
+    st.watch()
+    st.watch()
+    assert st.algo.refreshed == 2                # (AlgoWatch.refresh ne lit vraiment qu'une fois par jour)
+    make(settings, state, algo=False).watch()    # sans veille : rien, pas d'erreur
+
+
+def test_when_x_changes_its_algorithm_the_review_does_not_wait_three_days(settings, state, clock):
+    clock(9, 0, day=10)
+    st = make(settings, state)
+    st.review()
+    clock(9, 0, day=11)
+    assert st.due() is False                     # le lendemain, rien de neuf chez X : on attend
+    st.algo.changed = True
+    clock(4, 0, day=11)
+    assert st.due() is False                     # la nuit : jamais
+    clock(8, 0, day=11)
+    assert st.due() is True                      # X a changé quelque chose, 23 h après la dernière analyse
+    assert st.review() is not None
+    clock(9, 0, day=11)
+    assert st.due() is False                     # une heure après : pas deux analyses de suite
+
+
+def test_the_specialist_rereads_the_code_before_the_review_when_needed(settings, state, clock):
+    st = make(settings, state)
+    st.algo.brief_wanted = True
+    memo = st.review()
+    assert st.algo.briefs == 1 and memo["algo_brief_new"] is True
+    assert "🔬 L'algorithme de X, relu par l'agent spécialiste : X récompense surtout les réponses" in st.report_fr(memo)
+    clock(9, 0, day=20)
+    memo2 = st.review()
+    assert st.algo.briefs == 1 and memo2["algo_brief_new"] is False and "🔬" not in st.report_fr(memo2)
+
+
+def test_the_first_reading_of_the_code_does_not_wait_three_days_either(settings, state, clock):
+    clock(9, 0, day=10)
+    st = make(settings, state)
+    st.review()                                  # une analyse faite avant que le spécialiste existe
+    st.algo.brief_wanted = True                  # il n'a encore jamais lu le code
+    clock(9, 0, day=11)
+    assert st.due() is True
+    assert st.review() is not None and st.algo.briefs == 1
+    clock(9, 0, day=12)
+    assert st.due() is False                     # c'est fait : retour au rythme de trois jours

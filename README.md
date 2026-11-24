@@ -124,13 +124,18 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
     pourquoi (« 🎯 Formats … »).
 - **Une analyse automatique tous les trois jours** (ta consigne du 24 novembre 2026 : « analyse avec les
   agents et prends les bonnes décisions, tout est question de trend, de chiffre et d'algorithme ») :
-  - un premier agent étudie trois choses : **tes chiffres** (ce qui marche par sujet, par format, par
-    heure, par longueur, par façon de commencer ou de finir), **les tendances** du moment, et
-    **l'algorithme de X**. X publie son code : le bot le relit tout seul et sait, par exemple, qu'une
-    réponse ou une citation pèsent sept fois plus qu'un like, et ce que X a changé cette semaine ;
+  - **un agent spécialiste lit le code de l'algorithme de X.** X publie ce code : le bot en relit les
+    réglages chaque jour, gratuitement, et dès que X change quelque chose (ou une fois par semaine),
+    cet agent relit dix fichiers du code et écrit un mémo : ce que X récompense, ce qu'il punit, comment
+    il traite un petit compte, ce que ça veut dire pour toi. Quand X change son algorithme, l'analyse
+    est refaite dès le lendemain, sans attendre trois jours ;
+  - **un agent analyste** étudie ensuite trois choses : **tes chiffres** (ce qui marche par sujet, par
+    format, par heure, par longueur, par façon de commencer ou de finir, et si les posts liés à une
+    tendance du jour font mieux que les autres), **les tendances** du moment, et le mémo sur
+    **l'algorithme** ;
   - il en tire quelques décisions : quelles histoires mettre en premier, comment écrire ;
-  - un second agent, plus sévère, relit chaque décision et refuse celles qui reposent sur trop peu de
-    posts ou qui toucheraient à tes règles (sujets interdits, liens, jargon, sujets pour initiés) ;
+  - **un agent relecteur**, plus sévère, relit chaque décision et refuse celles qui reposent sur trop
+    peu de posts ou qui toucheraient à tes règles (sujets interdits, liens, jargon, sujets pour initiés) ;
   - ce qui reste est appliqué dès le post suivant, et tu reçois un petit message « 🧠 Analyse
     automatique » sur Telegram qui te dit ce qui a été vu et décidé. **Tu n'as rien à valider.**
   - **il peut aussi changer le nombre de posts par jour** (ton accord du 24 novembre : « il peut régler
@@ -139,7 +144,14 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
     lendemain. Avant tout, le programme vérifie l'argent : si un post de plus faisait dépasser 80 % de
     ton plafond Claude sur un mois, la hausse est refusée d'office. Le message Telegram te le dit
     (« 📈 Nombre de posts… ») ;
-  - coût : environ 2 $ de Claude par mois.
+  - coût : 4 à 5 $ de Claude par mois pour les trois agents.
+
+**Le geste qui aide le plus, et que le bot ne peut pas faire à ta place** (lu dans le code de X le
+24 novembre 2026) : X donne un coup de pouce aux posts des petits comptes pendant leurs deux premières
+heures, et il choisit lesquels pousser d'après **les likes reçus dans les toutes premières vues**. Un
+ou deux likes tôt doublent ou triplent les chances d'un post d'être montré à des inconnus. Si tu likes
+chaque post depuis ton compte personnel dans l'heure, tu actionnes ce levier. Le bot, lui, n'a pas le
+droit de liker automatiquement.
 - **La veille du marché** (ton accord du 23/11 : tes crédits API couvrent la dépense) : une fois par
   jour, le bot lit les derniers posts de 5 gros comptes qui racontent la tech et l'IA à tout le monde, et
   montre au rédacteur en chef ceux qui font le plus réagir, pour s'inspirer du genre d'histoire, jamais

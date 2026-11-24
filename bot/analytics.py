@@ -238,6 +238,8 @@ class Analytics:
             "test": bool(meta.get("style_test")),
             "tweets": len(it.get("texts") or []),
         }
+        if "trend" in meta:      # noté depuis le 24/11/2026 : le post collait-il à une tendance du jour ?
+            p["fmt"]["trend"] = bool(meta.get("trend"))
 
     def _maybe_record_followers(self) -> None:
         """Nombre d'abonnés, une fois par jour (0,01 $ la lecture). `me()` est
@@ -531,6 +533,10 @@ class Analytics:
             + table(lambda p: "yes" if _FAMOUS_RE.search(first_line(p)) else "no") + ".",
             "- First line sounds like breaking news (just, now, finally, new, first): "
             + table(lambda p: "yes" if _BREAKING_RE.search(first_line(p)) else "no") + ".",
+            "- Linked to something people were looking up that day (rising Google searches, most-read Wikipedia "
+            "pages; noted since November 24, 2026): "
+            + table(lambda p: ("linked to a trend" if fmt_of(p).get("trend") else "not linked")
+                    if "trend" in fmt_of(p) else None) + ".",
             "- Test posts (1 in 4 tries something else) against the rest: "
             + table(lambda p: ("test" if fmt_of(p).get("test") else "follows what works") if "test" in fmt_of(p) else None) + ".",
             "OUR BEST POSTS:",

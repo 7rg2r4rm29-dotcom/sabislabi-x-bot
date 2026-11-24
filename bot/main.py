@@ -659,6 +659,11 @@ def run_strategy_preview(settings, state_path=None, *, llm=None, writer=None, ht
         memo = strategist.review(force=True)
         algo_text = algo.block()
         out(f"Algorithme de X : {'lu (' + str(len(algo_text)) + ' caractères)' if algo_text else 'non lu'}")
+        brief = algo.brief()
+        if brief:
+            out(f"--- Mémo de l'agent spécialiste ({brief.get('files')} fichiers du code de X) ---")
+            out(algo._brief_lines(brief))
+            out("  En français : " + str(brief.get("summary_fr") or ""))
         if not memo:
             out("❌ Pas d'analyse : pas assez de posts mesurés, ou Claude n'a pas répondu (voir le journal).")
             return EXIT_FAIL

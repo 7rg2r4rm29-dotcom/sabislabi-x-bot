@@ -197,6 +197,34 @@ def x_most_liked(cache, now, hours: int = X_LIKED_HOURS, n: int = MAX_X) -> list
     return rows[:n]
 
 
+# Un post « colle » à une tendance quand il en reprend les mots (ou le sigle). Mots trop communs pour
+# compter, seuls ou dans une expression :
+_MATCH_STOP = frozenset("the and for with from that this what when where your you are was will has have new news live "
+                        "today video videos game games score scores results update updates how why who vs day week "
+                        "year world people movie movies show time season episode".split())
+
+
+def _tokens(text) -> list[str]:
+    return re.findall(r"[a-z0-9]+", str(text or "").lower())
+
+
+def trend_matches(term: str, text_tokens: set[str]) -> bool:
+    """Le texte reprend-il cette tendance ? Un mot précis (5 lettres au moins) ; les deux mots
+    d'une expression de deux mots ; deux tiers des mots d'une expression plus longue, ou son sigle
+    (« Grand Theft Auto VI » ↔ « GTA »)."""
+    tokens = [t for t in _tokens(term) if t not in _MATCH_STOP]
+    sig = [t for t in tokens if len(t) >= 3 or t.isdigit()]
+    if not sig:
+        return False
+    if len(sig) == 1:
+        return len(sig[0]) >= 5 and sig[0] in text_tokens
+    hits = sum(1 for t in sig if t in text_tokens)
+    if hits >= (len(sig) if len(sig) == 2 else -(-len(sig) * 2 // 3)):
+        return True
+    acronym = "".join(t[0] for t in tokens if len(t) >= 3 and not t.isdigit())
+    return len(acronym) >= 3 and acronym in text_tokens
+
+
 def engagement(row: dict) -> int:
     """Réactions d'un post : likes, partages (comptés double : ils emmènent le post plus loin)
     et réponses."""
@@ -411,6 +439,28 @@ class TrendWatch:
             return []
         rows = entry.get("rows")
         return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def match(self, texts: list[str]) -> str:
+        """La tendance du jour (recherche Google qui monte, page Wikipédia très lue) à laquelle
+        ces textes collent, ou "". Sans réseau : ce qui a déjà été relevé. C'est ce qui permet de
+        mesurer, post par post, si suivre les tendances rapporte. Ne lève jamais d'exception."""
+        try:
+            if not self.enabled():
+                return ""
+            tokens: set[str] = set()
+            for t in texts or []:
+                tokens.update(_tokens(t))
+            if not tokens:
+                return ""
+            now = now_local()
+            for key, field in (("google_us", "term"), ("google_gb", "term"), ("wiki", "title")):
+                for r in self._rows(key, now):
+                    term = str(r.get(field) or "").replace("_", " ").strip()
+                    if term and trend_matches(term, tokens):
+                        return _short(term, 60)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Tendances : rapprochement impossible (%s)", e)
+        return ""
 
     def block(self) -> str:
         """Le bloc (anglais) donné à la rédaction en chef ; "" sans tendance."""

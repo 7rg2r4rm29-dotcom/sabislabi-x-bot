@@ -202,12 +202,26 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     post, chiffre ou nom connu en première ligne, tendance sur 7 jours, meilleurs et moins bons posts,
     chaque chiffre avec son nombre de posts), **l'algorithme de X** et les tendances du jour (veille du
     marché comprise) ;
-  - **l'algorithme de X** (`AlgoWatch`) : lecture gratuite de deux fichiers publics de
-    `xai-org/x-algorithm` sur raw.githubusercontent.com (jamais x.com) : le journal « Notable Updates » du
-    README et les poids du classement (`home-mixer/params/param.rs` : réponse 5.0, citation 5.0, like
-    0.708, signalement −234, « pas intéressé » −53…). Relu avant chaque analyse (72 h), ce qui a changé
-    depuis la lecture précédente est noté (`algo_watch.changes`) et dit au propriétaire. X modifie ce
-    dépôt presque chaque jour ;
+  - **l'algorithme de X** (`AlgoWatch`, consigne du propriétaire, 24/11/2026 au soir : « surtout, ils
+    analysent bien les algorithmes et repèrent ce qui marche, ils sont plusieurs pour ça donc ils doivent
+    s'adapter aux trends et à l'algorithme X »). Tout se lit dans le dépôt public `xai-org/x-algorithm`,
+    sur raw.githubusercontent.com (jamais x.com), que X modifie presque chaque jour :
+    - **chaque jour, gratuitement** (`refresh`, via `Strategist.watch` à chaque tour) : le journal
+      « Notable Updates » du README et les poids du classement (`home-mixer/params/param.rs`). Ce qui a
+      changé est noté (`algo_watch.changes`, `weights_changed_at`, `updates_changed_at`) ;
+    - **l'agent spécialiste** (`AlgoWatch.make_brief`, `Writer.algo_brief`, appel `algo-brief`,
+      réflexion longue, environ 0,30 $) lit dix fichiers du code (`algo.BRIEF_FILES` : README,
+      paramètres, calcul du score `xai-value-model/scoring.rs` et `weights.rs`, « démarrage à froid »
+      `home-mixer/scorers/author_cold_start.rs`, fil vidéo, filtre des doublons, règles de sanction) et
+      rend un mémo en huit rubriques (ce qui est récompensé, puni, comment un auteur peu vu est traité,
+      plusieurs posts du même auteur, photos et vidéo, ce qui fait filtrer un post ou un compte, ce qui a
+      changé, ce que ça veut dire pour nous), avec le nom et la valeur de chaque réglage. Consigne
+      stricte : seulement ce que disent les fichiers, jamais ses souvenirs. Refait quand X a changé un
+      poids ou son journal, sinon une fois par semaine, jamais deux fois en 20 heures ;
+    - **l'analyse n'attend plus trois jours** quand X change quelque chose (ou tant que le spécialiste
+      n'a jamais lu le code) : `Strategist.due` la relance dès 20 heures après la précédente ;
+    - le mémo est donné à l'analyste ET au relecteur (`AlgoWatch.block`), et son résumé en français au
+      propriétaire (« 🔬 L'algorithme de X, relu par l'agent spécialiste ») ;
   - **l'analyste** (`Writer.strategy_review`, appel `strategy`, réflexion longue) propose au plus 5
     consignes pour le choix des histoires, 5 pour l'écriture et une idée pour les posts d'essai, chacune
     avec son fondement (nos chiffres, l'algorithme ou les tendances) et ses chiffres ;
@@ -236,8 +250,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     moyenne, 0,99x : rien ne justifie d'en couper un ») ;
   - le propriétaire reçoit un message Telegram silencieux « 🧠 Analyse automatique » : ce que montrent
     les chiffres, les décisions en français, ce que X a changé. Rien à valider ;
-  - coût mesuré : 0,18 à 0,20 $ par analyse, environ 2 $ par mois. `--preview strategy` la lance pour de
-    vrai sur une copie de l'état, sans rien appliquer ;
+  - **suivre les tendances, mesuré** : chaque post note s'il colle à une tendance du jour
+    (`TrendWatch.match` : mots ou sigle d'une recherche Google qui monte ou d'une page Wikipédia très
+    lue, comparés au texte du post et aux titres de ses sources ; `Bot._mark_trend` → `meta.trend` →
+    `fmt.trend`, noté depuis le 24/11/2026). La feuille de chiffres dit donc si les posts « liés à une
+    tendance » font mieux que les autres : l'analyste décide sur des chiffres s'il faut y coller plus ;
+  - coût mesuré : 0,18 à 0,25 $ par analyse, plus 0,30 $ quand le spécialiste relit le code : 4 à 5 $
+    par mois en tout. `--preview strategy` lance le tout pour de vrai sur une copie de l'état, sans rien
+    appliquer ;
   - **essais réels du 24/11** : au 1er, une consigne contredisait la règle « tout est dans la ligne 1 »
     (« garder le fait clé pour la fin »), une autre poussait l'actu du jour (GTA VI) pour trois jours, et
     le résumé citait une consigne refusée → l'analyste et le relecteur connaissent maintenant la façon
@@ -373,7 +393,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
   une vidéo fabriquée sur place ; Wikimedia aussi ; les vidéos explicatives sont fabriquées en petit avec
-  le vrai ffmpeg) ; 1715 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
+  le vrai ffmpeg) ; 1752 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
@@ -443,6 +463,31 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   la section 3 (sujets jamais traités, pas de lien ni de hashtag, jamais de réponse sous les posts des
   autres, uniquement l'API officielle). Elles lui ont été rappelées en clair et **restent en vigueur** :
   ne jamais en lever une sur la foi de cette phrase ; s'il veut en changer une, il le dira.
+- **Ce que le code de X dit vraiment (lecture du spécialiste du 24/11/2026, vérifiée à la main dans
+  `author_cold_start.rs`)** — à connaître avant de proposer quoi que ce soit sur la portée :
+  - **poids** : partage par copie du lien 20, réponse 5 (20 entre deux comptes qui se suivent), partage
+    par message 5, citation 5, abonnement 4, partage 2,1, repost 1, like 0,7, temps passé après un clic
+    0,385 ; signalement −234, masquer l'auteur −58,8, « pas intéressé » −53, bloquer −31 ;
+  - **coup de pouce aux comptes peu vus** (« cold start ») : pour un post original (ni réponse ni
+    repost) d'un auteur de 50 000 abonnés au plus, vu moins de 200 fois et vieux de 2 heures au plus.
+    À chaque fil demandé, UN post éligible est remonté vers la 15e place, tiré au sort selon ses likes
+    rapportés à ses vues (`Beta(0,75 + likes ; 49,25 + vues − likes)`). Tous nos posts y sont éligibles
+    (toujours moins de 200 vues) : **un ou deux likes dans les premières vues doublent ou triplent leurs
+    chances** (0 like sur 40 vues : 0,8 % ; 1 like : 1,9 % ; 2 likes : 3 %). C'est le levier le plus
+    net trouvé à ce jour, et le bot ne peut pas l'actionner (pas de like automatique) : dit au
+    propriétaire le 24/11, qui peut liker chaque post depuis son compte personnel ;
+  - **photos et vidéos** : ouvrir une vidéo ou une photo ne rapporte presque rien dans le fil principal
+    (`VideoOpenWeight`, `VqvWeight`, `PostVideoWeight` à 0, `PhotoExpandWeight` 0,05) ; c'est le temps
+    passé et la lecture jusqu'au bout qui comptent (mises à jour des 8 et 13/10/2026) ;
+  - **ce qui fait limiter un compte** : textes en double (étiquette « copypasta »), et un score
+    « llm_slop » (contenu d'IA sans valeur) qui étiquette un post 30 jours ou un compte 7 jours ; ces
+    posts ne sont alors plus recommandés aux non-abonnés mais restent visibles des abonnés. Le rapport
+    d'octobre ne montrait aucune étiquette ; **celui de novembre (vers le 7/12) est à regarder de
+    près**, puisque nos posts ne sortent presque jamais du cercle des abonnés ;
+  - plusieurs posts du même auteur dans un même fil : chaque post suivant est minoré.
+- **Agent spécialiste de l'algorithme et mesure des tendances, installés le 24/11/2026 au soir** (voir
+  la ligne d'installation plus bas). Essai réel avant installation : 10 fichiers lus, mémo complet,
+  puis analyse : 3 consignes de choix, 1 d'écriture, 2 refusées, changement du nombre de posts refusé.
 - **Le nombre de posts réglable par l'agent, installé le 24/11/2026 à 20 h 31** (`35b5c97`, 1746 tests
   verts sur le serveur, 1715 sur le Mac, `--check` au vert). Vérifié après l'installation : service
   actif, aucun avertissement, aucune limite décidée pour l'instant (`post_limits` absent : 3 posts

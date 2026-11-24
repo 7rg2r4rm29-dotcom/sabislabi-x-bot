@@ -243,6 +243,7 @@ class Bot:
         finally:
             self.writer.regen_item_id = None
         if draft is not None and getattr(draft, "texts", None):
+            self._mark_trend(draft)
             # L'image va avec le texte : nouvelle version, nouvelle photo.
             path, image_kind, second = self._visual(draft,
                                                     f"{kind}_{today_str()}_v{int(item.get('regen_count') or 0)}")
@@ -765,6 +766,7 @@ class Bot:
                         silent=True)
                     return None
                 draft = self.writer.fallback_post(kind)
+            self._mark_trend(draft)
             image_path, image_kind, second = self._visual(draft, f"{kind}_{date}")
             jitter_s = max(0, int(self.settings.publish_jitter_minutes)) * 60
             publish_at = occ + timedelta(seconds=round(self.rng.uniform(0, jitter_s)))
@@ -898,6 +900,22 @@ class Bot:
         log.info("Rédaction %s : %s", kind,
                  "post d'essai (autre chose que ce qui marche)" if test else "suit ce qui marche")
         return self._perf(test), test
+
+    def _mark_trend(self, draft) -> None:
+        """Note sur le brouillon la tendance du jour à laquelle il colle (recherche Google, page
+        Wikipédia), d'après son texte et les titres de ses sources : les statistiques diront
+        ensuite si suivre les tendances rapporte (`fmt.trend`)."""
+        matcher = getattr(self.trends, "match", None)
+        if not callable(matcher) or draft is None:
+            return
+        try:
+            texts = [str((getattr(draft, "texts", None) or [""])[0])]
+            texts += [str(getattr(s, "title", "") or "") for s in getattr(draft, "sources", None) or []]
+            draft.trend = str(matcher(texts) or "")
+            if draft.trend:
+                log.info("Tendance du jour reprise par ce post : %s", draft.trend)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Tendance du post non notée (%s)", e)
 
     @staticmethod
     def _mark_style_test(draft, test: bool) -> None:
@@ -1077,6 +1095,7 @@ class Bot:
         if draft is None or not getattr(draft, "texts", None):
             log.info("Réactif : rien d'assez fort pour l'instant")
             return 0
+        self._mark_trend(draft)
         image_path, image_kind, second = self._visual(draft, f"reactive_{today_str()}")
         now = now_local()
         item = self.approvals.create_post_item(
@@ -1123,7 +1142,12 @@ class Bot:
         relues par un second agent, puis résumées au propriétaire. Optionnel : cède au budget
         Claude, et attend si Claude est en panne."""
         st = self.strategist
-        if st is None or not st.due():
+        if st is None:
+            return 0
+        watch = getattr(st, "watch", None)
+        if callable(watch):
+            watch()                # chaque jour, gratuit : ce que X a changé dans son algorithme
+        if not st.due():
             return 0
         if self._claude_down():
             return 0

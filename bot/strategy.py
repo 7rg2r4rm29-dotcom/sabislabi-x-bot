@@ -32,7 +32,8 @@ from .x_api import contains_url
 
 log = logging.getLogger("xbot.strategy")
 
-EVERY_DAYS = 3               # une analyse tous les trois jours
+EVERY_DAYS = 3               # une analyse tous les trois jours…
+REACT_MIN_GAP_H = 20         # … ou dès le lendemain quand X a changé son algorithme
 MAX_AGE_DAYS = 10            # des consignes plus vieilles ne sont plus suivies
 MIN_POSTS = 20               # posts mesurés avant la première analyse
 MAX_DIRECTIVES = 5
@@ -121,7 +122,29 @@ class Strategist:
         if not (RUN_HOURS[0] <= now.hour < RUN_HOURS[1]):
             return False
         tried = parse_iso((self.state.data.get("strategy_run") or {}).get("tried_at"))
-        return tried is None or now - tried >= timedelta(days=EVERY_DAYS)
+        if tried is None or now - tried >= timedelta(days=EVERY_DAYS):
+            return True
+        # X a modifié son classement depuis la dernière analyse, ou l'agent spécialiste n'a encore
+        # jamais lu le code : on n'attend pas trois jours.
+        try:
+            if self.algo is None or now - tried < timedelta(hours=REACT_MIN_GAP_H):
+                return False
+            if self.algo.changed_since(tried):
+                return True
+            brief = getattr(self.algo, "brief", None)
+            return callable(brief) and brief() is None and bool(self.algo.brief_due())
+        except Exception as e:  # noqa: BLE001
+            log.warning("Analyse : veille de l'algorithme illisible (%s)", e)
+            return False
+
+    def watch(self) -> None:
+        """Chaque jour, gratuitement : relire le journal et les poids de l'algorithme de X. C'est
+        ce qui permet à `due` de réagir dès qu'ils changent. Ne lève jamais d'exception."""
+        if self.algo is not None:
+            try:
+                self.algo.refresh()
+            except Exception as e:  # noqa: BLE001
+                log.warning("Analyse : veille de l'algorithme impossible (%s)", e)
 
     # ---- L'analyse ----------------------------------------------------
     def review(self, force: bool = False) -> dict | None:
@@ -144,8 +167,12 @@ class Strategist:
             log.info("Analyse : pas assez de posts mesurés (%d sur %d), consignes inchangées", n_posts, MIN_POSTS)
             return None
         algo = ""
+        new_brief = False
         if self.algo is not None:
             self.algo.refresh()
+            maker = getattr(self.algo, "make_brief", None)
+            if callable(maker) and self.algo.brief_due():
+                new_brief = bool(maker(self.writer))        # l'agent spécialiste relit le code de X
             algo = self.algo.block() or ""
         trends = ""
         if self.trends is not None:
@@ -216,7 +243,7 @@ class Strategist:
                                  "gap": " ".join(str(f.get("gap") or "").split())[:60]})
         memo = {"at": iso(now_local()), "posts": n_posts, "editor": kept["editor"], "writer": kept["writer"],
                 "test": test, "findings": findings, "dropped": dropped, "limits": adopted,
-                "limits_note": limits_note,
+                "limits_note": limits_note, "algo_brief_new": new_brief,
                 "summary_fr": " ".join(str(proposal.get("summary_fr") or "").split())[:700]}
         history = [h for h in self.state.data.get("strategy_history") or [] if isinstance(h, dict)]
         old = self.state.data.get("strategy")
@@ -335,5 +362,8 @@ class Strategist:
             changes = self.algo.changes_fr()
             if changes:
                 lines.append("⚙️ " + esc(changes))
+            brief_fr = getattr(self.algo, "brief_fr", None)
+            if m.get("algo_brief_new") and callable(brief_fr) and brief_fr():
+                lines.append("🔬 L'algorithme de X, relu par l'agent spécialiste : " + esc(brief_fr()))
         lines.append(f"Prochaine analyse dans {EVERY_DAYS} jours. Rien à faire de ton côté.")
         return "\n".join(lines)

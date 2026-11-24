@@ -741,3 +741,29 @@ def test_figures_sheet_never_raises(an, state, monkeypatch):
     _formats_month(state)
     monkeypatch.setattr(amod, "post_score", lambda p: 1 / 0)
     assert an.figures_sheet() == ("", 0)
+
+
+def test_the_trend_flag_is_remembered_only_when_it_was_noted(an, state, fake_x):
+    """Depuis le 24/11/2026 : `fmt.trend` dit si le post collait à une tendance du jour. Les posts
+    d'avant n'ont pas l'information : ils ne comptent ni pour ni contre."""
+    old = state.new_item("news", ["old post"], meta={"hook": ""})
+    linked = state.new_item("news", ["GTA post"], meta={"trend": "gta 6"})
+    plain = state.new_item("news", ["robot post"], meta={"trend": ""})
+    for tid, it in (("1", old), ("2", linked), ("3", plain)):
+        pub(state, tid, "news", it["texts"][0], item_id=it["id"])
+    fake_x.recent_posts = [api_tweet("1", 10), api_tweet("2", 20), api_tweet("3", 30)]
+    an.refresh_metrics()
+    f = [p["fmt"] for p in state.data["published"]]
+    assert "trend" not in f[0] and f[1]["trend"] is True and f[2]["trend"] is False
+
+
+def test_figures_sheet_says_whether_following_trends_pays(an, state):
+    for i in range(6):
+        pub(state, f"t{i}", "news", f"GTA story {i}", days=2 + i, metrics=m(120))["fmt"] = {"media": "text", "trend": True}
+    for i in range(6):
+        pub(state, f"n{i}", "news", f"Other story {i}", days=2 + i, metrics=m(40))["fmt"] = {"media": "text", "trend": False}
+    for i in range(6):
+        pub(state, f"o{i}", "news", f"Old story {i}", days=2 + i, metrics=m(40))["fmt"] = {"media": "text"}
+    sheet, _n = an.figures_sheet()
+    line = next(l for l in sheet.splitlines() if l.startswith("- Linked to something people were looking up that day"))
+    assert "linked to a trend" in line and "(6), not linked" in line and line.index("linked to a trend") < line.index("not linked")

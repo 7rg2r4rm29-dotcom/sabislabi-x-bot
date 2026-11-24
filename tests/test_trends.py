@@ -310,3 +310,48 @@ def test_market_rows_and_engagement():
     assert engagement(row) == 100 + 2 * 10
     assert market_row("x", {"id": "1", "text": "RT @someone: hello"}) is None
     assert market_row("x", {"text": "no id"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Un post colle-t-il à une tendance du jour ? (pour mesurer si suivre les tendances rapporte)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("term, text, ok", [
+    ("gta 6", "683 million hours of GTA 6. On PlayStation alone.", True),
+    ("Grand Theft Auto VI", "GTA VI is finally out on PlayStation and Xbox.", True),          # le sigle
+    ("Grand Theft Auto VI", "Grand Theft Auto VI breaks every record.", True),
+    ("Riemann hypothesis", "A prime number mystery from 1859 was solved. Source: Riemann hypothesis proof checked", True),
+    ("Riemann hypothesis", "A new hypothesis about sleep.", False),                            # un mot sur deux
+    ("thanksgiving", "A robot cooked a whole Thanksgiving dinner.", True),
+    ("tesla", "A Tesla can now tell if you're watching the road.", True),
+    ("news", "The news of the day.", False),                                                   # mot trop commun
+    ("live", "Watch it live.", False), ("ai", "An AI wrote it.", False),                       # trop court
+    ("world cup 2026 final", "The 2026 final of the World Cup was watched by a robot.", True),
+    ("world cup 2026 final", "A cup of coffee made by a robot.", False),
+    ("", "anything", False),
+])
+def test_a_post_matches_a_trend_by_its_words_or_its_acronym(term, text, ok):
+    assert tmod.trend_matches(term, set(tmod._tokens(text))) is ok
+
+
+def test_match_uses_what_was_already_read_and_no_network(tw, get):
+    tw.refresh()
+    calls = len(get.calls)
+    assert tw.match(["683 million hours of GTA 6. On PlayStation alone.", "Sony: biggest launch ever"]) == "gta 6"
+    assert tw.match(["A man played it with his thoughts.", "Neuralink patient plays Grand Theft Auto VI"]) \
+        == "Grand Theft Auto VI"
+    assert tw.match(["A robot folds laundry.", "Home robot folds laundry on its own"]) == ""
+    assert tw.match([]) == "" and tw.match(["", None]) == ""
+    assert len(get.calls) == calls                           # aucune lecture en plus
+
+
+def test_match_never_uses_what_the_editorial_line_refuses(tw, get):
+    tw.refresh()
+    assert tw.match(["Bitcoin price jumps again"]) == ""     # « bitcoin price » n'est jamais gardé comme tendance
+
+
+def test_match_without_trends_or_with_broken_state(settings, state):
+    settings.trends_enabled = False
+    assert TrendWatch(settings, state).match(["GTA 6 is out"]) == ""
+    settings.trends_enabled = True
+    state.data["trends"] = "cassé"
+    assert TrendWatch(settings, state).match(["GTA 6 is out"]) == ""

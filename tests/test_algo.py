@@ -122,7 +122,7 @@ def test_diff_between_two_readings():
     assert amod.diff_weights(new, new) == []
 
 
-def test_first_reading_then_every_three_days(settings, state, clock):
+def test_first_reading_then_once_a_day(settings, state, clock):
     web = Web()
     watch = AlgoWatch(settings, state, http_get=web)
     assert watch.block() == "" and watch.due()
@@ -131,9 +131,9 @@ def test_first_reading_then_every_three_days(settings, state, clock):
     assert web.calls == [amod.README_URL, amod.PARAMS_URL]
     store = state.data["algo_watch"]
     assert store["weights"]["ReplyWeight"] == "5.0" and "changes" not in store      # première lecture : rien n'a « changé »
-    clock(9, 0, day=17)
+    clock(8, 59, day=16)
     assert watch.due() is False and watch.refresh() is False and len(web.calls) == 2
-    clock(9, 1, day=18)
+    clock(9, 1, day=16)
     assert watch.due() is True
 
 
@@ -204,3 +204,146 @@ def test_force_reads_again(settings, state, clock):
     watch = AlgoWatch(settings, state, http_get=web)
     watch.refresh()
     assert watch.refresh(force=True) is True and len(web.calls) == 4
+
+
+# ---------------------------------------------------------------------------
+# L'agent spécialiste : il lit le code de X et en tire un mémo
+# ---------------------------------------------------------------------------
+BRIEF = {
+    "rewards": ["A reply (ReplyWeight 5.0) or a quote (QuoteWeight 5.0) adds about seven times what a like does (FavoriteWeight 0.708)."],
+    "penalties": ["A report (ReportWeight -234.0) or \"not interested\" (NotInterestedWeight -53.07) costs far more than any reward."],
+    "small_author": ["Posts younger than two hours from authors with few impressions get a cold-start boost (ColdStartMaxPostAgeSecs 7200)."],
+    "same_author": [], "media": ["Video opens carry no weight of their own (VideoOpenWeight 0.0)."],
+    "filters": ["Posts whose text duplicates another post are dropped by the duplicate filter."],
+    "changed": ["October 13th, 2026: retrieval is trained to surface posts people read all the way through."],
+    "for_us": ["Write posts that earn an answer or a quote rather than a like.", "See https://example.com for more.", "short"],
+    "summary_fr": "X récompense surtout les réponses et les citations. Il punit fort les signalements. Depuis octobre, il pousse les posts lus jusqu'au bout.",
+}
+
+
+class Specialist:
+    def __init__(self, answer=BRIEF) -> None:
+        self.answer = answer
+        self.calls: list[tuple] = []
+
+    def algo_brief(self, sources, previous=""):
+        self.calls.append((sources, previous))
+        return self.answer
+
+
+class CodeWeb(Web):
+    """Sert aussi les autres fichiers du code (le même contenu court pour chacun)."""
+
+    def __call__(self, url: str, accept: str = ""):
+        self.calls.append(url)
+        if self.crash:
+            raise OSError("réseau coupé")
+        if url == amod.README_URL:
+            return (200, self.readme) if self.readme is not None else (404, "")
+        if url == amod.PARAMS_URL:
+            return (200, self.params) if self.params is not None else (404, "")
+        if url.startswith(amod.RAW):
+            return 200, f"// {url.rsplit('/', 1)[-1]} : see https://x.com/whatever and [the doc](https://x.com/doc)\nfn score() {{}}"
+        return 404, ""
+
+
+def test_the_specialist_reads_the_key_files_of_the_code(settings, state, clock):
+    clock(9, 0, day=10)
+    web, spec = CodeWeb(), Specialist()
+    watch = AlgoWatch(settings, state, http_get=web)
+    watch.refresh()
+    assert watch.brief() is None and watch.brief_due() is True
+    assert watch.make_brief(spec) is True
+    sources, previous = spec.calls[0]
+    assert previous == ""
+    for path, _limit in amod.BRIEF_FILES:
+        assert f"=== FILE {path} ===" in sources
+    assert "http" not in sources and "x.com" not in sources            # jamais de lien donné à l'agent
+    assert all(u.startswith("https://raw.githubusercontent.com/xai-org/x-algorithm/") for u in web.calls)
+    brief = state.data["algo_watch"]["brief"]
+    assert brief["files"] == len(amod.BRIEF_FILES) and brief["rewards"] == BRIEF["rewards"]
+    assert brief["for_us"] == ["Write posts that earn an answer or a quote rather than a like.", "See for more."]
+    assert watch.brief_fr().startswith("X récompense surtout les réponses")
+
+
+def test_the_brief_goes_to_the_analyst(settings, state, clock):
+    clock(9, 0, day=10)
+    watch = AlgoWatch(settings, state, http_get=CodeWeb())
+    watch.refresh()
+    watch.make_brief(Specialist())
+    block = watch.block()
+    assert "- What the code says, as read by a specialist on October 10 (10 files of the code):" in block
+    assert "  What the ranking rewards:\n    - A reply (ReplyWeight 5.0)" in block
+    assert "  What it means for this account, according to the specialist:\n    - Write posts that earn an answer" in block
+    assert "Several posts by the same author" not in block              # rubrique vide : pas de titre
+    assert "Settings that go into a post's score" in block
+
+
+def test_a_new_brief_when_x_changes_something_or_once_a_week(settings, state, clock):
+    clock(9, 0, day=10)
+    web, spec = CodeWeb(), Specialist()
+    watch = AlgoWatch(settings, state, http_get=web)
+    watch.refresh()
+    watch.make_brief(spec)
+    clock(9, 0, day=12)
+    watch.refresh()
+    assert watch.brief_due() is False                                   # rien n'a changé, mémo de deux jours
+    web.params = PARAMS.replace('"rust_home_mixer_reply_weight", 5.0', '"rust_home_mixer_reply_weight", 7.5')
+    clock(9, 30, day=13)
+    watch.refresh()
+    assert watch.changed_since(utils_dt(2026, 10, 13, 9, 0)) is True and watch.changed_since(utils_dt(2026, 10, 13, 10, 0)) is False
+    assert watch.brief_due() is True                                    # X a changé un poids
+    watch.make_brief(spec)
+    assert "What the ranking rewards:" in spec.calls[1][1]              # il revoit son mémo précédent
+    assert watch.brief_due() is False
+    clock(9, 30, day=20)
+    assert watch.brief_due() is False
+    clock(9, 31, day=20)
+    assert watch.brief_due() is True                                    # une semaine : relu de toute façon
+
+
+def test_not_twice_within_twenty_hours(settings, state, clock):
+    clock(9, 0, day=10)
+    watch = AlgoWatch(settings, state, http_get=CodeWeb())
+    watch.refresh()
+    assert watch.make_brief(Specialist(answer=None)) is False           # l'agent n'a pas répondu
+    assert watch.brief() is None and watch.brief_due() is False         # pas de nouvel essai tout de suite
+    clock(5, 1, day=11)
+    assert watch.brief_due() is True
+
+
+@pytest.mark.parametrize("case", ["empty", "few_files", "no_agent", "crash"])
+def test_a_failed_brief_keeps_the_previous_one(settings, state, clock, case):
+    clock(9, 0, day=10)
+    web = CodeWeb()
+    watch = AlgoWatch(settings, state, http_get=web)
+    watch.refresh()
+    watch.make_brief(Specialist())
+    before = dict(state.data["algo_watch"]["brief"])
+    clock(9, 0, day=18)
+    spec = Specialist(answer={"rewards": ["Only one point survives here, the rest is empty."], "summary_fr": ""})
+    if case == "few_files":
+        web.readme = web.params = None
+        web.__class__ = Web                                             # plus que deux fichiers… introuvables
+    elif case == "no_agent":
+        spec = object()
+    elif case == "crash":
+        spec.algo_brief = lambda sources, previous="": 1 / 0
+    assert watch.make_brief(spec) is False
+    assert state.data["algo_watch"]["brief"] == before
+
+
+def test_an_old_brief_is_no_longer_shown(settings, state, clock):
+    clock(9, 0, day=1)
+    watch = AlgoWatch(settings, state, http_get=CodeWeb())
+    watch.refresh()
+    watch.make_brief(Specialist())
+    clock(9, 0, day=23)
+    assert watch.brief() is None and watch.brief_fr() == ""
+
+
+def utils_dt(y, mo, d, h, mi):
+    from datetime import datetime
+
+    from tests.conftest import PARIS
+    return datetime(y, mo, d, h, mi, tzinfo=PARIS)
