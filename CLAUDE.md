@@ -423,6 +423,21 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 ## 8. État au 24/11/2026, limites connues, pistes
 
+- **L'agent d'analyse, installé le 24/11/2026 à 19 h 42** (`4e8406d`, 1706 tests verts sur le serveur,
+  1675 sur le Mac, `--check` au vert ; détail en section 4). Le propriétaire ne veut PAS de passage
+  régulier de l'assistant (« pas besoin de passer ici ») : c'est le bot qui analyse et décide.
+  Première analyse faite par le bot lui-même à 19 h 43, au premier tour (86 s, 0,19 $) : code de X relu
+  (52 réglages, aucun changement puisque c'est la première lecture), 3 décisions de choix adoptées —
+  préférer les histoires où une machine fait quelque chose d'étonnant ou change la vie de tous les
+  jours aux annonces de fonctions d'applis (1,67x et 1,43x contre 1,00x) ; ne prendre un sujet voiture
+  que s'il change quelque chose pour un passager ordinaire (0,80x) ; préférer les histoires qu'on
+  enverrait à une personne précise (le partage par lien pèse 20, un like 0,7 ; 0 repartage en 120
+  posts) — et 3 consignes d'écriture refusées par le relecteur (formule répétée, écart sous 25 %,
+  redite d'une règle existante). Prochaine analyse le 27/11. À regarder dans le journal :
+  « Algorithme de X relu », « Analyse faite sur N posts », « consigne écartée par le relecteur » ;
+  dans l'état : `strategy`, `strategy_history`, `algo_watch`. Si une consigne adoptée paraît mauvaise :
+  elle tombe à l'analyse suivante, ou tout de suite en vidant `strategy` de l'état, service arrêté.
+
 - **Le format suit les résultats, installé le 24/11/2026 à 19 h 13** (`1d6404f`, 1636 tests verts sur le
   serveur, 1605 sur le Mac, `--check` au vert ; détail en section 4). Vérifié juste après dans le journal
   et dans l'état : le 24/11 est resté en jours fixes (« décidé trop tard pour ce jour »), et le plan du
