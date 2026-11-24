@@ -883,3 +883,11 @@ def test_voice_settings(monkeypatch):
     monkeypatch.setenv("VOICE_MODEL_DIR", "/opt/voices")
     s = cfg.load_settings()
     assert (s.explainer_voice_enabled, s.explainer_voice, s.voice_model_dir) == (True, "am_michael", "/opt/voices")
+
+
+def test_format_auto_setting(monkeypatch):
+    """24/11/2026 : le format suit les résultats ; coupé par défaut (les jours fixes s'appliquent)."""
+    monkeypatch.delenv("FORMAT_AUTO", raising=False)
+    assert cfg.load_settings().format_auto is False
+    monkeypatch.setenv("FORMAT_AUTO", "true")
+    assert cfg.load_settings().format_auto is True

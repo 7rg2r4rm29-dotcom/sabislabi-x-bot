@@ -16,6 +16,7 @@ verrouillé par la config) ; le radar ne publie jamais rien.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import random
 import signal
@@ -44,6 +45,8 @@ GC_EVERY_MIN = 24 * 60
 REACTIVE_EXPIRES_MIN = 180
 REACTIVE_MAX_CHECKS_PER_DAY = 6    # appels à Claude pour l'actu chaude, au plus par jour (défaut du réglage)
 STYLE_TEST_SHARE = 0.25            # posts prévus qui essaient autre chose que ce qui marche (1 sur 4)
+FORMAT_PLAN_KEEP_DAYS = 12         # plans de formats gardés (le créneau d'hier se relit après minuit)
+FORMAT_DECIDE_MARGIN_MIN = 5       # le plan d'un jour se décide au moins 5 min avant sa première rédaction
 BREAKING_MIN_ENGAGEMENT = 150      # likes sur X ou points Hacker News pour qu'une actu non officielle compte
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)  # comme writer.WEEKLY_RECAP_WEEKDAYS
 DAILY_REPORT_LATE_MAX_H = 12      # récap du matin envoyé au plus tard 12 h après l'heure prévue
@@ -465,6 +468,10 @@ class Bot:
         out: list[tuple[datetime, Slot]] = []
         for off in day_offsets:
             day = now + timedelta(days=off)
+            plan = self._format_plan(day)
+            if plan:                                  # FORMAT_AUTO : le format du jour suit les résultats
+                out += self._auto_day(day, plan)
+                continue
             threads = [at_local(day, sl.at) for sl in self.settings.thread_slots or []
                        if sl.weekday == day.weekday()]
             # Vidéo explicative : elle prend la place du post prévu le plus proche (même nombre de
@@ -489,6 +496,163 @@ class Bot:
             out += explainers
         out.sort(key=lambda p: p[0])
         return out
+
+    # ---- Le format suit les résultats (FORMAT_AUTO) ---------------------
+    def _feature_slot(self) -> Slot | None:
+        """Le grand créneau du jour : celui du post « le futur arrive »."""
+        return next((sl for sl in self.settings.post_slots or [] if sl.kind == "tip"), None)
+
+    def _second_slot(self, feature: Slot) -> Slot | None:
+        """Le post d'actu qu'un format prouvé peut remplacer : le premier après le grand créneau,
+        assez loin de tous les autres posts pour qu'un thread à sa place n'en annule aucun."""
+        def minute(sl: Slot) -> int:
+            return sl.at.hour * 60 + sl.at.minute
+
+        posts = [sl for sl in self.settings.post_slots or [] if sl.kind != "gm"]
+        for sl in sorted(posts, key=minute):
+            if (sl.kind == "news" and minute(sl) > minute(feature)
+                    and all(abs(minute(sl) - minute(o)) >= THREAD_CLEAR_MIN for o in posts if o is not sl)):
+                return sl
+        return None
+
+    def _format_candidates(self) -> list[str]:
+        """Les formats permis par les réglages : ceux qui ont au moins un créneau fixe."""
+        out: list[str] = []
+        if getattr(self.settings, "explainer_slots", None):
+            out.append("explainer")
+        if self.settings.thread_slots:
+            out.append("thread")
+        if self._feature_slot() is not None:
+            out.append("tip")
+        return out
+
+    def _format_plan(self, day: datetime) -> dict | None:
+        """Le plan des formats d'un jour quand FORMAT_AUTO est allumé (consigne du propriétaire,
+        24/11/2026 : « choisis la meilleure option à chaque fois ») : {"feature": le format du
+        grand créneau, "second": celui qui remplace un post d'actu ou None, les raisons}.
+        Décidé une seule fois par jour et noté dans l'état : jamais deux formats pour un même
+        créneau, même après un redémarrage ou un nouveau relevé des chiffres. None : le planning
+        fixe s'applique (réglage coupé, pas assez de chiffres, jour passé sans plan, jour trop
+        lointain, ou décision trop tardive pour la journée en cours)."""
+        if not getattr(self.settings, "format_auto", False):
+            return None
+        feature = self._feature_slot()
+        if feature is None or not callable(getattr(self.analytics, "choose_format", None)):
+            return None
+        date = day.strftime("%Y-%m-%d")
+        plans = self.state.data.get("format_plan")
+        if not isinstance(plans, dict):
+            plans = self.state.data["format_plan"] = {}
+        plan = plans.get(date)
+        if isinstance(plan, dict):
+            return plan if plan.get("feature") else None
+        now = now_local()
+        today = now.strftime("%Y-%m-%d")
+        if date < today or date > (now + timedelta(days=1)).strftime("%Y-%m-%d"):
+            return None
+        try:
+            plan = self._decide_formats(day, date, feature, plans, now, today)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Formats du %s : choix impossible (%s), planning fixe", date, e)
+            plan = {"static": True, "why": "erreur pendant le choix"}
+        plans[date] = plan
+        cutoff = (now - timedelta(days=FORMAT_PLAN_KEEP_DAYS)).strftime("%Y-%m-%d")
+        for old in [d for d in plans if d < cutoff]:
+            del plans[old]
+        self.state.flush()
+        return plan if plan.get("feature") else None
+
+    def _decide_formats(self, day: datetime, date: str, feature: Slot, plans: dict, now: datetime,
+                        today: str) -> dict:
+        cands = self._format_candidates()
+        if date == today:
+            # Trop tard pour changer la journée en cours : la rédaction du grand créneau a pu commencer.
+            lead = max((self.settings.lead_for(k) for k in cands), default=0)
+            if now >= at_local(day, feature.at) - timedelta(minutes=lead + FORMAT_DECIDE_MARGIN_MIN):
+                return {"static": True, "why": "décidé trop tard pour ce jour"}
+        pick = self.analytics.choose_format(cands, random.Random(f"format:{date}"),
+                                            self._pending_formats(plans, today, date))
+        if not pick:
+            return {"static": True, "why": "pas assez de chiffres"}
+        kind, why = pick
+        plan = {"feature": kind, "why": str(why), "second": None, "why2": "", "decided_at": iso(now)}
+        second = getattr(self.analytics, "second_format", None)
+        if callable(second) and self._second_slot(feature) is not None:
+            extra = second(kind, [k for k in cands if k != "tip"])
+            if extra:
+                plan["second"], plan["why2"] = extra[0], str(extra[1])
+        log.info("Formats du %s : %s au grand créneau (%s)%s", date, KIND_FR.get(kind, kind), why,
+                 f" ; {KIND_FR.get(plan['second'], plan['second'])} à la place d'un post d'actu ({plan['why2']})"
+                 if plan["second"] else "")
+        return plan
+
+    def _pending_formats(self, plans: dict, today: str, skip: str) -> dict[str, int]:
+        """Les formats déjà prévus (aujourd'hui ou après) et pas encore publiés : ils comptent
+        comme des essais, pour qu'un format nouveau ne soit pas programmé cinq jours de suite
+        avant même sa première publication."""
+        published = {(str(p.get("created_at") or "")[:10], p.get("kind"))
+                     for p in self.state.data.get("published") or []}
+        pending: dict[str, int] = {}
+        for d, plan in plans.items():
+            if d < today or d == skip or not isinstance(plan, dict):
+                continue
+            for k in (plan.get("feature"), plan.get("second")):
+                if k and (d, k) not in published:
+                    pending[k] = pending.get(k, 0) + 1
+        return pending
+
+    def _auto_day(self, day: datetime, plan: dict) -> list[tuple[datetime, Slot]]:
+        """Les créneaux d'un jour dont le plan des formats est décidé : le même nombre de posts
+        qu'avec le planning fixe, seul le format de deux d'entre eux au plus change."""
+        feature = self._feature_slot()
+        second = self._second_slot(feature) if feature is not None and plan.get("second") else None
+        chosen: list[tuple[datetime, Slot]] = []
+        posts: list[tuple[datetime, Slot]] = []
+        for slot in self.settings.post_slots or []:
+            occ = at_local(day, slot.at)
+            if slot == feature and plan.get("feature") != "tip":
+                chosen.append((occ, Slot(plan["feature"], slot.at, day.weekday())))
+            elif second is not None and slot == second:
+                chosen.append((occ, Slot(plan["second"], slot.at, day.weekday())))
+            else:
+                posts.append((occ, slot))
+
+        def clear(occ: datetime, slot: Slot) -> bool:
+            # Comme avec le planning fixe : aucun autre post à moins de 3 h d'un thread, ni à moins
+            # d'1 h d'une vidéo explicative.
+            return slot.kind == "gm" or not any(
+                abs(minutes_between(occ, o)) < (THREAD_CLEAR_MIN if s.kind == "thread" else EXPLAINER_CLEAR_MIN)
+                for o, s in chosen)
+
+        return [p for p in posts if clear(*p)] + chosen
+
+    def _fallback_kind(self, slot: Slot, occ: datetime) -> str | None:
+        """FORMAT_AUTO : le post qui prend la place d'une vidéo ou d'un thread quand rien n'est
+        assez solide pour ce format (« essaye de toujours rester dans le top » : un créneau
+        n'est plus perdu pour une question de format). None avec le planning fixe."""
+        if slot.kind not in ("thread", "explainer") or not self._format_plan(occ):
+            return None
+        feature = self._feature_slot()
+        return "tip" if feature is not None and slot.at == feature.at else "news"
+
+    def _media_settings(self, draft):
+        """FORMAT_AUTO : quand les chiffres disent nettement que la photo de l'actu n'apporte rien,
+        le post part sans elle (l'extrait vidéo de l'actu reste). Les posts d'essai gardent la
+        photo, pour que la comparaison continue."""
+        s = self.settings
+        advice = getattr(self.analytics, "photo_advice", None)
+        if (not getattr(s, "format_auto", False) or getattr(draft, "style_test", False)
+                or not callable(advice) or not dataclasses.is_dataclass(s)):
+            return s
+        try:
+            keep, why = advice()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Avis sur les photos indisponible (%s)", e)
+            return s
+        if keep:
+            return s
+        log.info("Photo non jointe (les chiffres : %s) ; l'extrait vidéo de l'actu reste possible", why)
+        return dataclasses.replace(s, photos_enabled=False, second_image_enabled=False)
 
     def _claude_down(self) -> bool:
         """Claude ne répond pas en ce moment (coupe-circuit ouvert, crédit ou clé refusés)."""
@@ -548,6 +712,26 @@ class Bot:
                 self.state.unmark_slot(date, slot.key)
                 log.warning("Créneau %s : Claude indisponible pendant la rédaction, on réessaiera", slot.key)
                 return None
+            fallback = self._fallback_kind(slot, occ) if draft is None else None
+            if fallback:
+                # FORMAT_AUTO : pas d'histoire assez solide pour une vidéo ou un thread aujourd'hui.
+                # Un post prend la place : le créneau n'est pas perdu pour une question de format.
+                log.info("Créneau %s : rien d'assez solide pour %s, un post « %s » prend sa place",
+                         slot.key, KIND_FR.get(kind, kind), KIND_FR.get(fallback, fallback))
+                perf, _test = self._context(fallback, test_ok=False)
+                draft = self._write(fallback, self._news(fallback), notes, perf)
+                if draft is not None and getattr(draft, "texts", None):
+                    self.approvals.notify(
+                        f"🔁 {esc(self._slot_label(slot, occ))} : rien d'assez solide pour ce format, "
+                        f"remplacé par un post {esc(KIND_FR.get(fallback, fallback))}.", silent=True)
+                    kind = fallback
+                else:
+                    draft = None
+                    if self._claude_down():
+                        self.state.unmark_slot(date, slot.key)
+                        log.warning("Créneau %s : Claude indisponible pendant la rédaction, on réessaiera",
+                                    slot.key)
+                        return None
             if draft is None:
                 if kind == "thread":
                     self.state.mark_slot(date, slot.key, SLOT_SKIPPED)
@@ -725,7 +909,7 @@ class Bot:
             from . import visuals
             fn = visuals.prepare_media
         try:
-            res = fn(self.settings, draft, self.writer, tag)
+            res = fn(self._media_settings(draft), draft, self.writer, tag)
             if isinstance(res, tuple) and len(res) == 2:
                 res = (*res, None)
             path, kind, second = res if isinstance(res, tuple) and len(res) == 3 else (None, None, None)
@@ -1091,6 +1275,13 @@ class Bot:
         for occ, slot in occs:
             lines.append(f"• {_day_label(occ, now)} {_hm(occ)} {KIND_FR.get(slot.kind, slot.kind)} — "
                          f"{self._slot_status(slot, occ, now)}")
+        for day in (now, now + timedelta(days=1)):
+            plan = self._format_plan(day)
+            if plan:                                  # FORMAT_AUTO : pourquoi ce format ce jour-là
+                extra = (f" ; {KIND_FR.get(plan['second'], plan['second'])} à la place d'un post d'actu : "
+                         f"{plan.get('why2') or ''}") if plan.get("second") else ""
+                lines.append(f"🎯 Formats {_day_label(day, now)} : {KIND_FR.get(plan['feature'], plan['feature'])} "
+                             f"— {esc(str(plan.get('why') or ''))}{esc(extra)}")
         s = self.settings
         reactive = [it for it in self.state.items(kinds=("reactive",), statuses=("awaiting", "approved"))]
         line = f"⚡ Réactif : {self.state.count('reactive')}/{s.reactive_max_per_day} aujourd'hui"

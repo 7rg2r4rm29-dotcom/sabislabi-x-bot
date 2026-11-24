@@ -2513,3 +2513,24 @@ def test_explainer_post_is_not_compared_with_the_whole_article(settings, state, 
     d = w.draft_explainer(items, [], "")
     assert d is not None and d.texts == [post]
     assert llm.labels() == ["pick-explainer", "explainer", "factcheck"]
+
+
+def test_only_one_week_in_review_per_weekend(settings, state, clock):
+    """Avec FORMAT_AUTO, un thread peut tomber le vendredi, le samedi et le dimanche : la semaine
+    en revue n'est proposée qu'une fois. Celle du week-end d'avant ne compte pas."""
+    clock(13, 0, day=17)                                      # samedi 17/10/2026
+    w, _ = make_writer(settings, state)
+    settings.thread_candidates = 3
+    last_week = state.new_item("thread", ["a"], status="published", meta={"angle": "weekly"})
+    last_week["created_at"] = "2026-10-11T18:00:00+02:00"     # dimanche dernier
+    assert w.thread_plan(["weekly", "timely", "future"]) == ["weekly", "timely", "future"]
+    story = state.new_item("thread", ["b"], status="published", meta={"angle": "timely"})
+    story["created_at"] = "2026-10-16T13:30:00+02:00"         # hier : une histoire, pas un récap
+    assert w.thread_plan(["timely"])[0] == "weekly"
+    friday = state.new_item("thread", ["c"], status="published", meta={"angle": "weekly"})
+    friday["created_at"] = "2026-10-16T18:00:00+02:00"        # hier : le récap de ce week-end est fait
+    assert w.thread_plan(["timely", "weekly"]) == ["timely", "future"]
+    draft = state.new_item("thread", ["d"], status="awaiting", meta={"angle": "weekly"})
+    assert draft["status"] == "awaiting" and w._weekly_recap_done() is True
+    friday["created_at"] = "2026-10-13T18:00:00+02:00"        # trop ancien : ce n'était pas ce week-end
+    assert w._weekly_recap_done() is False                    # un brouillon non publié ne compte pas

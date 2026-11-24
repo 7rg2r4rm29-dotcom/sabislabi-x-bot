@@ -285,6 +285,10 @@ def config_summary(settings) -> list[str]:
         f"{' (à la place du post prévu le plus proche)' if s.explainer_slots else ''}"
         f"{f', voix off {s.explainer_voice}' if s.explainer_slots and s.explainer_voice_enabled else ''}"
         f" · aléa de publication 0-{s.publish_jitter_minutes} min",
+        ("Formats : choisis chaque jour d'après les résultats (vidéo, thread ou post au grand créneau ; un "
+         "format qui bat nettement un post d'actu en remplace aussi un ; sans histoire assez forte pour un "
+         "format, un post prend sa place)" if getattr(s, "format_auto", False)
+         else "Formats : jours fixes (FORMAT_AUTO=false)"),
         f"Rédaction à l'avance : {leads} · délai de validation {s.approval_grace_minutes} min · "
         f"heures calmes {quiet}",
         f"Réactif : {'oui' if s.reactive_enabled else 'non'} (max {s.reactive_max_per_day}/jour, "

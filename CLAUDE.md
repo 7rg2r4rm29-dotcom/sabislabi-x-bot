@@ -164,6 +164,35 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     en entier, accroches qui marchent) ; jamais les sujets pour initiés (`OFF_LINE_TOPICS`) ;
   - `Bot._context` avant chaque rédaction : 3 posts prévus sur 4 suivent ce qui marche, le 4e essaie
     autre chose (`STYLE_TEST_SHARE`, noté `meta.style_test`) ; « à chaud » et 🔄 suivent toujours.
+- **Le format suit les résultats** (`FORMAT_AUTO`, vrai sur le serveur, faux par défaut ; consigne du
+  propriétaire, 24/11/2026 : « en fonction des résultats des posts et des trends tu analyses tout le
+  temps pour ajuster […] visuel ou textuel, peu importe, choisis la meilleure option à chaque fois […]
+  essaye de toujours rester dans le top ») :
+  - chaque jour, le **grand créneau** (celui du post « le futur arrive » : 14 h 30) reçoit la vidéo
+    explicative, le thread ou le post. Un format encore peu publié est d'abord essayé 3 fois
+    (`FORMAT_MIN_TRIES`, en comptant ce qui est prévu sans être publié : `Bot._pending_formats`) ;
+    ensuite, tirage au sort pondéré par le carré de la portée de chaque type (`Analytics.choose_format`,
+    `format_shares`), jamais moins d'un passage sur dix (`FORMAT_MIN_SHARE`). Le tirage est figé par la
+    date et le plan noté dans l'état (`format_plan`) : décidé une seule fois, la veille ou le jour même
+    avant la première rédaction (trop tard, pas assez de chiffres ou erreur : jours fixes ce jour-là) ;
+  - un format qui bat **nettement** un post d'actu (au moins 1,3 fois sa portée sur 4 posts mesurés :
+    `second_format`) remplace aussi le premier post d'actu assez loin des autres (19 h). Le nombre de
+    posts par jour ne change jamais ;
+  - sans histoire assez solide pour une vidéo ou un thread, **un post prend sa place** au lieu de faire
+    sauter le créneau (`Bot._fallback_kind` : « le futur arrive » au grand créneau, « l'histoire du
+    jour » ailleurs) ;
+  - photos de l'actu : coupées seulement sur un écart net (`photo_advice` : au plus 0,70 fois le texte
+    seul, sur 12 posts mesurés de chaque sorte ; remises à 0,85 ; décision notée dans `photo_policy`).
+    Les posts d'essai gardent la photo, l'extrait vidéo de l'actu reste toujours ;
+  - une seule « semaine en revue » par week-end, même avec un thread chaque jour
+    (`Writer._weekly_recap_done`) ;
+  - `THREAD_SLOTS` et `EXPLAINER_SLOTS` disent quels formats sont permis et servent de repli ; `/plan`
+    affiche « 🎯 Formats … » avec la raison ; le journal dit « Formats du … » ;
+  - sur les vrais chiffres du 24/11 : thread 1,69x (7 posts mesurés), post d'actu 1,03x, « le futur
+    arrive » 0,91x, vidéo pas encore mesurée. Donc vidéo à 14 h 30 les 25, 26 et 27/11 (3 essais), et un
+    thread à 19 h chaque jour tant qu'il reste prouvé. Photos : 1,16x contre 1,37x en texte seul (rapport
+    0,85 : rien de net, elles restent). Un thread coûte 0,8 à 1 $ de Claude : environ 10 $ de plus par
+    mois. Les sondages restent réservés au post « le futur arrive » (voulu : un post d'actu a sa photo).
 - **Veille du marché** (`TrendWatch.refresh_market`, `MARKET_WATCH_ENABLED`, 23/11/2026) : voir
   section 8.
 - **Tendances du jour** (`bot/trends.py`, `TrendWatch.block()`, `TRENDS_ENABLED`) : recherches Google
@@ -210,7 +239,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - `bot/main.py` : ligne de commande ;
   - `bot/state.py`, `bot/config.py`, `bot/llm.py`.
 - **Rythme du serveur** (choix du propriétaire, 18/11/2026 au soir ; réglé dans `config/.env`, les défauts
-  du code sont restés à 2 posts, 2 threads, 1 post à chaud) :
+  du code sont restés à 2 posts, 2 threads, 1 post à chaud). Depuis le 24/11/2026 au soir
+  (`FORMAT_AUTO=true`), les heures et le nombre de posts restent ceux-ci, mais les JOURS de thread et de
+  vidéo ne servent plus que de repli : le format de chaque jour suit les résultats (voir plus haut) :
   - `POST_SLOTS=tip@14:30,news@19:00,news@23:00` (« le futur arrive », « l'histoire du jour », une 2e
     histoire à 23 h = l'après-midi aux États-Unis) ;
   - `THREAD_SLOTS=tue@14:30,thu@14:30,sun@16:00` (le jeudi est un thread « histoire », comme le mardi) ;

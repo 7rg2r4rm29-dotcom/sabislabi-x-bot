@@ -1699,3 +1699,230 @@ class TestExplainerSlots:
         bot = video_bot(settings, state, budget, parts, maker=maker)
         draft = bot.regenerate({"id": "e1", "kind": "explainer"})
         assert draft is not None and draft.image_kind == "video" and maker.calls[0][0] == "explainer"
+
+
+# ---------------------------------------------------------------------------
+# Le format suit les résultats (consigne du propriétaire, 24/11/2026 : « visuel ou textuel, peu
+# importe : choisis la meilleure option à chaque fois »)
+# ---------------------------------------------------------------------------
+class FormatAnalytics(StubAnalytics):
+    def __init__(self, feature=("explainer", "format encore peu essayé (0 sur 3 essais)"), second=None,
+                 photo=(True, "")) -> None:
+        super().__init__()
+        self.feature, self.second, self.photo = feature, second, photo
+        self.asked: list[tuple] = []
+
+    def choose_format(self, candidates, rng, pending=None):
+        self.asked.append((tuple(candidates), dict(pending or {})))
+        return self.feature
+
+    def second_format(self, first, candidates):
+        return self.second if self.second and self.second[0] != first and self.second[0] in candidates else None
+
+    def photo_advice(self):
+        return self.photo
+
+
+def auto_bot(settings, state, budget, parts, analytics=None, **kw) -> Bot:
+    settings.format_auto = True
+    settings.explainer_slots = parse_explainer_slots("fri@14:00")     # les vidéos sont permises
+    return video_bot(settings, state, budget, dict(parts, analytics=analytics or FormatAnalytics()), **kw)
+
+
+def _day(bot, off: int = 0) -> list[tuple[str, str]]:
+    return [(o.strftime("%a %H:%M"), s.kind) for o, s in bot._occurrences((off,))]
+
+
+class TestFormatAuto:
+    def test_off_by_default_the_fixed_days_apply(self, settings, state, budget, parts, clock):
+        an = FormatAnalytics()
+        settings.explainer_slots = parse_explainer_slots("fri@14:00")
+        bot = video_bot(settings, state, budget, dict(parts, analytics=an))
+        clock(9, 0)                                           # jeudi
+        assert settings.format_auto is False
+        assert _day(bot) == [("Thu 08:00", "gm"), ("Thu 13:30", "tip"), ("Thu 18:00", "news")]
+        assert _day(bot, 1) == [("Fri 08:00", "gm"), ("Fri 14:00", "explainer"), ("Fri 18:00", "news")]
+        assert an.asked == [] and "format_plan" not in state.data
+
+    @pytest.mark.parametrize("kind, key", [("explainer", "explainer-thu-1330"), ("thread", "thread-thu-1330"),
+                                           ("tip", "tip-1330")])
+    def test_the_big_slot_gets_the_format_that_works(self, settings, state, budget, parts, clock, kind, key):
+        clock(9, 0)                                           # jeudi, avant toute rédaction
+        bot = auto_bot(settings, state, budget, parts, FormatAnalytics(feature=(kind, "tiré selon les résultats")))
+        occs = bot._occurrences((0,))
+        assert [(o.strftime("%H:%M"), s.kind) for o, s in occs] == [("08:00", "gm"), ("13:30", kind), ("18:00", "news")]
+        assert [s.key for _o, s in occs][1] == key
+        plan = state.data["format_plan"]["2026-10-15"]
+        assert plan["feature"] == kind and plan["second"] is None and plan["why"] == "tiré selon les résultats"
+
+    def test_the_formats_allowed_come_from_the_settings(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        an = FormatAnalytics()
+        bot = auto_bot(settings, state, budget, parts, an)
+        bot._occurrences((0,))
+        assert an.asked[0][0] == ("explainer", "thread", "tip")
+        settings.explainer_slots = []                         # pas de vidéos dans les réglages
+        assert bot._format_candidates() == ["thread", "tip"]
+
+    def test_the_choice_is_made_once_and_survives_a_restart(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        an = FormatAnalytics(feature=("explainer", "essai"))
+        bot = auto_bot(settings, state, budget, parts, an)
+        assert _day(bot)[1] == ("Thu 13:30", "explainer")
+        an.feature = ("thread", "les chiffres ont bougé")     # nouveau relevé des chiffres dans la journée
+        assert _day(bot)[1] == ("Thu 13:30", "explainer")
+        again = auto_bot(settings, state, budget, parts, FormatAnalytics(feature=("tip", "autre tirage")))
+        assert _day(again)[1] == ("Thu 13:30", "explainer")   # redémarrage : le plan du jour est dans l'état
+        assert len(an.asked) == 1
+
+    def test_a_proven_format_also_takes_the_place_of_a_news_post(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        an = FormatAnalytics(feature=("explainer", "essai"), second=("thread", "🧵 1,9x contre 1,0x"))
+        bot = auto_bot(settings, state, budget, parts, an)
+        occs = bot._occurrences((0,))
+        assert [(o.strftime("%H:%M"), s.kind) for o, s in occs] == [("08:00", "gm"), ("13:30", "explainer"),
+                                                                     ("18:00", "thread")]
+        assert occs[2][1].key == "thread-thu-1800"            # toujours trois posts ce jour-là
+        assert state.data["format_plan"]["2026-10-15"]["second"] == "thread"
+        text = bot.plan_text()
+        assert "🎯 Formats aujourd'hui : 🎬 vidéo explicative — essai" in text
+        assert "🧵 thread à la place d'un post d'actu" in text
+
+    def test_a_thread_never_sits_next_to_another_post(self, settings, state, budget, parts, clock):
+        """Un post d'actu à moins de 3 h d'un autre post ne peut pas devenir un thread."""
+        settings.post_slots = parse_post_slots("tip@13:30,news@15:00,news@19:00")
+        clock(8, 0)
+        bot = auto_bot(settings, state, budget, parts, FormatAnalytics(second=("thread", "prouvé")))
+        assert bot._second_slot(bot._feature_slot()).key == "news-1900"
+        settings.post_slots = parse_post_slots("tip@13:30,news@15:00")
+        assert bot._second_slot(bot._feature_slot()) is None
+        # Et un thread au grand créneau écarte, comme avant, le post d'actu trop proche.
+        state.data.pop("format_plan", None)
+        bot2 = auto_bot(settings, state, budget, parts, FormatAnalytics(feature=("thread", "tiré")))
+        assert [(o.strftime("%H:%M"), s.kind) for o, s in bot2._occurrences((0,))] == [("13:30", "thread")]
+
+    def test_too_late_for_today_the_fixed_day_stays(self, settings, state, budget, parts, clock):
+        clock(12, 30)                                         # la rédaction de 13:30 a pu commencer
+        an = FormatAnalytics(feature=("thread", "tiré"))
+        bot = auto_bot(settings, state, budget, parts, an)
+        assert _day(bot) == [("Thu 08:00", "gm"), ("Thu 13:30", "tip"), ("Thu 18:00", "news")]
+        assert state.data["format_plan"]["2026-10-15"]["static"] is True
+        assert _day(bot, 1) == [("Fri 08:00", "gm"), ("Fri 13:30", "thread"), ("Fri 18:00", "news")]
+        assert _day(bot) == [("Thu 08:00", "gm"), ("Thu 13:30", "tip"), ("Thu 18:00", "news")]   # et ça ne change plus
+
+    def test_no_figures_keep_the_fixed_days(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        bot = auto_bot(settings, state, budget, parts, FormatAnalytics(feature=None))
+        assert _day(bot, 1) == [("Fri 08:00", "gm"), ("Fri 14:00", "explainer"), ("Fri 18:00", "news")]
+        assert state.data["format_plan"]["2026-10-16"] == {"static": True, "why": "pas assez de chiffres"}
+
+    def test_past_and_far_days_are_never_decided(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        an = FormatAnalytics(feature=("thread", "tiré"))
+        bot = auto_bot(settings, state, budget, parts, an)
+        assert _day(bot, -1) == [("Wed 08:00", "gm"), ("Wed 13:30", "tip"), ("Wed 18:00", "news")]
+        assert _day(bot, 2) == [("Sat 08:00", "gm"), ("Sat 13:30", "tip"), ("Sat 18:00", "news")]
+        assert an.asked == [] and not state.data.get("format_plan")
+
+    def test_what_is_planned_but_not_published_counts_as_a_try(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        an = FormatAnalytics(feature=("explainer", "essai"), second=("thread", "prouvé"))
+        bot = auto_bot(settings, state, budget, parts, an)
+        bot._occurrences((0, 1))
+        assert an.asked[0][1] == {} and an.asked[1][1] == {"explainer": 1, "thread": 1}
+        state.data["published"].append({"tweet_id": "1", "kind": "explainer", "text": "x",
+                                        "created_at": "2026-10-15T13:31:00+02:00"})
+        plans = state.data["format_plan"]
+        # Aujourd'hui : la vidéo est publiée (elle ne compte plus), le thread pas encore ; demain : les deux.
+        assert bot._pending_formats(plans, "2026-10-15", "2026-10-17") == {"thread": 2, "explainer": 1}
+        assert bot._pending_formats(plans, "2026-10-15", "2026-10-16") == {"thread": 1}
+        assert bot._pending_formats(plans, "2026-10-16", "2026-10-17") == {"thread": 1, "explainer": 1}   # hier ne compte plus
+
+    def test_a_crash_in_the_choice_keeps_the_fixed_day(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+
+        class Broken(FormatAnalytics):
+            def choose_format(self, candidates, rng, pending=None):
+                raise RuntimeError("stats illisibles")
+
+        bot = auto_bot(settings, state, budget, parts, Broken())
+        assert _day(bot) == [("Thu 08:00", "gm"), ("Thu 13:30", "tip"), ("Thu 18:00", "news")]
+        assert state.data["format_plan"]["2026-10-15"]["static"] is True
+
+    def test_nothing_solid_for_a_video_gives_a_post_instead(self, settings, state, budget, parts, clock):
+        settings.approval_mode = "auto"
+        clock(9, 0)
+        writer = VideoWriter(ok=False)
+        writer.queues["post"] = [_shot_draft("tip")]          # le post de remplacement, avec sa photo à chercher
+        bot = auto_bot(settings, state, budget, parts, writer=writer)
+        bot._occurrences((0,))
+        clock(12, 0)                                          # 1 h 30 avant : rédaction
+        assert bot.plan_slots() == 1
+        assert writer.names() == ["draft_explainer", "draft_explainer", "draft_post"]
+        assert writer.calls[-1][1] == "tip"                   # le grand créneau redevient « le futur arrive »
+        item = parts["approvals"].created[0]
+        assert item["kind"] == "tip" and item["slot_key"] == "explainer-thu-1330"
+        assert state.slot_item_id("2026-10-15", "explainer-thu-1330") == item["id"]
+        assert any("remplacé par un post" in n for n in parts["approvals"].notes)
+        assert parts["visual"].calls == [("tip", "tip_2026-10-15")]
+
+    def test_nothing_solid_for_a_thread_in_a_news_slot_gives_the_news_post(self, settings, state, budget, parts,
+                                                                           clock):
+        settings.approval_mode = "auto"
+        clock(9, 0)
+        writer = VideoWriter()
+        writer.default_thread = False
+        bot = auto_bot(settings, state, budget, parts, FormatAnalytics(feature=("tip", "tiré"),
+                                                                       second=("thread", "prouvé")), writer=writer)
+        bot._occurrences((0,))
+        clock(16, 30)                                         # 1 h 30 avant le thread de 18:00
+        state.mark_slot("2026-10-15", "tip-1330", "déjà-fait")
+        assert bot.plan_slots() == 1
+        assert writer.names() == ["draft_thread", "draft_thread", "draft_post"] and writer.calls[-1][1] == "news"
+        assert parts["approvals"].created[0]["kind"] == "news"
+        assert parts["approvals"].created[0]["slot_key"] == "thread-thu-1800"
+
+    def test_when_even_the_post_fails_the_slot_is_skipped(self, settings, state, budget, parts, clock):
+        settings.approval_mode = "auto"
+        clock(9, 0)
+        writer = VideoWriter(ok=False)
+        writer.default_post = False
+        bot = auto_bot(settings, state, budget, parts, writer=writer)
+        bot._occurrences((0,))
+        clock(12, 0)
+        bot.plan_slots()
+        assert parts["approvals"].created == []
+        assert state.slot_item_id("2026-10-15", "explainer-thu-1330") == SLOT_SKIPPED
+
+    def test_with_the_fixed_days_a_format_without_story_is_still_skipped(self, settings, state, budget, parts,
+                                                                         clock):
+        settings.explainer_slots = parse_explainer_slots("thu@13:30")
+        writer = VideoWriter(ok=False)
+        bot = video_bot(settings, state, budget, parts, writer=writer)
+        clock(13, 0)
+        bot.plan_slots()
+        assert writer.names() == ["draft_explainer", "draft_explainer"]        # aucun post de remplacement
+        assert state.slot_item_id("2026-10-15", "explainer-thu-1330") == SLOT_SKIPPED
+
+    def test_photos_follow_the_figures(self, settings, state, budget, parts, clock):
+        seen: list[tuple] = []
+
+        def finder(s, draft, writer, tag):
+            seen.append((s.photos_enabled, s.second_image_enabled, s.videos_enabled))
+            return None, None
+
+        clock(9, 0)
+        an = FormatAnalytics(photo=(False, "avec photo 0,70x (9 posts), texte seul 1,10x (12 posts)"))
+        bot = auto_bot(settings, state, budget, dict(parts, visual=finder), an)
+        bot._visual(_shot_draft("news"), "news_x")
+        test_post = _shot_draft("news")
+        test_post.style_test = True                           # un post d'essai garde la photo : on continue de mesurer
+        bot._visual(test_post, "news_y")
+        an.photo = (True, "")
+        bot._visual(_shot_draft("news"), "news_z")
+        assert seen == [(False, False, True), (True, True, True), (True, True, True)]
+        assert settings.photos_enabled is True                # les réglages eux-mêmes ne changent jamais
+        settings.format_auto = False
+        an.photo = (False, "net")
+        bot._visual(_shot_draft("news"), "news_w")
+        assert seen[-1] == (True, True, True)                 # réglage coupé : comme avant

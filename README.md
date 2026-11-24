@@ -108,6 +108,20 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
   marcher encore mieux.
 - **Jamais les sujets pour initiés**, même quand ils marchent (1,3x le 23/11, sans doute l'ancien public
   tech du compte) : la ligne reste le grand public, sans jargon.
+- **Le format aussi suit les résultats** (ta consigne du 24 novembre 2026 : « visuel ou textuel, peu
+  importe, choisis la meilleure option à chaque fois ») :
+  - chaque jour, le post de 14 h 30 devient une **vidéo explicative**, un **thread** ou un **post**, selon
+    ce qui fait le plus de vues et de réactions. Le meilleur format passe le plus souvent, les autres
+    gardent un passage sur dix (sinon on ne saurait jamais s'ils se remettent à marcher), et un format
+    nouveau est d'abord essayé trois fois ;
+  - un format qui bat nettement un post d'actu prend aussi la place de celui de 19 h. Le 24/11, c'est le
+    cas des threads (1,7 fois la portée habituelle) : il y en a donc un chaque jour ;
+  - s'il n'y a pas d'histoire assez solide pour une vidéo ou un thread, un post prend sa place : le
+    créneau n'est plus perdu ;
+  - la photo de l'actu n'est retirée que si les chiffres disent clairement qu'elle dessert le post (ce
+    n'est pas le cas aujourd'hui) ;
+  - le nombre de posts par jour ne change pas. Sur Telegram, `/plan` te dit quel format est prévu et
+    pourquoi (« 🎯 Formats … »).
 - **La veille du marché** (ton accord du 23/11 : tes crédits API couvrent la dépense) : une fois par
   jour, le bot lit les derniers posts de 5 gros comptes qui racontent la tech et l'IA à tout le monde, et
   montre au rédacteur en chef ceux qui font le plus réagir, pour s'inspirer du genre d'histoire, jamais
@@ -435,6 +449,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `EXPLAINER_VOICE_ENABLED` / `EXPLAINER_VOICE` | `false` / `af_heart` | voix off des vidéos explicatives (voix de synthèse Kokoro, gratuite, sur le serveur) ; `true` sur ton serveur depuis le 23/11/2026. Pour une voix d'homme : `EXPLAINER_VOICE=am_michael` |
 | `TRENDS_ENABLED` | `true` | regarder les tendances du jour (Google, Wikipédia, Hacker News, annonces X déjà lues) avant chaque choix d'histoire |
 | `MARKET_WATCH_ENABLED` | `false` | veille du marché : une fois par jour, ce qui fait réagir chez 5 gros comptes du même sujet (environ 0,25 $ par jour chez X ; comptes dans `market_accounts` de `config/settings.json`). `true` sur ton serveur depuis le 23/11/2026 |
+| `FORMAT_AUTO` | `false` | le format de chaque jour (vidéo explicative, thread ou post) suit les résultats, au lieu des jours fixes de `THREAD_SLOTS` et `EXPLAINER_SLOTS` (qui restent le repli). `true` sur ton serveur depuis le 24/11/2026 |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240,explainer:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |

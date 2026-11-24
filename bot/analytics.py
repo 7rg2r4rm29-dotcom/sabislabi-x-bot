@@ -76,6 +76,20 @@ STYLE_EXAMPLES = 3         # nos meilleurs posts, montrés au rédacteur comme m
 STYLE_TEXT_MAX = 320
 TOPIC_LABEL_EVERY_MIN = 360
 TOPIC_LABEL_BATCH = 120
+# Le format suit les résultats (consigne du propriétaire, 24/11/2026 : « visuel ou textuel, peu
+# importe : choisis la meilleure option à chaque fois »). Voir Analytics.choose_format.
+FORMAT_KINDS = ("explainer", "thread", "tip")   # ce qui peut occuper le grand créneau du jour
+SPECIAL_KINDS = ("explainer", "thread")         # ce qui peut aussi remplacer un post d'actu, une fois prouvé
+FORMAT_MIN_TRIES = 3       # un format encore peu publié est d'abord essayé 3 fois
+FORMAT_MIN_SHARE = 0.10    # chaque format garde 1 passage sur 10 : sinon on ne saurait jamais s'il remarche
+FORMAT_SHARPEN = 2.0       # l'écart est accentué : 1,6x contre 1,0x donne 72 % / 28 %
+FORMAT_PROVEN_MIN = 4      # posts mesurés avant de dire qu'un format bat nettement un post d'actu
+FORMAT_PROVEN_RATIO = 1.3  # … et de combien
+PHOTO_MIN_POSTS = 12       # posts mesurés avec photo ET en texte seul avant de couper les photos
+PHOTO_FLOP_RATIO = 0.70    # photos coupées quand elles font au plus 70 % du texte seul (un écart net :
+#                            le 24/11/2026, 0,85 — rien de clair, et les vieux posts en texte seul venaient
+#                            d'une autre ligne éditoriale)…
+PHOTO_BACK_RATIO = 0.85    # … et remises dès qu'elles remontent à 85 % : pas de va-et-vient d'un jour à l'autre
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +419,118 @@ class Analytics:
             "formats": table(lambda p: fmt_of(p).get("media")),
             "best": best,
         }
+
+    # ==================================================================
+    # Le format suit les résultats
+    # ==================================================================
+    def format_table(self) -> dict:
+        """Pour chaque type de post (vidéo, thread, « le futur arrive », actu…) : sa portée
+        comparée à un post habituel (`lift`), le nombre de posts mesurés (`count`) et le nombre
+        de posts publiés sur 30 jours, mesurés ou non (`tries`). {} tant qu'il n'y a pas assez
+        de chiffres. Ne lève jamais d'exception."""
+        try:
+            ww = self.what_works()
+            if not ww:
+                return {}
+            tries: dict[str, int] = {}
+            for p in self._posts(AGG_DAYS, settled=False, with_metrics=False):
+                tries[p["kind"]] = tries.get(p["kind"], 0) + 1
+            kinds = ww.get("kinds") or {}
+            return {k: {"lift": float((kinds.get(k) or {}).get("lift", 1.0)),
+                        "count": int((kinds.get(k) or {}).get("count", 0)), "tries": int(tries.get(k, 0))}
+                    for k in set(kinds) | set(tries) | set(FORMAT_KINDS) | {"news"}}
+        except Exception as e:  # noqa: BLE001
+            log.exception("Stats : tableau des formats impossible : %s", e)
+            return {}
+
+    @staticmethod
+    def format_shares(table: dict, candidates: list[str]) -> dict[str, float]:
+        """La part de chaque format dans le grand créneau du jour : proportionnelle au carré de
+        sa portée (ce qui marche passe nettement plus souvent), jamais sous `FORMAT_MIN_SHARE`."""
+        cands = [k for k in candidates if k in FORMAT_KINDS]
+        if not cands:
+            return {}
+        weights = {k: max(0.2, float((table.get(k) or {}).get("lift", 1.0))) ** FORMAT_SHARPEN for k in cands}
+        floor = min(FORMAT_MIN_SHARE, 1.0 / len(cands))
+        low: set[str] = set()
+        while True:                                   # les formats sous le plancher y sont remontés
+            rest = sum(w for k, w in weights.items() if k not in low)
+            room = 1.0 - floor * len(low)
+            shares = {k: (floor if k in low else room * weights[k] / rest) for k in cands}
+            under = {k for k in cands if k not in low and shares[k] < floor - 1e-9}
+            if not under or len(low) + len(under) >= len(cands):
+                return shares
+            low |= under
+
+    def choose_format(self, candidates: list[str], rng, pending: dict | None = None) -> tuple[str, str] | None:
+        """Le format du grand créneau du jour, parmi `candidates` : (type, raison en français).
+        Un format encore peu publié (`FORMAT_MIN_TRIES`, en comptant `pending` : ce qui est
+        déjà prévu sans être publié) passe d'abord, pour être mesuré ; ensuite le tirage suit
+        les résultats (`format_shares`). None sans chiffres : le planning fixe s'applique."""
+        table = self.format_table()
+        cands = [k for k in candidates if k in FORMAT_KINDS]
+        if not table or not cands:
+            return None
+        tries = {k: table.get(k, {}).get("tries", 0) + int((pending or {}).get(k, 0)) for k in cands}
+        fresh = [k for k in cands if tries[k] < FORMAT_MIN_TRIES]
+        if fresh:
+            k = min(fresh, key=lambda c: (tries[c], cands.index(c)))
+            return k, f"format encore peu essayé ({tries[k]} sur {FORMAT_MIN_TRIES} essais)"
+        shares = self.format_shares(table, cands)
+        x, acc, picked = rng.random(), 0.0, cands[-1]
+        for k in cands:
+            acc += shares[k]
+            if x < acc:
+                picked = k
+                break
+        detail = ", ".join(f"{KIND_FR.get(k, k)} {table.get(k, {}).get('lift', 1.0):.2f}x → {shares[k] * 100:.0f} %"
+                           for k in cands)
+        return picked, f"tiré selon les résultats ({detail})"
+
+    def second_format(self, first: str, candidates: list[str]) -> tuple[str, str] | None:
+        """Un format qui bat NETTEMENT un post d'actu (au moins `FORMAT_PROVEN_RATIO` fois sa
+        portée, sur `FORMAT_PROVEN_MIN` posts mesurés) prend aussi la place d'un post d'actu
+        ce jour-là, s'il n'occupe pas déjà le grand créneau. (type, raison) ou None."""
+        table = self.format_table()
+        if not table:
+            return None
+        base = max(0.5, float((table.get("news") or {}).get("lift", 1.0)))
+        proven = [(row["lift"], k) for k in candidates if k in SPECIAL_KINDS and k != first
+                  for row in [table.get(k) or {}]
+                  if row.get("count", 0) >= FORMAT_PROVEN_MIN and row.get("lift", 0.0) >= FORMAT_PROVEN_RATIO * base]
+        if not proven:
+            return None
+        lift, k = max(proven)
+        return k, (f"{KIND_FR.get(k, k)} {lift:.2f}x contre {base:.2f}x pour un post d'actu "
+                   f"({table[k]['count']} posts mesurés)")
+
+    def photo_advice(self) -> tuple[bool, str]:
+        """(joindre la photo de l'actu ?, raison). Non seulement quand les chiffres sont nets :
+        au moins `PHOTO_MIN_POSTS` posts mesurés de chaque sorte, et les posts avec photo à
+        `PHOTO_FLOP_RATIO` fois les posts en texte seul, ou moins. Une fois coupées, les photos
+        reviennent quand l'écart se referme (`PHOTO_BACK_RATIO`) ou quand il n'y a plus assez de
+        posts avec photo pour juger : la décision est notée dans l'état (`photo_policy`), elle
+        ne change pas d'un relevé à l'autre. Ne lève jamais d'exception."""
+        try:
+            policy = self.state.data.get("photo_policy")
+            was_off = isinstance(policy, dict) and bool(policy.get("off"))
+            formats = (self.what_works() or {}).get("formats") or {}
+            img, txt = formats.get("image") or {}, formats.get("text") or {}
+            enough = img.get("count", 0) >= PHOTO_MIN_POSTS and txt.get("count", 0) >= PHOTO_MIN_POSTS
+            ratio = float(img.get("lift", 1.0)) / max(0.01, float(txt.get("lift", 1.0)))
+            off = enough and (ratio <= PHOTO_FLOP_RATIO or (was_off and ratio < PHOTO_BACK_RATIO))
+            if off != was_off:
+                self.state.data["photo_policy"] = {"off": off, "since": iso(now_local()), "ratio": round(ratio, 2)}
+                self.state.flush()
+                log.info("Photos de l'actu : %s (avec photo %.2fx, texte seul %.2fx)",
+                         "coupées, les chiffres sont nets" if off else "de retour",
+                         img.get("lift", 1.0), txt.get("lift", 1.0))
+            if off:
+                return False, (f"avec photo {img['lift']:.2f}x ({img['count']} posts), texte seul "
+                               f"{txt['lift']:.2f}x ({txt['count']} posts)")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Stats : avis sur les photos impossible (%s)", e)
+        return True, ""
 
     @staticmethod
     def _winners(table: dict, n_min: int = MIN_WORKS_N) -> list[tuple[float, str, int]]:

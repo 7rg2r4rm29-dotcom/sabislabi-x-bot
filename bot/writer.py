@@ -454,6 +454,7 @@ THREAD_ANGLES: dict[str, str] = {
 # racontée en grand, ou un geste de tous les jours qui va changer.
 THREAD_ANGLE_KINDS = ["timely", "future", "weekly"]
 WEEKLY_RECAP_WEEKDAYS = (4, 5, 6)   # vendredi, samedi, dimanche : le thread est le récap de la semaine
+WEEKLY_RECAP_GAP_DAYS = 3           # … une seule fois par week-end
 GENRE_FR = {"timely": "l'histoire que personne ne réalise", "future": "bientôt, plus besoin de…",
             "weekly": "cette semaine, le futur s'est rapproché"}
 
@@ -1774,12 +1775,29 @@ class Writer:
             self.state.flush()
         return kinds[-6:]
 
+    def _weekly_recap_done(self) -> bool:
+        """Une « semaine en revue » a déjà été publiée ces 3 derniers jours : celle de ce
+        week-end est faite, le thread suivant raconte autre chose."""
+        limit = now_local() - timedelta(days=WEEKLY_RECAP_GAP_DAYS)
+        try:
+            for it in self.state.items(kinds=("thread",), statuses=("published",)):
+                if ((it.get("meta") or {}).get("angle") or "").strip().lower() != "weekly":
+                    continue
+                dt = parse_iso(it.get("created_at"))
+                if dt is not None and dt > limit:
+                    return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("Threads : dernier récap de la semaine illisible (%s)", e)
+        return False
+
     def thread_plan(self, recent_kinds: list[str]) -> list[str]:
-        """Genres des candidats du jour. Fin de semaine : la semaine en revue d'abord.
+        """Genres des candidats du jour. Fin de semaine : la semaine en revue d'abord — une seule
+        fois par week-end (avec FORMAT_AUTO, un thread peut tomber le vendredi, le samedi ET le
+        dimanche : voir `_weekly_recap_done`).
         En semaine : une histoire racontée en grand, ou un geste de tous les jours
         qui va changer — le genre du dernier thread publié passe en dernier, pour varier."""
         n = max(1, int(self.settings.thread_candidates or 1))
-        if now_local().weekday() in WEEKLY_RECAP_WEEKDAYS:
+        if now_local().weekday() in WEEKLY_RECAP_WEEKDAYS and not self._weekly_recap_done():
             order = ["weekly", "timely", "future"]
         else:
             order = ["timely", "future"]

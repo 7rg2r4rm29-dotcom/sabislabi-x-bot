@@ -593,3 +593,124 @@ def test_developer_stories_are_never_pushed_even_when_they_work(an, state):
     notes = an.editor_notes()
     assert "developers" not in notes and "SDK" not in notes
     assert "SDK" not in an.style_notes()
+
+
+# ---------------------------------------------------------------------------
+# Le format suit les résultats (consigne du propriétaire, 24/11/2026 : « visuel ou textuel, peu
+# importe : choisis la meilleure option à chaque fois »)
+# ---------------------------------------------------------------------------
+def _formats_month(state, *, threads=5, thread_views=100, tips=6, tip_views=30, news=8, news_views=40,
+                   explainers=0, explainer_views=40):
+    for i in range(threads):
+        pub(state, f"th{i}", "thread", f"Thread {i}", days=2 + i, metrics=m(thread_views))
+    for i in range(tips):
+        pub(state, f"tp{i}", "tip", f"Tip {i}", days=2 + i, metrics=m(tip_views))
+    for i in range(news):
+        pub(state, f"nw{i}", "news", f"News {i}", days=2 + i, metrics=m(news_views))
+    for i in range(explainers):
+        pub(state, f"ex{i}", "explainer", f"Video {i}", days=2 + i, metrics=m(explainer_views))
+
+
+ALL_FORMATS = ["explainer", "thread", "tip"]
+
+
+def test_without_figures_nothing_is_chosen(an):
+    import random
+    assert an.format_table() == {}
+    assert an.choose_format(ALL_FORMATS, random.Random(1)) is None
+    assert an.second_format("tip", ["explainer", "thread"]) is None
+    assert an.photo_advice() == (True, "")
+
+
+def test_format_table_counts_measured_and_published_posts(an, state):
+    _formats_month(state)
+    pub(state, "fresh", "explainer", "Video of the day", days=0, hour=8, metrics=None)   # publié, pas encore mesuré
+    table = an.format_table()
+    assert table["thread"]["count"] == 5 and table["thread"]["tries"] == 5 and table["thread"]["lift"] > 1.5
+    assert table["tip"]["lift"] < 1.0 and table["news"]["count"] == 8
+    assert table["explainer"] == {"lift": 1.0, "count": 0, "tries": 1}
+
+
+def test_a_format_hardly_tried_goes_first(an, state):
+    import random
+    _formats_month(state)                                    # aucune vidéo encore
+    kind, why = an.choose_format(ALL_FORMATS, random.Random(1))
+    assert kind == "explainer" and "0 sur 3" in why
+    # Ce qui est déjà prévu sans être publié compte comme un essai : pas cinq jours de suite.
+    assert an.choose_format(ALL_FORMATS, random.Random(1), {"explainer": 2})[0] == "explainer"
+    kind, why = an.choose_format(ALL_FORMATS, random.Random(1), {"explainer": 3})
+    assert "tiré selon les résultats" in why and "thread" in why
+    # Un format que les réglages ne permettent pas n'est jamais choisi.
+    assert an.choose_format(["thread", "tip"], random.Random(1))[0] in ("thread", "tip")
+    assert an.choose_format([], random.Random(1)) is None and an.choose_format(["news"], random.Random(1)) is None
+
+
+def test_the_draw_follows_the_results_and_keeps_testing_the_rest(an, state):
+    import random
+    _formats_month(state, explainers=3)
+    table = an.format_table()
+    shares = an.format_shares(table, ALL_FORMATS)
+    assert abs(sum(shares.values()) - 1.0) < 1e-9
+    assert shares["thread"] > 0.6 > shares["explainer"] > shares["tip"] >= amod.FORMAT_MIN_SHARE
+    picks = [an.choose_format(ALL_FORMATS, random.Random(f"format:2026-11-{d:02d}"))[0] for d in range(1, 29)]
+    assert picks.count("thread") > 14 and set(picks) == set(ALL_FORMATS)       # le meilleur, mais pas que lui
+    # Le même jour donne toujours le même tirage (un redémarrage ne change rien).
+    assert an.choose_format(ALL_FORMATS, random.Random("format:2026-11-25")) \
+        == an.choose_format(ALL_FORMATS, random.Random("format:2026-11-25"))
+
+
+def test_a_flopping_format_keeps_one_slot_in_ten():
+    table = {"thread": {"lift": 2.5}, "explainer": {"lift": 2.0}, "tip": {"lift": 0.2}}
+    shares = Analytics.format_shares(table, ALL_FORMATS)
+    assert shares["tip"] == pytest.approx(amod.FORMAT_MIN_SHARE)
+    assert sum(shares.values()) == pytest.approx(1.0) and shares["thread"] > shares["explainer"] > shares["tip"]
+    assert Analytics.format_shares(table, ["tip"]) == {"tip": 1.0}
+    assert Analytics.format_shares({}, ALL_FORMATS) == pytest.approx({k: 1 / 3 for k in ALL_FORMATS})
+    assert Analytics.format_shares(table, ["news"]) == {}
+
+
+def test_a_proven_format_also_replaces_a_news_post(an, state):
+    _formats_month(state)                                    # threads : 100 vues contre 40 pour l'actu
+    kind, why = an.second_format("explainer", ["explainer", "thread"])
+    assert kind == "thread" and "posts mesurés" in why
+    assert an.second_format("thread", ["explainer", "thread"]) is None     # déjà au grand créneau
+    assert an.second_format("explainer", ["explainer"]) is None            # pas permis par les réglages
+
+
+@pytest.mark.parametrize("threads, views", [(3, 100), (5, 45)])
+def test_a_format_is_not_proven_on_thin_or_flat_figures(an, state, threads, views):
+    _formats_month(state, threads=threads, thread_views=views)
+    assert an.second_format("explainer", ["explainer", "thread"]) is None
+
+
+def _media_posts(state, media: str, n: int, views: int):
+    for i in range(n):
+        pub(state, f"{media}{i}", "news", f"{media} post {i}", days=2 + i % 6, metrics=m(views))["fmt"] = {"media": media}
+
+
+@pytest.mark.parametrize("images, image_views, keep", [(12, 20, False), (11, 20, True), (12, 50, True)])
+def test_photos_are_dropped_only_when_the_figures_are_clear(an, state, images, image_views, keep):
+    _media_posts(state, "image", images, image_views)
+    _media_posts(state, "text", 12, 60)
+    ok, why = an.photo_advice()
+    assert ok is keep
+    assert ("avec photo" in why and "texte seul" in why) if not keep else why == ""
+    assert bool((state.data.get("photo_policy") or {}).get("off")) is (not keep)
+
+
+def test_photos_do_not_flip_back_and_forth(an, state):
+    """Coupées sur un écart net, elles ne reviennent que quand l'écart s'est vraiment refermé."""
+    def figures(image_views: int, images: int = 12) -> bool:
+        state.data["published"].clear()
+        _media_posts(state, "image", images, image_views)
+        _media_posts(state, "text", 12, 60)
+        return an.photo_advice()[0]
+
+    assert figures(52) is True                    # un petit écart : rien ne change
+    assert figures(20) is False                   # un écart net : coupées
+    since = state.data["photo_policy"]["since"]
+    assert figures(46) is False                   # un peu mieux, pas assez : toujours coupées
+    assert state.data["photo_policy"]["since"] == since
+    assert figures(58) is True                    # l'écart s'est refermé : de retour
+    assert figures(20) is False
+    assert figures(20, images=5) is True          # plus assez de posts avec photo pour juger : on réessaie

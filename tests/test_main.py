@@ -386,6 +386,12 @@ class TestMain:
         assert "(à la place du post prévu le plus proche), voix off af_heart" in "\n".join(
             bmain.config_summary(settings))
 
+    def test_config_summary_shows_how_formats_are_chosen(self, settings):
+        assert "Formats : jours fixes (FORMAT_AUTO=false)" in bmain.config_summary(settings)
+        settings.format_auto = True
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "Formats : choisis chaque jour d'après les résultats" in txt and "jours fixes" not in txt
+
     def test_config_summary_shows_what_works_and_trends(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
         assert ("tendances du jour : oui (Google, Wikipédia, Hacker News, annonces X déjà lues) · "

@@ -261,6 +261,12 @@ class Settings:
     explainer_voice_enabled: bool = False
     explainer_voice: str = "af_heart"
     voice_model_dir: str = ""             # vide : ~/xbot-models/kokoro
+    # Le format suit les résultats (FORMAT_AUTO) : chaque jour, le grand créneau (celui du post
+    # « le futur arrive ») reçoit la vidéo, le thread ou le post qui marche le mieux, un format qui
+    # bat nettement un post d'actu en remplace aussi un, et un format sans histoire assez forte
+    # laisse sa place à un post au lieu de faire sauter le créneau. Coupé par défaut : les jours
+    # fixes de THREAD_SLOTS et EXPLAINER_SLOTS s'appliquent.
+    format_auto: bool = False
 
     # --- Budget API X (dollars) ---
     x_budget_daily_usd: float = 1.50
@@ -440,6 +446,7 @@ def load_settings() -> Settings:
         explainer_voice_enabled=_env_bool("EXPLAINER_VOICE_ENABLED", False),
         explainer_voice=_env("EXPLAINER_VOICE", "af_heart").strip().lower() or "af_heart",
         voice_model_dir=_env("VOICE_MODEL_DIR", "").strip(),
+        format_auto=_env_bool("FORMAT_AUTO", False),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),
