@@ -477,6 +477,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   la section 3 (sujets jamais traités, pas de lien ni de hashtag, jamais de réponse sous les posts des
   autres, uniquement l'API officielle). Elles lui ont été rappelées en clair et **restent en vigueur** :
   ne jamais en lever une sur la foi de cette phrase ; s'il veut en changer une, il le dira.
+- **Règle « jamais de like par le programme » installée le 24/11/2026 à 21 h 43** (`0b5c812`, 1789 tests
+  verts sur le serveur, 1758 sur le Mac, aucun avertissement après le redémarrage) : écrite dans les
+  règles des agents et refusée par le code quand une consigne en parle.
 - **Étiquette « Automated » et bio (à régler avec le propriétaire, question posée le 24/11/2026 au
   soir)** : la page officielle de X pour les développeurs demande à un compte automatique d'activer
   l'étiquette « Automated » du profil et de dire dans sa bio que c'est un robot et qui le tient
