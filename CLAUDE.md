@@ -378,6 +378,16 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 ## 8. État au 24/11/2026, limites connues, pistes
 
+- **Le format suit les résultats, installé le 24/11/2026 à 19 h 13** (`1d6404f`, 1636 tests verts sur le
+  serveur, 1605 sur le Mac, `--check` au vert ; détail en section 4). Vérifié juste après dans le journal
+  et dans l'état : le 24/11 est resté en jours fixes (« décidé trop tard pour ce jour »), et le plan du
+  25/11 est « vidéo explicative au grand créneau (format encore peu essayé, 0 sur 3 essais) ; thread à
+  la place d'un post d'actu (1,69x contre 0,99x, 7 posts mesurés) ». À regarder les jours suivants :
+  la ligne « Formats du … » du journal chaque nuit, la portée des threads de 19 h (un créneau faible
+  jusqu'ici : s'ils y font moins bien, la règle les retire toute seule), les « remplacé par un post »
+  sur Telegram, et le coût Claude (`/budget`). Le propriétaire a été prévenu que c'est le bot qui
+  s'ajuste seul à chaque post : l'assistant, lui, ne tourne pas en permanence.
+
 - **Audit complet du 24/11/2026** (le propriétaire : « revérifie tous les angles, on doit péter le score
   maintenant ») — 119 posts de plus de 24 h, chiffres de l'API :
   - **La machine marche ; c'est le public qui manque.** Médiane de 42 vues, la même depuis quatre
@@ -579,9 +589,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     (`news_feeds`) et les consignes ;
   - regarder la portée des premières vidéos explicatives (type `explainer` dans `what_works`) contre les
     autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche ;
-  - si les vidéos font mieux : une par jour (`EXPLAINER_SLOTS`) et un essai en vertical 9:16 (garder le
-    cadre actuel de 1080 × 1350 au centre d'une image de 1080 × 1920, le fond prolongé au-dessus et
-    en dessous) ;
+  - le nombre de vidéos par semaine se règle maintenant tout seul (`FORMAT_AUTO`). Reste à essayer le
+    format vertical 9:16 si les vidéos marchent (garder le cadre actuel de 1080 × 1350 au centre d'une
+    image de 1080 × 1920, le fond prolongé au-dessus et en dessous) ;
+  - autres formats à mesurer un jour avec la même mécanique : les sondages sur les posts d'actu, une
+    vidéo courte (15 à 20 s) pour les posts « à chaud » ;
   - le dossier temporaire du Mac est nettoyé la nuit : le 24/11, le `venv` des tests avait perdu son
     `pyvenv.cfg` (« No module named pytest »). En refaire un neuf (`python3 -m venv`, puis les
     bibliothèques de `requirements.txt` sauf `kokoro-onnx`, inutile aux tests) prend une minute.
