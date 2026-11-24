@@ -379,8 +379,16 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     jamais le bot ni un navigateur : la bio « The future is arriving faster than you think. AI, robots &
     video games explained in plain words, every day. No jargon, no hype. Follow to see it coming. »
     (152 caractères), la bannière `profil/banniere-x.png` (1500 × 500, style des vidéos, dessinée sur le
-    serveur avec la police DejaVu), et un bon post épinglé. Lui redemander si c'est fait avant d'en
-    reparler.
+    serveur avec la police DejaVu), et un bon post épinglé. **Fait par lui le 24/11 vers 18 h, vérifié
+    par l'API** : la bio (mot pour mot) et le post épinglé (le thread « GTA VI joué par la pensée »). La
+    bannière reste à poser : il ne trouvait pas le fichier ; une copie est sur son Bureau
+    (`banniere-x.png`) et il l'a reçue dans la conversation. Vérifier par l'API (`profile_banner_url`)
+    avant d'en reparler.
+  - **Rapport de santé du compte** (x.com/i/jf/under_the_hood, voir README section 9) : il l'a ouvert le
+    24/11 sans le comprendre et a proposé à l'assistant de le lire. L'assistant ne lit jamais x.com
+    lui-même, même invité (règle absolue de la section 3) : lui demander de coller le texte de la page
+    ou une capture d'écran faite par lui, puis la lui expliquer simplement. Une étiquette (« label »)
+    sur le compte voudrait dire que X le limite.
   - **Corrigé et installé le 24/11** :
     - sources : retirés The Debrief (404 depuis le 19/11), IEEE Spectrum et The Guardian (403 : ils
       refusent les robots, jamais forcés), et quatre flux du groupe Future (Tom's Guide ×2, TechRadar,
