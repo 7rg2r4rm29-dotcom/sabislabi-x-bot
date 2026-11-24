@@ -494,9 +494,13 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   « Automated accounts must be labeled »), cacher qu'un compte est un robot figure dans la liste de ce
   qui fait suspendre ou bannir (« Deceptive Bots: Impersonating humans, hiding bot identity »), et rien
   ne dit que l'étiquette réduit la portée (la page n'en parle pas, aucune donnée trouvée). Recommandé :
-  l'activer et ajouter « Automated account run by @… » dans la bio. La décision reste la sienne : en
-  attente. S'il choisit de ne pas l'activer, le noter ici comme un risque qu'il accepte en connaissance
-  de cause, et ne plus insister.
+  l'activer et ajouter « Automated account run by @… » dans la bio.
+  **DÉCISION DU PROPRIÉTAIRE, 24/11/2026 au soir : « Non ».** Il n'active pas l'étiquette et la bio
+  reste telle quelle. C'est un risque qu'il accepte en connaissance de cause (suspension de
+  l'application, retrait de l'accès à l'API ou bannissement, selon la page de X) : **ne plus lui en
+  reparler**, sauf si X le sanctionne ou change sa règle, ou s'il pose lui-même la question. Si le
+  rapport « under the hood » de novembre (vers le 7/12) montre une étiquette sur le compte, lui
+  rappeler cette piste en premier.
 - **Ce que le code de X dit vraiment (lecture du spécialiste du 24/11/2026, vérifiée à la main dans
   `author_cold_start.rs`)** — à connaître avant de proposer quoi que ce soit sur la portée :
   - **poids** : partage par copie du lien 20, réponse 5 (20 entre deux comptes qui se suivent), partage
