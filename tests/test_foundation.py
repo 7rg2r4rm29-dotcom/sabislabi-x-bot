@@ -269,7 +269,11 @@ class TestShippedConfig:
             assert set(f) <= {"name", "url", "weight", "filter", "official"}, f
             urls.append(f["url"].rstrip("/").lower())
         assert len(urls) == len(set(urls)), "flux en double"
-        assert not any("x.com/" in u or "twitter.com/" in u for u in urls)   # X ne se lit que par l'API
+        from bot import sources
+        # X ne se lit que par l'API. Jugé sur le nom du site, comme le vrai garde-fou : « xbox.com »
+        # (le blog officiel de Xbox) n'est pas « x.com ».
+        assert not any(sources._is_x_url(u) for u in urls)
+        assert not sources._is_x_url("https://news.xbox.com/en-us/feed/") and sources._is_x_url("https://x.com/a")
         assert sum(1 for f in feeds if f.get("official")) >= 1
         assert any(f.get("filter") for f in feeds)
 

@@ -377,6 +377,7 @@ NEWS_OUTLETS = (
     "Science Alert", "Dexerto", "UNILAD", "UNILAD Tech", "Singularity Hub", "ZME Science", "IGN",
     "GamesRadar", "UploadVR", "Humanoids Daily", "DroneDJ", "Science News", "Kotaku", "Polygon",
     "Eurogamer", "PC Gamer", "Road to VR", "InsideEVs", "TechSpot", "Neowin", "XDA", "Euronews",
+    "GameSpot", "VGC", "Video Games Chronicle", "TechXplore", "Tech Xplore", "Robot Report",
     "Independent", "Information", "Times", "Atlantic", "Register", "Debrief", "Decoder",
 )
 # Ceux-là ne désignent un média qu'avec leur « The » (« the information », « times »…).

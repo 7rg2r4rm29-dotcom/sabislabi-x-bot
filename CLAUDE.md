@@ -119,7 +119,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 ## 4. Architecture (détails dans `DESIGN.md`)
 
 - `bot/sources.py` :
-  - environ 42 flux (`config/settings.json` → `news_feeds`) ;
+  - environ 48 flux (`config/settings.json` → `news_feeds`), dont 6 de jeux vidéo depuis le 24/11/2026
+    (le sujet qui marche le mieux ; les blogs officiels PlayStation et Xbox en font partie) ;
   - tri des actus : `audience_factor`, `appeal_of`, `top_for` ;
   - filtres : sujets militaires (`filters.MILITARY_RE`), bons plans (`_SHOPPING_BLOCK_RE`), sujets des
     flux généralistes (`topic_filter`) ;
@@ -190,7 +191,12 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     propriétaire le 24/11/2026** (« Garde cette voix ») : `af_heart`, une voix de femme américaine ; ne
     plus lui poser la question. Ce qui est dit = ce
     qui est écrit (`explainer.narration` : titre, texte, étapes, côtés, « As X put it: … », fin, puis
-    « Follow for the future, explained. ») : rien de nouveau à relire. Les scènes se calent sur la voix
+    « Follow for the future, explained. ») : rien de nouveau à relire. Seuls les signes sont écrits en
+    toutes lettres pour la voix (`voice.spoken`, 24/11/2026) : elle disait « dollar twenty-nine
+    thousand… » pour « $29,990 », « G T A V I » pour « GTA VI », « three ex » pour « 3x », « V S » pour
+    « vs. » (vérifié sans l'écouter, sur les sons que le modèle calcule : `Kokoro.tokenizer.phonemize`).
+    Désormais « 29,990 dollars », « GTA 6 », « 3 times », « versus », unités en mots, flèches retirées ;
+    l'écran garde le texte d'origine. Les scènes se calent sur la voix
     (`voice_timing` : 0,3 s avant, 0,35 s entre deux phrases, 0,6 s après ; chaque étape apparaît quand
     elle est dite), piste mise en place par `narration_track`, AAC 128 k. Au-delà de 120 s, ou au
     moindre problème : vidéo sans voix. Mesuré le 23/11 : 30 s de voix calculées en ~65 s, 670 Mo de
@@ -282,7 +288,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
   une vidéo fabriquée sur place ; Wikimedia aussi ; les vidéos explicatives sont fabriquées en petit avec
-  le vrai ffmpeg) ; 1493 tests sur le Mac au 23/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
+  le vrai ffmpeg) ; 1572 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
@@ -339,8 +345,65 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     commits : `Claude <noreply@anthropic.com>` (config locale du clone). Un clone neuf doit reprendre ces
     trois réglages.
 
-## 8. État au 23/11/2026, limites connues, pistes
+## 8. État au 24/11/2026, limites connues, pistes
 
+- **Audit complet du 24/11/2026** (le propriétaire : « revérifie tous les angles, on doit péter le score
+  maintenant ») — 119 posts de plus de 24 h, chiffres de l'API :
+  - **La machine marche ; c'est le public qui manque.** Médiane de 42 vues, la même depuis quatre
+    semaines, quels que soient le sujet, l'heure, le jour, l'image ou le style (tout tient entre 20 et
+    60) ; 77 réactions en tout, aucun partage. Les seuls pics (100 à 211 vues) : une actu chaude portant
+    un nom que tout le monde cherche (sortie de GTA VI, lancements d'OpenAI ou d'Automattic). Régler
+    l'écriture ne déplace donc que ±50 % d'un petit chiffre ; il manque de vraies personnes du bon public
+    devant les posts. Pipeline sain : aucun créneau perdu depuis le 19/11, les 99 « pas de réponse
+    exploitable » du journal datent tous de la panne du 17/11.
+  - **Moins de réactions depuis le style « alerte info » (14/11)** : 0,63 réaction par post du 28/10 au
+    8/11, 1,04 du 9 au 13/11, 0,34 du 14 au 23/11 (réponses : 17 pour 24 posts, puis 4 pour 32). L'ancien
+    public (tech, crypto) répondait aux astuces, aux « gm » et aux annonces pour initiés, pas aux
+    nouvelles pour le grand public. La ligne grand public reste le choix du propriétaire.
+  - **Photo ou pas : aucun gain de portée** (médiane 39 avec image, 43,5 en texte seul ; même sens dans
+    les trois périodes et pour chaque type de post). **Question en dernière ligne : aucun gain** (38 vues
+    contre 42 ; 3 réponses pour 31 posts à question, 33 pour 88 sans), alors que 24 des 32 derniers posts
+    finissaient par une question : consigne ramenée à environ un post sur trois (`PLAYBOOK`).
+  - **Règles de X vérifiées (novembre 2026)** : le fil classe selon les réactions prévues et le temps
+    passé sur le post (mise à jour du 8/10/2026) ; coup de pouce aux auteurs peu vus, frein aux posts
+    montrés hors abonnés, 2e post d'un même auteur moins bien classé (code public `xai-org/x-algorithm`) ;
+    abonnés mutuels favorisés (13/07/2026) ; publier en rafale pénalise les posts suivants (mai 2026) ;
+    **Communautés fermées en mai 2026**, remplacées par des fils par thème (plus de 75) que Grok trie en
+    lisant les posts ; fil de vidéos verticales ouvert au monde entier (mars 2026) ; réponses
+    automatiques sous les posts des autres bloquées par l'API depuis février 2026 (sauf si l'auteur nous
+    mentionne ou nous cite) ; aucune pénalité connue pour les posts envoyés par l'API. Le réglage
+    `made_with_ai` ne part qu'avec une image fabriquée par IA (jamais aujourd'hui).
+  - **Profil du compte (lu par l'API)** : la bio date de l'ancienne ligne (« AI, tech & business, minus
+    the hype. Building in public… gm ☕ »), pas de bannière, aucun post épinglé, 1 911 abonnements hérités,
+    un lien vers une page de vente du propriétaire. Proposé le 24/11 — c'est LUI qui modifie son profil,
+    jamais le bot ni un navigateur : la bio « The future is arriving faster than you think. AI, robots &
+    video games explained in plain words, every day. No jargon, no hype. Follow to see it coming. »
+    (152 caractères), la bannière `profil/banniere-x.png` (1500 × 500, style des vidéos, dessinée sur le
+    serveur avec la police DejaVu), et un bon post épinglé. Lui redemander si c'est fait avant d'en
+    reparler.
+  - **Corrigé et installé le 24/11** :
+    - sources : retirés The Debrief (404 depuis le 19/11), IEEE Spectrum et The Guardian (403 : ils
+      refusent les robots, jamais forcés), et quatre flux du groupe Future (Tom's Guide ×2, TechRadar,
+      GamesRadar) ; tous les flux de ce groupe répondent 404 depuis le 24/11 vers 14 h, depuis le
+      serveur comme depuis le Mac. Live Science et Space.com sont gardés au cas où ils reviennent
+      (sinon, les retirer). ScienceAlert passe à son flux général filtré « tech » (l'ancien était figé
+      depuis 16 jours). Ajoutés, tous testés depuis le serveur : IGN jeux, GameSpot, VGC, Dexerto jeux,
+      les blogs officiels PlayStation et Xbox, The Robot Report, TechXplore, CBS News, Euronews, Wired,
+      Gizmodo, 404 Media. Essai réel : 226 actus sur 36 h, 33 des 120 titres montrés à la rédaction en
+      chef viennent des sources de jeux. Euronews a répondu 406 depuis le Mac (200 depuis le serveur) :
+      à retirer s'il refuse aussi le serveur ;
+    - voix des vidéos : `voice.spoken` (section 4) ; consigne des vidéos : « no voice » remplacé par
+      « écrit pour être dit » ;
+    - un test confondait « xbox.com » et « x.com » ; les vrais garde-fous jugent sur le nom du site.
+  - **Modèle** : le bot reste sur son `LLM_MODEL`. Le modèle le plus fort coûte le double par mot (8 $ et
+    40 $ le million contre 4 $ et 20 $) : environ 170 $ par mois pour le même travail, presque tout le
+    plafond de 195 $, sans toucher au vrai frein. À ne changer que si le propriétaire le demande.
+  - **Ce qui peut changer l'échelle, par effet attendu** : (1) payer X pour montrer nos meilleurs posts
+    au bon public (bouton « Booster » de l'app : une dépense, donc sa décision) ; (2) les vidéos, que X
+    pousse dans son fil vidéo : première vraie vidéo le 25/11, puis décider d'en faire une par jour et
+    d'essayer le format vertical 9:16 (rien d'officiel ne dit que 4:5 est moins montré) ; (3) le profil
+    refait ; (4) coller aux très grosses actus (c'est ce qui a donné les pics) ; (5) des réponses
+    écrites à la main par le propriétaire sous de gros comptes (l'API ne le permet plus).
 - **Portée, bilan du 23/11/2026** (104 posts du 1er au 23/11, chiffres de l'API) : 20 à 60 vues par
   post, médiane environ 40 ; en tout 37 likes, 30 réponses, 1 signet et **aucun partage**. Abonnés :
   2 940 (4 511 fin octobre ; −1 440 le 31/10 et −101 le 18/11, deux ménages de X), hérités de la période
@@ -367,11 +430,8 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
      42 s de voix, vidéo de 50 s (7 scènes), voix ~85 s + vidéo 98 s ; envoyée sur Telegram. La
      relecture avait accepté « GTA » (sigle non expliqué) au 2e essai : depuis `067d228`, « un peu
      technique » n'est toléré qu'au 3e et dernier essai d'une vidéo.
-- Le flux The Guardian répond aussi 403 depuis le 23/11 (avec IEEE Spectrum 403 et The Debrief 404).
-- Le 24/11 vers 16 h (heure de Paris), tous les flux du groupe Future répondent 404 : les 6 de
-  `news_feeds` (TechRadar, Tom's Guide ×2, GamesRadar, Live Science, Space.com) et même leur flux
-  général `/feeds.xml`, depuis le serveur comme depuis le Mac, alors que leurs sites marchent. Panne
-  chez eux, sans doute passagère : le bot les saute. À revoir si ça dure (adresses changées ?).
+- Sources mortes ou qui refusent les robots : réglé le 24/11 (voir l'audit ci-dessus). Reste à voir si
+  Live Science et Space.com reviennent.
 - **@sabislabi est DÉJÀ abonné à X Premium** (le propriétaire l'a rappelé le 23/11/2026 ; vérifié par
   l'API : `verified_type` « blue », `subscription_type` « Premium »). Ne plus le lui proposer ; vérifier
   ce genre de chose par l'API AVANT de suggérer une dépense. La portée faible ne vient donc pas de là.
@@ -439,7 +499,6 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     quelques minutes le 20/11 vers 0 h 50.
   - À regarder dans le journal : `Post … : version retenue parmi 3 (… rang N du second avis)`,
     `version n/3 écartée`, `version classée n refusée à la relecture`, appels `choose-<kind>`.
-  - Le flux The Debrief répond 404 depuis le 19/11 au moins (adresse à corriger dans `news_feeds`).
 - **Écart autour des posts prévus ramené de 60 à 10 min le 19/11** (accord du propriétaire : « Oui,
   autorise », en sachant que deux posts proches se gênent un peu sur X). À surveiller : un post à chaud
   et un post prévu à quelques minutes l'un de l'autre, et leur portée respective.
@@ -471,4 +530,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - après une ou deux semaines, lire `--report` et les notes de performance, puis ajuster les sources
     (`news_feeds`) et les consignes ;
   - regarder la portée des premières vidéos explicatives (type `explainer` dans `what_works`) contre les
-    autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche.
+    autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche ;
+  - si les vidéos font mieux : une par jour (`EXPLAINER_SLOTS`) et un essai en vertical 9:16 (garder le
+    cadre actuel de 1080 × 1350 au centre d'une image de 1080 × 1920, le fond prolongé au-dessus et
+    en dessous) ;
+  - le dossier temporaire du Mac est nettoyé la nuit : le 24/11, le `venv` des tests avait perdu son
+    `pyvenv.cfg` (« No module named pytest »). En refaire un neuf (`python3 -m venv`, puis les
+    bibliothèques de `requirements.txt` sauf `kokoro-onnx`, inutile aux tests) prend une minute.

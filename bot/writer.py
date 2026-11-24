@@ -194,7 +194,7 @@ SHAPE OF A POST — short wins: aim for 120 to 220 characters (hard cap 260). Tw
 - hook, then a short list of 2 or 3 things it does (one per line, each starting with "→").
 Whatever the skeleton:
 - The number people will repeat (price, size, date) is in the post. The honest limit goes in the middle, in a few words ("still a prototype", "if US regulators approve").
-- The last line is something people can answer or argue with. On about half of the posts: your own one-line take or a kicker ("No mouse, no keyboard." / "It still can't open a door." / "Handy. And a little creepy."). On the other half, when the story divides people: ONE question, 8 words or fewer, that a stranger answers in one to five words and where both answers are respectable ("Would you get in?" / "Cool or creepy?" / "Right call, or too late?" / "What's the first chore you'd give it?" / "In your home in 2 years, 10 years, or never?" / "What would you need to see to believe it?").
+- The last line is something people can answer or argue with. On most posts: your own one-line take or a kicker ("No mouse, no keyboard." / "It still can't open a door." / "Handy. And a little creepy."). On about one post in three, when the story truly divides people: ONE question, 8 words or fewer, that a stranger answers in one to five words and where both answers are respectable ("Would you get in?" / "Cool or creepy?" / "Right call, or too late?" / "What's the first chore you'd give it?" / "In your home in 2 years, 10 years, or never?" / "What would you need to see to believe it?"). If two of your last three posts end with a question, this one ends with your take: a question under every post reads like a formula, and people stop answering.
 - Never end on a date, a price, a caveat or an explanation. A question is a closing line, never line 1. Never a generic "Thoughts?".
 - If you run out of room, cut the second detail, then shorten the last line (3 to 6 words are enough) — never cut the hook or the honest limit.
 - Line 1 is the news in your own words, never an article's headline copied or reworded.
@@ -589,7 +589,7 @@ EXPLAINER_ATTEMPTS = 3       # le script, puis deux réécritures guidées au pl
 EXPLAINER_LIMITS = {"title": 80, "text": 135, "heading": 48, "big": 14, "item": 70, "side": 58, "quote": 145,
                     "who": 48, "ending": 100}
 
-EXPLAINER_PROMPT = """You write short animated explainer videos for an international X account (English) with one promise: the future is arriving faster than people think, told in plain words. 30 to 45 seconds, no voice: everything is written on screen, big, and appears one scene after the other. Think of the best science show for families on TV: one curious question, then the answer in small, simple steps anyone can follow, and one detail people will repeat at dinner tonight.
+EXPLAINER_PROMPT = """You write short animated explainer videos for an international X account (English) with one promise: the future is arriving faster than people think, told in plain words. 30 to 45 seconds: everything is written on screen, big, one scene after the other, and a voice reads each screen aloud as it appears. Think of the best science show for families on TV: one curious question, then the answer in small, simple steps anyone can follow, and one detail people will repeat at dinner tonight.
 
 """ + AUDIENCE + """
 
@@ -614,6 +614,7 @@ THE SCRIPT — scenes that appear one after the other:
 - ending: what it means for a normal person, or a question to the viewer (90 characters at most).
 - Explain HOW or WHY only with what the items say. When they don't say how it works, never guess: show what it does, what is new, why it matters, and how far it is (a demo, a test, on sale).
 - Plain words on every screen: explain an unusual term the first time you use it ("a soft robot, made of a rubber-like material") or don't use it; write units in full words ("15 feet per second", never "15 ft/s").
+- Every screen is also HEARD: write whole sentences that sound natural when someone says them out loud. No shorthand a voice would trip on ("vs.", "w/", "3x", "→", "&", "e.g."): write "versus", "with", "three times", "and". Prices and numbers are fine as they are ("$29,990", "58%").
 - Every word on screen is checked against the items before anything is published, exactly like a post.
 
 THE POST that carries the video — text: 200 characters at most, plain words, in YOUR OWN words — never the headline's or the article's sentences (a post that repeats them is refused): the hook of the story the video explains. Never "watch this", "thread" or "video below"; no link, no hashtag, no @mention. hook: the shape of its first line, one of: """ + ", ".join(HOOK_SHAPES) + """.

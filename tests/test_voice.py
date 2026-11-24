@@ -53,6 +53,54 @@ def test_voice_name(settings, raw, name):
     assert vmod.voice_name(settings) == name
 
 
+@pytest.mark.parametrize("written,said", [
+    # Les montants : la voix disait « dollar twenty-nine thousand… » (le signe d'abord, au singulier).
+    ("It costs $29,990.", "It costs 29,990 dollars."),
+    ("It made $1 million in a day.", "It made 1 million dollars in a day."),
+    ("Plus a $299 monthly subscription.", "Plus a 299 dollar monthly subscription."),
+    ("A $1.5 billion deal, with a $1 million prize", "A 1.5 billion dollar deal, with a 1 million dollar prize"),
+    ("$5M raised, US$20k spent", "5 million dollars raised, 20 thousand dollars spent"),
+    ("Only $1.", "Only 1 dollar."),
+    ("It costs $4.99 a month. Or $0.99.", "It costs 4 dollars and 99 cents a month. Or 99 cents."),
+    ("$299/month", "299 dollars per month"),
+    ("€1,500 and £2 million", "1,500 euros and 2 million pounds"),
+    # Les chiffres romains après un nom : « GTA VI » se disait « G T A V I ».
+    ("GTA VI is out.", "GTA 6 is out."),
+    ("GTA V sold well.", "GTA 5 sold well."),
+    ("Final Fantasy VII and Artemis II", "Final Fantasy 7 and Artemis 2"),
+    ("the X app and a Model V", "the X app and a Model V"),
+    # Les abréviations écrites.
+    ("3x faster than a human.", "3 times faster than a human."),
+    ("10× more", "10 times more"),
+    ("A 4x4 truck at 1080x1920", "A 4x4 truck at 1080x1920"),
+    ("AI vs. humans, Tesla vs Waymo", "AI versus humans, Tesla versus Waymo"),
+    ("No. 1 in the world, #1 app", "number 1 in the world, number 1 app"),
+    ("~40 minutes, 24/7", "about 40 minutes, 24 7"),
+    ("→ It folds your laundry", "It folds your laundry"),
+    ("2 lb, 1 lb, 380 KB, 15 ft/s, 120 km/h", "2 pounds, 1 pound, 380 kilobytes, 15 feet per second, "
+                                                "120 kilometers per hour"),
+    ("-5°C outside. It turns 360°.", "-5 degrees Celsius outside. It turns 360 degrees."),
+    # Le reste ne bouge jamais : mêmes mots, donc rien de nouveau à relire.
+    ("How does it work?", "How does it work?"),
+    ("  It  sees you. ", "It sees you."),
+    ("As OpenAI put it: it just works.", "As OpenAI put it: it just works."),
+    ("A robot that costs as much as a car. 58% faster in 2027.", "A robot that costs as much as a car. 58% faster in 2027."),
+    ("", ""), ("→", ""),
+])
+def test_spoken_form(written, said):
+    assert vmod.spoken(written) == said
+
+
+def test_the_voice_gets_the_spoken_form(ready, tmp_path, monkeypatch):
+    run = FakeRun()
+    monkeypatch.setattr(vmod.subprocess, "run", run)
+    assert vmod.synthesize(ready, ["GTA VI is out.", "→"], tmp_path / "a") is None      # un écran sans mots
+    assert not run.calls
+    out = vmod.synthesize(ready, ["GTA VI costs $70.", "No hands."], tmp_path / "b")
+    assert out and len(out) == 2
+    assert json.loads(Path(run.calls[0][3]).read_text())["texts"] == ["GTA 6 costs 70 dollars.", "No hands."]
+
+
 class FakeRun:
     """subprocess.run du processus à part : écrit les WAV et result.json comme le vrai."""
 

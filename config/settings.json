@@ -80,6 +80,18 @@
       "official": true
     },
     {
+      "name": "PlayStation",
+      "url": "https://blog.playstation.com/feed/",
+      "weight": 1,
+      "official": true
+    },
+    {
+      "name": "Xbox",
+      "url": "https://news.xbox.com/en-us/feed/",
+      "weight": 1,
+      "official": true
+    },
+    {
       "name": "New Atlas",
       "url": "https://newatlas.com/index.rss",
       "weight": 3,
@@ -92,8 +104,9 @@
     },
     {
       "name": "ScienceAlert",
-      "url": "https://www.sciencealert.com/tech/feed",
-      "weight": 3
+      "url": "https://www.sciencealert.com/feed",
+      "weight": 3,
+      "filter": "tech"
     },
     {
       "name": "Dexerto",
@@ -144,12 +157,6 @@
       "weight": 2
     },
     {
-      "name": "The Guardian",
-      "url": "https://www.theguardian.com/technology/rss",
-      "weight": 2,
-      "filter": "tech"
-    },
-    {
       "name": "The Verge",
       "url": "https://www.theverge.com/rss/tech/index.xml",
       "weight": 2
@@ -182,6 +189,18 @@
       "filter": "tech"
     },
     {
+      "name": "CBS News",
+      "url": "https://www.cbsnews.com/latest/rss/technology",
+      "weight": 1,
+      "filter": "tech"
+    },
+    {
+      "name": "Euronews",
+      "url": "https://www.euronews.com/rss?level=vertical&name=next",
+      "weight": 1,
+      "filter": "tech"
+    },
+    {
       "name": "Engadget",
       "url": "https://www.engadget.com/rss.xml",
       "weight": 1,
@@ -198,18 +217,26 @@
       "weight": 1
     },
     {
-      "name": "Tom's Guide",
-      "url": "https://www.tomsguide.com/feeds/tag/ai",
-      "weight": 1
+      "name": "Wired",
+      "url": "https://www.wired.com/feed/rss",
+      "weight": 1,
+      "filter": "tech"
     },
     {
-      "name": "Tom's Guide",
-      "url": "https://www.tomsguide.com/feeds/tag/smart-glasses",
-      "weight": 1
+      "name": "Gizmodo",
+      "url": "https://gizmodo.com/feed",
+      "weight": 1,
+      "filter": "tech"
     },
     {
-      "name": "TechRadar",
-      "url": "https://www.techradar.com/feeds/tag/artificial-intelligence",
+      "name": "404 Media",
+      "url": "https://www.404media.co/rss/",
+      "weight": 1,
+      "filter": "tech"
+    },
+    {
+      "name": "TechXplore",
+      "url": "https://techxplore.com/rss-feed/",
       "weight": 1
     },
     {
@@ -218,9 +245,24 @@
       "weight": 2
     },
     {
-      "name": "GamesRadar",
-      "url": "https://www.gamesradar.com/feeds/tag/hardware",
+      "name": "IGN",
+      "url": "https://feeds.feedburner.com/ign/games-all",
       "weight": 1
+    },
+    {
+      "name": "GameSpot",
+      "url": "https://www.gamespot.com/feeds/news/",
+      "weight": 1
+    },
+    {
+      "name": "VGC",
+      "url": "https://www.videogameschronicle.com/feed/",
+      "weight": 1
+    },
+    {
+      "name": "Dexerto",
+      "url": "https://www.dexerto.com/gaming/feed/",
+      "weight": 2
     },
     {
       "name": "UploadVR",
@@ -228,13 +270,13 @@
       "weight": 1
     },
     {
-      "name": "IEEE Spectrum",
-      "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",
+      "name": "Humanoids Daily",
+      "url": "https://www.humanoidsdaily.com/feed.xml",
       "weight": 1
     },
     {
-      "name": "Humanoids Daily",
-      "url": "https://www.humanoidsdaily.com/feed.xml",
+      "name": "The Robot Report",
+      "url": "https://www.therobotreport.com/feed/",
       "weight": 1
     },
     {
@@ -253,12 +295,6 @@
       "name": "DroneDJ",
       "url": "https://dronedj.com/feed/",
       "weight": 1
-    },
-    {
-      "name": "The Debrief",
-      "url": "https://thedebrief.org/feed/",
-      "weight": 1,
-      "filter": "tech"
     },
     {
       "name": "Science News",

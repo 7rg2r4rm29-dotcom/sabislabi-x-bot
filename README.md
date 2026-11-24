@@ -409,6 +409,15 @@ Ouvre **x.com/i/jf/under_the_hood** et regarde le rapport du mois : s'il affiche
 est le premier à surveiller de près. En cas d'étiquette, arrête tout ce qui ressemble à de l'automatique
 et demande de l'aide.
 
+**Ton profil compte autant que tes posts** (bilan du 24/11/2026) : quelqu'un qui découvre un post regarde
+le profil avant de s'abonner. Il doit dire la promesse du compte, en anglais, sans rien de l'ancienne
+période. C'est toi qui le modifies, dans l'app X (le bot n'y touche jamais) :
+
+- **bio** : « The future is arriving faster than you think. AI, robots & video games explained in plain
+  words, every day. No jargon, no hype. Follow to see it coming. » ;
+- **bannière** : le fichier `profil/banniere-x.png` de ce dossier (même style que les vidéos) ;
+- **post épinglé** : ton meilleur post du moment, puis ta meilleure vidéo explicative.
+
 ## 10. Les réglages
 
 Ils sont dans `config/.env` sur le serveur. Un horaire mal écrit n'arrête pas le bot : il reprend la valeur
