@@ -390,11 +390,16 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
       depuis 16 jours). Ajoutés, tous testés depuis le serveur : IGN jeux, GameSpot, VGC, Dexerto jeux,
       les blogs officiels PlayStation et Xbox, The Robot Report, TechXplore, CBS News, Euronews, Wired,
       Gizmodo, 404 Media. Essai réel : 226 actus sur 36 h, 33 des 120 titres montrés à la rédaction en
-      chef viennent des sources de jeux. Euronews a répondu 406 depuis le Mac (200 depuis le serveur) :
-      à retirer s'il refuse aussi le serveur ;
+      chef viennent des sources de jeux. Euronews répond tantôt 200, tantôt 406 (un refus), au Mac comme
+      au serveur : gardé à l'essai, à retirer si la plupart des relevés échouent (chercher « flux
+      Euronews » dans le journal) ;
     - voix des vidéos : `voice.spoken` (section 4) ; consigne des vidéos : « no voice » remplacé par
       « écrit pour être dit » ;
-    - un test confondait « xbox.com » et « x.com » ; les vrais garde-fous jugent sur le nom du site.
+    - un test confondait « xbox.com » et « x.com » ; les vrais garde-fous jugent sur le nom du site ;
+    - installation : `916ba82`, 1603 tests verts sur le serveur, `--check` au vert (voix comprise), bot
+      relancé à 17 h 04. Premier relevé à 17 h 14 : toutes les nouvelles sources lues (GameSpot 30, IGN
+      20, TechXplore 30, CBS News 20, The Robot Report 15, PlayStation 10, Xbox 10, VGC 10, Wired 9,
+      Gizmodo 9, 404 Media 7), et la rédaction en chef a choisi parmi 83 titres au lieu de 31 à midi.
   - **Modèle** : le bot reste sur son `LLM_MODEL`. Le modèle le plus fort coûte le double par mot (8 $ et
     40 $ le million contre 4 $ et 20 $) : environ 170 $ par mois pour le même travail, presque tout le
     plafond de 195 $, sans toucher au vrai frein. À ne changer que si le propriétaire le demande.
