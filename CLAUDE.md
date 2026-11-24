@@ -380,10 +380,11 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     video games explained in plain words, every day. No jargon, no hype. Follow to see it coming. »
     (152 caractères), la bannière `profil/banniere-x.png` (1500 × 500, style des vidéos, dessinée sur le
     serveur avec la police DejaVu), et un bon post épinglé. **Fait par lui le 24/11 vers 18 h, vérifié
-    par l'API** : la bio (mot pour mot) et le post épinglé (le thread « GTA VI joué par la pensée »). La
-    bannière reste à poser : il ne trouvait pas le fichier ; une copie est sur son Bureau
-    (`banniere-x.png`) et il l'a reçue dans la conversation. Vérifier par l'API (`profile_banner_url`)
-    avant d'en reparler.
+    par l'API** : la bio (mot pour mot) et le post épinglé (le thread « GTA VI joué par la pensée »),
+    puis la bannière (il ne trouvait pas le fichier : une copie posée sur son Bureau a réglé ça).
+    L'API dit seulement qu'une bannière est en place (`profile_banner_url`) ; l'assistant ne la regarde
+    pas, l'image est chez twimg.com. **Profil terminé** : ne plus en reparler, sauf pour lui proposer
+    d'épingler plus tard la meilleure vidéo explicative.
   - **Rapport de santé du compte** (x.com/i/jf/under_the_hood, voir README section 9) : **aucune
     étiquette**. Rapport d'octobre 2026 (généré le 7/11, 396 posts sur la période), capture d'écran
     envoyée par le propriétaire le 24/11 : « Post labels : None in this period », « Account labels :
