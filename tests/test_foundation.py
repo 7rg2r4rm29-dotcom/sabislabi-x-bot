@@ -891,3 +891,11 @@ def test_format_auto_setting(monkeypatch):
     assert cfg.load_settings().format_auto is False
     monkeypatch.setenv("FORMAT_AUTO", "true")
     assert cfg.load_settings().format_auto is True
+
+
+def test_strategy_setting(monkeypatch):
+    """24/11/2026 : l'agent d'analyse (chiffres, tendances, algorithme de X) ; coupé par défaut."""
+    monkeypatch.delenv("STRATEGY_ENABLED", raising=False)
+    assert cfg.load_settings().strategy_enabled is False
+    monkeypatch.setenv("STRATEGY_ENABLED", "true")
+    assert cfg.load_settings().strategy_enabled is True

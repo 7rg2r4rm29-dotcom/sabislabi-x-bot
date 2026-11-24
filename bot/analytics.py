@@ -15,6 +15,7 @@ les chiffres bougent encore beaucoup (cold start ~2 h, puis diffusion).
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 from datetime import timedelta
 
@@ -78,6 +79,10 @@ TOPIC_LABEL_EVERY_MIN = 360
 TOPIC_LABEL_BATCH = 120
 # Le format suit les résultats (consigne du propriétaire, 24/11/2026 : « visuel ou textuel, peu
 # importe : choisis la meilleure option à chaque fois »). Voir Analytics.choose_format.
+_FAMOUS_RE = re.compile(r"\b(?:GTA|Grand Theft Auto|ChatGPT|OpenAI|Tesla|Apple|iPhone|iPad|Google|Gemini|Meta|"
+                        r"Netflix|Amazon|Alexa|Siri|Nintendo|PlayStation|Xbox|Samsung|Microsoft|Claude|Neuralink|Waymo|"
+                        r"Uber|Spotify|YouTube|TikTok|Instagram|WhatsApp|Disney|Sony|NASA|SpaceX|Pok[eé]mon)\b")
+_BREAKING_RE = re.compile(r"\b(?:just|now|finally|new|first)\b", re.I)
 FORMAT_KINDS = ("explainer", "thread", "tip")   # ce qui peut occuper le grand créneau du jour
 SPECIAL_KINDS = ("explainer", "thread")         # ce qui peut aussi remplacer un post d'actu, une fois prouvé
 FORMAT_MIN_TRIES = 3       # un format encore peu publié est d'abord essayé 3 fois
@@ -419,6 +424,121 @@ class Analytics:
             "formats": table(lambda p: fmt_of(p).get("media")),
             "best": best,
         }
+
+    # ==================================================================
+    # La feuille de chiffres de l'agent d'analyse (bot/strategy.py)
+    # ==================================================================
+    def figures_sheet(self) -> tuple[str, int]:
+        """Pour l'agent d'analyse (anglais) : tout ce que nos chiffres disent sur 30 jours —
+        portée par sujet, type, format, accroche, heure, longueur, fin de post, premier mot —
+        avec le nombre de posts de chaque groupe, la tendance des 7 derniers jours, nos
+        meilleurs et nos moins bons posts. ("", 0) sans assez de chiffres. Ne lève jamais."""
+        try:
+            return self._figures_sheet()
+        except Exception as e:  # noqa: BLE001
+            log.exception("Stats : feuille de chiffres impossible : %s", e)
+            return "", 0
+
+    def _figures_sheet(self) -> tuple[str, int]:
+        posts = self._posts(AGG_DAYS)
+        if len(posts) < MIN_POSTS_FOR_NOTES:
+            return "", 0
+        scores = [post_score(p) for p in posts]
+        base = statistics.median(scores)
+        if base <= 0:
+            return "", 0
+        now = now_local()
+
+        def age_days(p: dict) -> float:
+            dt = parse_iso(p.get("created_at"))
+            return max(0.0, (now - dt).total_seconds() / 86400.0) if dt is not None else float(AGG_DAYS)
+
+        weights = [0.5 ** (age_days(p) / HALF_LIFE_DAYS) for p in posts]
+
+        def table(key) -> str:
+            acc: dict[str, list] = {}
+            for p, sc, w in zip(posts, scores, weights):
+                k = key(p)
+                if not k:
+                    continue
+                a = acc.setdefault(str(k), [0.0, 0.0, 0])
+                a[0] += w * min(LIFT_CAP, sc / base)
+                a[1] += w
+                a[2] += 1
+            rows = sorted(((round((sl + PRIOR_POSTS) / (sw + PRIOR_POSTS), 2), k, n) for k, (sl, sw, n) in acc.items()),
+                          reverse=True)
+            return ", ".join(f"{k} {lift:.2f}x ({n})" for lift, k, n in rows) or "no data"
+
+        def first_line(p: dict) -> str:
+            return (str(p.get("text") or "").strip().splitlines() or [""])[0]
+
+        def fmt_of(p: dict) -> dict:
+            f = p.get("fmt")
+            return f if isinstance(f, dict) else {}
+
+        def hour_bucket(p: dict) -> str:
+            dt = _local(p)
+            if dt is None:
+                return ""
+            h = dt.hour
+            return ("06-11h" if 6 <= h < 12 else "12-15h" if h < 16 and h >= 12 else "16-18h" if 16 <= h < 19
+                    else "19-22h" if 19 <= h < 23 else "23-05h")
+
+        def length_bucket(p: dict) -> str:
+            n = len(str(p.get("text") or ""))
+            return "under 160 characters" if n < 160 else "160-220" if n <= 220 else "over 220"
+
+        def reactions(p: dict) -> int:
+            return sum(_m(p, k) for k in ("likes", "replies", "reposts", "quotes", "bookmarks"))
+
+        def week(lo: float, hi: float) -> str:
+            rows = [p for p in posts if lo <= age_days(p) < hi]
+            if not rows:
+                return "no posts"
+            views = statistics.median(_m(p, "impressions") for p in rows)
+            return f"{len(rows)} posts, median {views:.0f} views, {sum(reactions(p) for p in rows)} reactions"
+
+        def line(p: dict) -> str:
+            dt = _local(p)
+            when = dt.strftime("%a %d %b %H:%M") if dt is not None else "?"
+            return (f"  {_m(p, 'impressions')} views, {reactions(p)} reactions | {when} | {p.get('kind')} | "
+                    f"{p.get('topic') or '?'} | {fmt_of(p).get('media') or '?'} | {excerpt(first_line(p), 120)}")
+
+        ranked = sorted(posts, key=post_score, reverse=True)
+        total = {k: sum(_m(p, k) for p in posts) for k in METRIC_KEYS}
+        out = [
+            f"OUR NUMBERS — the {len(posts)} posts of the last {AGG_DAYS} days that are at least {SETTLE_HOURS} hours "
+            "old. \"1.00x\" is our usual post: views plus 30 per like, reply, repost, quote or bookmark; recent posts "
+            "weigh more (half as much every 7 days); a group of one or two posts stays close to 1.00x. In "
+            "brackets: how many posts the figure rests on.",
+            f"- Totals: {total['impressions']} views, {total['likes']} likes, {total['replies']} replies, "
+            f"{total['reposts'] + total['quotes']} reposts and quotes, {total['bookmarks']} bookmarks. Usual post: "
+            f"{statistics.median(_m(p, 'impressions') for p in posts):.0f} views.",
+            f"- Last 7 days: {week(1, 8)}. The 7 days before: {week(8, 15)}.",
+            "- By topic: " + table(lambda p: p.get("topic") if p.get("topic") in TOPICS else None) + ".",
+            "- By kind of post (tip = \"the future is coming\", news = story of the day, reactive = breaking, "
+            "explainer = animated video): " + table(lambda p: p.get("kind")) + ".",
+            "- By media: " + table(lambda p: fmt_of(p).get("media")) + ".",
+            "- By shape of the first line: " + table(lambda p: fmt_of(p).get("hook")) + ".",
+            "- By time of day (Paris time; New York is 6 hours earlier): " + table(hour_bucket) + ".",
+            "- By day: " + table(lambda p: ("weekend" if _local(p).weekday() >= 5 else "weekday")
+                                 if _local(p) is not None else None) + ".",
+            "- By length of the post: " + table(length_bucket) + ".",
+            "- By last line: " + table(lambda p: "ends with a question"
+                                       if str(p.get("text") or "").rstrip().endswith("?") else "ends with a statement") + ".",
+            "- First line has a number: " + table(lambda p: "yes" if re.search(r"\d", first_line(p)) else "no") + ".",
+            "- First line names something everybody knows (GTA, ChatGPT, Tesla, iPhone…): "
+            + table(lambda p: "yes" if _FAMOUS_RE.search(first_line(p)) else "no") + ".",
+            "- First line sounds like breaking news (just, now, finally, new, first): "
+            + table(lambda p: "yes" if _BREAKING_RE.search(first_line(p)) else "no") + ".",
+            "- Test posts (1 in 4 tries something else) against the rest: "
+            + table(lambda p: ("test" if fmt_of(p).get("test") else "follows what works") if "test" in fmt_of(p) else None) + ".",
+            "OUR BEST POSTS:",
+            *[line(p) for p in ranked[:8]],
+            "OUR WEAKEST POSTS:",
+            *[line(p) for p in ranked[-6:]],
+        ]
+        return "\n".join(out), len(posts)
 
     # ==================================================================
     # Le format suit les résultats

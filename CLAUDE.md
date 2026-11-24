@@ -193,6 +193,47 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     thread à 19 h chaque jour tant qu'il reste prouvé. Photos : 1,16x contre 1,37x en texte seul (rapport
     0,85 : rien de net, elles restent). Un thread coûte 0,8 à 1 $ de Claude : environ 10 $ de plus par
     mois. Les sondages restent réservés au post « le futur arrive » (voulu : un post d'actu a sa photo).
+- **L'agent d'analyse** (`STRATEGY_ENABLED`, vrai sur le serveur, faux par défaut ; `bot/strategy.py`,
+  `bot/algo.py` ; consigne du propriétaire, 24/11/2026 : « pas besoin de passer ici, analyse avec les
+  agents et prends les bonnes décisions, tout est question de trend, de chiffre et d'algorithme ») :
+  - **tous les trois jours** (`strategy.EVERY_DAYS`, entre 7 h et 23 h, dans un tour sans rédaction :
+    `Bot.maybe_strategy`), sans personne. Le code réunit : la feuille de chiffres
+    (`Analytics.figures_sheet` : portée par sujet, type, format, accroche, heure, jour, longueur, fin de
+    post, chiffre ou nom connu en première ligne, tendance sur 7 jours, meilleurs et moins bons posts,
+    chaque chiffre avec son nombre de posts), **l'algorithme de X** et les tendances du jour (veille du
+    marché comprise) ;
+  - **l'algorithme de X** (`AlgoWatch`) : lecture gratuite de deux fichiers publics de
+    `xai-org/x-algorithm` sur raw.githubusercontent.com (jamais x.com) : le journal « Notable Updates » du
+    README et les poids du classement (`home-mixer/params/param.rs` : réponse 5.0, citation 5.0, like
+    0.708, signalement −234, « pas intéressé » −53…). Relu avant chaque analyse (72 h), ce qui a changé
+    depuis la lecture précédente est noté (`algo_watch.changes`) et dit au propriétaire. X modifie ce
+    dépôt presque chaque jour ;
+  - **l'analyste** (`Writer.strategy_review`, appel `strategy`, réflexion longue) propose au plus 5
+    consignes pour le choix des histoires, 5 pour l'écriture et une idée pour les posts d'essai, chacune
+    avec son fondement (nos chiffres, l'algorithme ou les tendances) et ses chiffres ;
+  - **le code écarte** (`strategy.directive_problem`) ce qui touche aux règles (liens, hashtags,
+    mentions, réponses sous d'autres comptes, nombre de posts, sujets pour initiés, sujets interdits), ce
+    qui repose sur moins de 5 posts, ce qui tient à l'actu du jour (une consigne vit plusieurs jours) ;
+  - **le relecteur** (`Writer.strategy_check`, appel `strategy-check` : statisticien strict et gardien
+    des règles) revoit chaque consigne restante ; ce qu'il refuse est écarté. Analyste muet, relecteur
+    muet ou trop peu de posts (moins de 20) : les consignes précédentes restent ;
+  - ce qui reste est noté dans l'état (`strategy`, historique `strategy_history`), lu avant chaque post
+    par la rédaction en chef (`editor_block`, via `Bot._context`) et par le rédacteur (`writer_block`, via
+    `Bot._perf`), jamais par un post d'essai (qui reçoit l'idée d'essai : `test_block`). Suivies 10 jours
+    au plus. Elles affinent, sans jamais passer devant les règles ni les contrôles de chaque post ;
+  - le propriétaire reçoit un message Telegram silencieux « 🧠 Analyse automatique » : ce que montrent
+    les chiffres, les décisions en français, ce que X a changé. Rien à valider ;
+  - coût mesuré : 0,18 à 0,20 $ par analyse, environ 2 $ par mois. `--preview strategy` la lance pour de
+    vrai sur une copie de l'état, sans rien appliquer ;
+  - **essais réels du 24/11** : au 1er, une consigne contredisait la règle « tout est dans la ligne 1 »
+    (« garder le fait clé pour la fin »), une autre poussait l'actu du jour (GTA VI) pour trois jours, et
+    le résumé citait une consigne refusée → l'analyste et le relecteur connaissent maintenant la façon
+    d'écrire du compte (`STRATEGY_RULES`), les consignes liées au jour sont refusées, le résumé ne parle
+    que des chiffres. Au 2e : 3 consignes de choix (les exploits concrets d'IA avant les annonces de
+    fonctions, 1,67x contre 1,00x ; ce qui change la journée de quelqu'un, 1,43x ; les sujets que le
+    public cherche déjà de lui-même), 1 d'écriture (dire qui ça touche, pour qu'on le transmette : le
+    partage par lien pèse 20, par message 5, un like 0,7), 2 refusées par le relecteur (« ouvrir sur un
+    chiffre » : écart de 17 % et formule unique ; « viser 120 à 160 caractères » : du bruit).
 - **Veille du marché** (`TrendWatch.refresh_market`, `MARKET_WATCH_ENABLED`, 23/11/2026) : voir
   section 8.
 - **Tendances du jour** (`bot/trends.py`, `TrendWatch.block()`, `TRENDS_ENABLED`) : recherches Google
@@ -319,7 +360,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
   une vidéo fabriquée sur place ; Wikimedia aussi ; les vidéos explicatives sont fabriquées en petit avec
-  le vrai ffmpeg) ; 1572 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
+  le vrai ffmpeg) ; 1675 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
@@ -327,6 +368,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - `--check` : clés, Telegram, API X, Claude, photo d'essai mise au propre, extrait d'une vidéo d'essai ;
   - `--preview tip,news` (ou `thread`, `reactive`, `explainer`) : brouillons, rien n'est publié
     (`explainer` fabrique la vidéo pour de vrai et l'envoie sur Telegram) ;
+  - `--preview strategy` : l'agent d'analyse pour de vrai (0,20 $), sur une copie de l'état ; rien n'est
+    appliqué ni envoyé. Pour essayer une version pas encore installée : la copier dans un dossier
+    temporaire du serveur et la lancer avec `XBOT_ENV_FILE=~/x-degen-bot/config/.env` et
+    `--state ~/x-degen-bot/state/state.json` (c'est ce qui a été fait le 24/11) ;
   - `--report` : les chiffres ;
   - `--once <plan|publish|comments|radar|reactive|metrics|daily|weekly|poll>` : une seule étape.
 - **Telegram** : `/statut`, `/plan`, `/budget`, `/pause`, `/reprendre`, `/note <un fait réel>`, `/aide`.

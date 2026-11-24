@@ -122,6 +122,18 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
     n'est pas le cas aujourd'hui) ;
   - le nombre de posts par jour ne change pas. Sur Telegram, `/plan` te dit quel format est prévu et
     pourquoi (« 🎯 Formats … »).
+- **Une analyse automatique tous les trois jours** (ta consigne du 24 novembre 2026 : « analyse avec les
+  agents et prends les bonnes décisions, tout est question de trend, de chiffre et d'algorithme ») :
+  - un premier agent étudie trois choses : **tes chiffres** (ce qui marche par sujet, par format, par
+    heure, par longueur, par façon de commencer ou de finir), **les tendances** du moment, et
+    **l'algorithme de X**. X publie son code : le bot le relit tout seul et sait, par exemple, qu'une
+    réponse ou une citation pèsent sept fois plus qu'un like, et ce que X a changé cette semaine ;
+  - il en tire quelques décisions : quelles histoires mettre en premier, comment écrire ;
+  - un second agent, plus sévère, relit chaque décision et refuse celles qui reposent sur trop peu de
+    posts ou qui toucheraient à tes règles (sujets interdits, liens, jargon, sujets pour initiés) ;
+  - ce qui reste est appliqué dès le post suivant, et tu reçois un petit message « 🧠 Analyse
+    automatique » sur Telegram qui te dit ce qui a été vu et décidé. **Tu n'as rien à valider.**
+  - coût : environ 2 $ de Claude par mois.
 - **La veille du marché** (ton accord du 23/11 : tes crédits API couvrent la dépense) : une fois par
   jour, le bot lit les derniers posts de 5 gros comptes qui racontent la tech et l'IA à tout le monde, et
   montre au rédacteur en chef ceux qui font le plus réagir, pour s'inspirer du genre d'histoire, jamais
@@ -450,6 +462,7 @@ quitter), puis `sudo systemctl restart x-degen-bot`.
 | `TRENDS_ENABLED` | `true` | regarder les tendances du jour (Google, Wikipédia, Hacker News, annonces X déjà lues) avant chaque choix d'histoire |
 | `MARKET_WATCH_ENABLED` | `false` | veille du marché : une fois par jour, ce qui fait réagir chez 5 gros comptes du même sujet (environ 0,25 $ par jour chez X ; comptes dans `market_accounts` de `config/settings.json`). `true` sur ton serveur depuis le 23/11/2026 |
 | `FORMAT_AUTO` | `false` | le format de chaque jour (vidéo explicative, thread ou post) suit les résultats, au lieu des jours fixes de `THREAD_SLOTS` et `EXPLAINER_SLOTS` (qui restent le repli). `true` sur ton serveur depuis le 24/11/2026 |
+| `STRATEGY_ENABLED` | `false` | l'analyse automatique : tous les trois jours, deux agents étudient tes chiffres, les tendances et l'algorithme de X, et décident des consignes de choix et d'écriture (environ 2 $ de Claude par mois). `true` sur ton serveur depuis le 24/11/2026 |
 | `DRAFT_LEAD_MINUTES` | `gm:660,tip:150,news:120,thread:240,explainer:240` | combien de minutes avant l'heure la carte arrive |
 | `APPROVAL_GRACE_MINUTES` | `120` | délai de validation après l'heure prévue |
 | `QUIET_HOURS` | `23:30-07:30` | messages sans sonnerie |

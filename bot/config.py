@@ -267,6 +267,10 @@ class Settings:
     # laisse sa place à un post au lieu de faire sauter le créneau. Coupé par défaut : les jours
     # fixes de THREAD_SLOTS et EXPLAINER_SLOTS s'appliquent.
     format_auto: bool = False
+    # L'agent d'analyse (STRATEGY_ENABLED, bot/strategy.py) : tous les trois jours, nos chiffres, les
+    # tendances et l'algorithme de X (bot/algo.py) deviennent des consignes pour la rédaction en chef
+    # et le rédacteur, relues par un second agent. Coupé par défaut.
+    strategy_enabled: bool = False
 
     # --- Budget API X (dollars) ---
     x_budget_daily_usd: float = 1.50
@@ -447,6 +451,7 @@ def load_settings() -> Settings:
         explainer_voice=_env("EXPLAINER_VOICE", "af_heart").strip().lower() or "af_heart",
         voice_model_dir=_env("VOICE_MODEL_DIR", "").strip(),
         format_auto=_env_bool("FORMAT_AUTO", False),
+        strategy_enabled=_env_bool("STRATEGY_ENABLED", False),
         x_budget_daily_usd=_env_float("X_BUDGET_DAILY_USD", 1.50),
         x_budget_monthly_usd=_env_float("X_BUDGET_MONTHLY_USD", 30.0),
         claude_budget_monthly_usd=max(0.0, _env_float("CLAUDE_BUDGET_MONTHLY_USD", 35.0)),

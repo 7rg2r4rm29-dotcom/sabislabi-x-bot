@@ -392,6 +392,12 @@ class TestMain:
         txt = "\n".join(bmain.config_summary(settings))
         assert "Formats : choisis chaque jour d'après les résultats" in txt and "jours fixes" not in txt
 
+    def test_config_summary_shows_the_analysis_agent(self, settings):
+        assert "Analyse automatique : non (STRATEGY_ENABLED=false)" in bmain.config_summary(settings)
+        settings.strategy_enabled = True
+        txt = "\n".join(bmain.config_summary(settings))
+        assert "Analyse automatique : tous les 3 jours, les chiffres, les tendances et l'algorithme de X" in txt
+
     def test_config_summary_shows_what_works_and_trends(self, settings):
         txt = "\n".join(bmain.config_summary(settings))
         assert ("tendances du jour : oui (Google, Wikipédia, Hacker News, annonces X déjà lues) · "
@@ -720,3 +726,77 @@ class TestPreview:
         lines: list[str] = []
         assert bmain.run_preview(settings, "gm", tmp_path / "s.json", out=lines.append) == 2
         assert "Types inconnus" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# --preview strategy : l'agent d'analyse pour de vrai, sur une copie de l'état
+# ---------------------------------------------------------------------------
+class _StrategyWriter:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.seen: list[tuple] = []
+
+    def strategy_review(self, figures, algo="", trends="", previous=""):
+        self.seen.append((figures, algo, trends, previous))
+        return self.answer
+
+    def strategy_check(self, figures, algo, trends, directives):
+        return [True] * len(directives)
+
+
+def _measured_state(tmp_path, n: int = 30):
+    from bot.state import StateStore
+    from bot.utils import iso, now_local
+    from datetime import timedelta
+    state = StateStore(tmp_path / "state.json")
+    for i in range(n):
+        state.data["published"].append({
+            "tweet_id": str(i), "kind": "news", "text": f"Story {i} about a robot.", "item_id": None, "slot_key": None,
+            "created_at": iso(now_local() - timedelta(days=2 + i % 20)),
+            "metrics": {"impressions": 40 + i, "likes": i % 2, "replies": 0, "reposts": 0, "quotes": 0, "bookmarks": 0}})
+    state.flush()
+    return state
+
+
+def test_preview_strategy_runs_the_agent_on_a_copy(settings, tmp_path, clock):
+    clock(9, 0)
+    settings.trends_enabled = False
+    state = _measured_state(tmp_path)
+    writer = _StrategyWriter({
+        "findings": [{"what": "Les robots marchent.", "n": 30, "gap": "1.4x vs 1.0x"}],
+        "editor": [{"text": "Put robot stories that people can picture at home first.", "fr": "Les robots d'abord.",
+                    "basis": "numbers", "n": 12, "why": "robots 1.4x on 12 posts"}],
+        "writer": [], "test": "", "summary_fr": "Les robots marchent mieux."})
+    web_calls: list[str] = []
+
+    def web(url, accept=""):
+        web_calls.append(url)
+        return 404, ""
+
+    lines: list[str] = []
+    code = bmain.run_strategy_preview(settings, state.path, llm=object(), writer=writer, http_get=web, out=lines.append)
+    text = "\n".join(lines)
+    assert code == bmain.EXIT_OK
+    assert "RIEN n'est appliqué au bot en service" in lines[0] and "Algorithme de X : non lu" in text
+    assert "• Put robot stories that people can picture at home first." in text and "[numbers, 12 posts]" in text
+    assert "🧠 <b>Analyse automatique</b> (30 posts mesurés" in text and "→ Les robots d'abord." in text
+    assert writer.seen[0][0].startswith("OUR NUMBERS") and len(web_calls) == 2
+    import json
+    assert "strategy" not in json.loads(state.path.read_text())          # l'état du bot en service n'est pas touché
+
+
+def test_preview_strategy_without_enough_figures(settings, tmp_path, clock):
+    settings.trends_enabled = False
+    state = _measured_state(tmp_path, n=3)
+    lines: list[str] = []
+    code = bmain.run_strategy_preview(settings, state.path, llm=object(), writer=_StrategyWriter(None),
+                                      http_get=lambda url, accept="": (404, ""), out=lines.append)
+    assert code == bmain.EXIT_FAIL and any("Pas d'analyse" in line for line in lines)
+
+
+def test_preview_strategy_is_reached_through_preview(settings, tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(bmain, "run_strategy_preview",
+                        lambda s, state_path=None, **kw: seen.update(path=state_path) or bmain.EXIT_OK)
+    assert bmain.run_preview(settings, " Strategy ", tmp_path / "state.json") == bmain.EXIT_OK
+    assert seen["path"] == tmp_path / "state.json"

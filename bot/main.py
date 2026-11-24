@@ -285,6 +285,9 @@ def config_summary(settings) -> list[str]:
         f"{' (à la place du post prévu le plus proche)' if s.explainer_slots else ''}"
         f"{f', voix off {s.explainer_voice}' if s.explainer_slots and s.explainer_voice_enabled else ''}"
         f" · aléa de publication 0-{s.publish_jitter_minutes} min",
+        ("Analyse automatique : tous les 3 jours, les chiffres, les tendances et l'algorithme de X deviennent "
+         "des consignes de choix et d'écriture, relues par un second agent" if getattr(s, "strategy_enabled", False)
+         else "Analyse automatique : non (STRATEGY_ENABLED=false)"),
         ("Formats : choisis chaque jour d'après les résultats (vidéo, thread ou post au grand créneau ; un "
          "format qui bat nettement un post d'actu en remplace aussi un ; sans histoire assez forte pour un "
          "format, un post prend sa place)" if getattr(s, "format_auto", False)
@@ -618,6 +621,56 @@ def preview_kinds(raw: str) -> list[str]:
     return kinds
 
 
+def run_strategy_preview(settings, state_path=None, *, llm=None, writer=None, http_get: Callable | None = None,
+                         out: Callable[[str], None] = print) -> int:
+    """`--preview strategy` : l'agent d'analyse pour de vrai (chiffres du compte, tendances, code
+    public de l'algorithme de X, analyste puis relecteur), sur une copie jetable de l'état. Rien
+    n'est appliqué au bot en service, rien n'est envoyé sur Telegram. Les appels à Claude sont
+    payants et comptés dans le plafond du mois."""
+    import shutil
+    real = Path(state_path) if state_path else utils.STATE_DIR / "state.json"
+    tmp = tempfile.TemporaryDirectory(prefix="xbot-strategy-")
+    try:
+        copy = Path(tmp.name) / "state.json"
+        if real.is_file():
+            shutil.copyfile(real, copy)
+        from .algo import AlgoWatch
+        from .analytics import Analytics
+        from .state import StateStore
+        from .strategy import Strategist
+        state = StateStore(copy)
+        if llm is None:
+            from .llm import LLM
+            llm = LLM(settings, state, manual=True)
+        if writer is None:
+            from .writer import Writer
+            writer = Writer(settings, llm, state)
+        trends = None
+        if settings.trends_enabled:
+            from .trends import TrendWatch
+            trends = TrendWatch(settings, state)
+        algo = AlgoWatch(settings, state, http_get=http_get)
+        strategist = Strategist(settings, state, Analytics(settings, state, None, None), writer, trends=trends, algo=algo)
+        out("=== Aperçu de l'analyse automatique — RIEN n'est appliqué au bot en service ===")
+        memo = strategist.review(force=True)
+        algo_text = algo.block()
+        out(f"Algorithme de X : {'lu (' + str(len(algo_text)) + ' caractères)' if algo_text else 'non lu'}")
+        if not memo:
+            out("❌ Pas d'analyse : pas assez de posts mesurés, ou Claude n'a pas répondu (voir le journal).")
+            return EXIT_FAIL
+        for side, title in (("editor", "Consignes pour le choix des histoires"), ("writer", "Consignes d'écriture")):
+            out(f"--- {title} ({len(memo[side])}) ---")
+            for d in memo[side]:
+                out(f"  • {d['text']}\n      [{d['basis']}{', ' + str(d['n']) + ' posts' if d['n'] else ''}] {d['why']}")
+        out(f"--- Idée d'essai --- {memo.get('test') or '(aucune)'}")
+        out(f"--- Écartées par le code ou le relecteur : {memo.get('dropped', 0)} ---")
+        out("--- Message Telegram ---")
+        out(strategist.report_fr(memo))
+        return EXIT_OK
+    finally:
+        tmp.cleanup()
+
+
 def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, llm=None, news=None,
                 writer=None, telegram=None, prepare_visual: Callable | None = None,
                 prepare_explainer: Callable | None = None, out: Callable[[str], None] = print) -> int:
@@ -626,6 +679,8 @@ def run_preview(settings, raw_kinds: str = PREVIEW_DEFAULT, state_path=None, *, 
     l'état du bot en service n'est pas touché : tout se passe sur une copie jetable
     (lecture de l'actu gratuite ; seuls les appels à Claude sont payants)."""
     import shutil
+    if str(raw_kinds or "").strip().lower() == "strategy":
+        return run_strategy_preview(settings, state_path, llm=llm, writer=writer, out=out)
     kinds = preview_kinds(raw_kinds)
     if not kinds:
         out(f"❌ Types inconnus : {raw_kinds!r}. Choix : {', '.join(PREVIEW_KINDS)}.")

@@ -137,7 +137,7 @@ class Bot:
                  writer=None, approvals=None, publisher=None, comments=None, radar=None,
                  analytics=None, budget=None, prepare_visual: Callable | None = None,
                  rng: random.Random | None = None, trends=None,
-                 prepare_explainer: Callable | None = None) -> None:
+                 prepare_explainer: Callable | None = None, strategist=None) -> None:
         # Les modules lourds sont importés à la demande : un test (ou --busy-check)
         # qui fournit ses doublures n'a pas besoin de les charger.
         self.settings = settings
@@ -191,6 +191,13 @@ class Bot:
             from .trends import TrendWatch
             trends = TrendWatch(settings, self.state, x=self.x)      # x : la veille du marché
         self.trends = trends
+        # L'agent d'analyse (bot/strategy.py) : chiffres, tendances et algorithme de X → consignes.
+        if strategist is None and getattr(settings, "strategy_enabled", False):
+            from .algo import AlgoWatch
+            from .strategy import Strategist
+            strategist = Strategist(settings, self.state, self.analytics, self.writer, trends=self.trends,
+                                    algo=AlgoWatch(settings, self.state))
+        self.strategist = strategist
         self._prepare_visual = prepare_visual
         self._prepare_explainer = prepare_explainer
         self.rng = rng or random.Random()
@@ -298,6 +305,9 @@ class Bot:
                     continue
                 res[key] = self._step(label, fn)
                 res["publish_mid"] += self._between()
+            # L'analyse (tous les trois jours) passe en dernier, jamais dans un tour déjà long.
+            if optional_ok and not res["plan"] and time.monotonic() - started <= TICK_BUDGET_S:
+                res["strategy"] = self._step("analyse", self.maybe_strategy)
         res["metrics"] = self._step("statistiques", self.maybe_analytics)
         res["daily"] = self._step("récap du matin", self.maybe_daily_report)
         res["weekly"] = self._step("bilan de la semaine", self.maybe_weekly_report)
@@ -850,6 +860,9 @@ class Bot:
                 parts.append(fn(test) or "")
             except Exception as e:  # noqa: BLE001
                 log.warning("Modèles de style indisponibles (%s)", e)
+        if self.strategist is not None:
+            # Les consignes d'écriture de l'agent d'analyse ; pour un post d'essai, son idée d'essai.
+            parts.append((self.strategist.test_block() if test else self.strategist.writer_block()) or "")
         return "\n".join(p.strip() for p in parts if p and p.strip())
 
     def _context(self, kind: str, *, test_ok: bool = True) -> tuple[str, bool]:
@@ -873,6 +886,8 @@ class Bot:
                 blocks.append(self.trends.block() or "")
             except Exception as e:  # noqa: BLE001
                 log.warning("Tendances indisponibles (%s)", e)
+        if self.strategist is not None and not test:
+            blocks.append(self.strategist.editor_block() or "")      # les consignes de l'agent d'analyse
         setter = getattr(self.writer, "set_editor_context", None)
         if callable(setter):
             setter("\n\n".join(b.strip() for b in blocks if b and b.strip()))
@@ -1096,6 +1111,25 @@ class Bot:
         if self._claude_down() or not self._claude_optional_ok():
             return 0
         return int(fn(labeler) or 0)
+
+    def maybe_strategy(self) -> int:
+        """L'agent d'analyse, tous les trois jours (consigne du propriétaire, 24/11/2026 : « analyse
+        avec les agents et prends les bonnes décisions ») : nos chiffres, les tendances et
+        l'algorithme de X deviennent des consignes pour la rédaction en chef et le rédacteur,
+        relues par un second agent, puis résumées au propriétaire. Optionnel : cède au budget
+        Claude, et attend si Claude est en panne."""
+        st = self.strategist
+        if st is None or not st.due():
+            return 0
+        if self._claude_down():
+            return 0
+        memo = st.review()
+        if not memo:
+            return 0
+        text = st.report_fr(memo)
+        if text:
+            self.approvals.notify(text, silent=True)
+        return 1
 
     def _reports(self) -> dict:
         rep = self.state.data.get("reports")

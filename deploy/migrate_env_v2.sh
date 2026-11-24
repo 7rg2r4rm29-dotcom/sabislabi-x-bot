@@ -112,6 +112,11 @@ setkey_default EXPLAINER_VOICE_ENABLED true
 # vidéo, le thread ou le post qui marche le mieux ; un format qui bat nettement un post d'actu en
 # remplace aussi un ; sans histoire assez forte pour un format, un post prend sa place.
 setkey_default FORMAT_AUTO true
+# L'agent d'analyse (consigne du propriétaire, 24/11/2026 : « pas besoin de passer ici, analyse avec
+# les agents et prends les bonnes décisions, tout est question de trend, de chiffre et
+# d'algorithme ») : tous les trois jours, les chiffres du compte, les tendances et le code public de
+# l'algorithme de X deviennent des consignes pour le choix des histoires et l'écriture.
+setkey_default STRATEGY_ENABLED true
 setkey_default HEALTH_REPORT_AT "08:30"
 setkey_default WEEKLY_REPORT_AT "sun@20:30"
 setkey_default SCREENSHOTS_ENABLED true
@@ -124,5 +129,5 @@ chmod 600 "$ENV_FILE"
 
 echo "REGLAGES_OK${ADDED:+ (ajouté :$ADDED)}${UPGRADED:+ (mis à jour :$UPGRADED)}"
 # Uniquement des réglages NON secrets (liste explicite).
-grep -E '^(DRY_RUN|APPROVAL_MODE|POST_SLOTS|THREAD_SLOTS|DRAFT_LEAD_MINUTES|APPROVAL_GRACE_MINUTES|QUIET_HOURS|REACTIVE_ENABLED|REACTIVE_MAX_PER_DAY|REACTIVE_CHECK_EVERY_MINUTES|REACTIVE_MAX_CHECKS_PER_DAY|REACTIVE_SLOT_GAP_MINUTES|EXPLAINER_SLOTS|TRENDS_ENABLED|MARKET_WATCH_ENABLED|EXPLAINER_VOICE_ENABLED|EXPLAINER_VOICE|FORMAT_AUTO|COMMENTS_ENABLED|RADAR_ENABLED|RADAR_MAX_PER_DAY|X_BUDGET_DAILY_USD|X_BUDGET_MONTHLY_USD|CLAUDE_BUDGET_MONTHLY_USD|LLM_MODEL|LLM_EFFORT_POST|POST_VERSIONS|X_HANDLE|TIMEZONE)=' "$ENV_FILE" | tr '\n' ' '
+grep -E '^(DRY_RUN|APPROVAL_MODE|POST_SLOTS|THREAD_SLOTS|DRAFT_LEAD_MINUTES|APPROVAL_GRACE_MINUTES|QUIET_HOURS|REACTIVE_ENABLED|REACTIVE_MAX_PER_DAY|REACTIVE_CHECK_EVERY_MINUTES|REACTIVE_MAX_CHECKS_PER_DAY|REACTIVE_SLOT_GAP_MINUTES|EXPLAINER_SLOTS|TRENDS_ENABLED|MARKET_WATCH_ENABLED|EXPLAINER_VOICE_ENABLED|EXPLAINER_VOICE|FORMAT_AUTO|STRATEGY_ENABLED|COMMENTS_ENABLED|RADAR_ENABLED|RADAR_MAX_PER_DAY|X_BUDGET_DAILY_USD|X_BUDGET_MONTHLY_USD|CLAUDE_BUDGET_MONTHLY_USD|LLM_MODEL|LLM_EFFORT_POST|POST_VERSIONS|X_HANDLE|TIMEZONE)=' "$ENV_FILE" | tr '\n' ' '
 echo

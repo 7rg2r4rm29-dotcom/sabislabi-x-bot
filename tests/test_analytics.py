@@ -714,3 +714,30 @@ def test_photos_do_not_flip_back_and_forth(an, state):
     assert figures(58) is True                    # l'écart s'est refermé : de retour
     assert figures(20) is False
     assert figures(20, images=5) is True          # plus assez de posts avec photo pour juger : on réessaie
+
+
+# ---------------------------------------------------------------------------
+# La feuille de chiffres de l'agent d'analyse
+# ---------------------------------------------------------------------------
+def test_figures_sheet_for_the_analyst(an, state):
+    assert an.figures_sheet() == ("", 0)                      # pas assez de chiffres
+    _formats_month(state)
+    pub(state, "q1", "news", "GTA VI is finally out.\n\nWould you buy a console for it?", days=3,
+        metrics=m(200, likes=2))["fmt"] = {"media": "image", "hook": "NO X, NO Y", "test": False}
+    state.data["published"][-1]["topic"] = "games"
+    sheet, n = an.figures_sheet()
+    assert n == 20 and sheet.startswith("OUR NUMBERS — the 20 posts of the last 30 days")
+    for label in ("- Totals: ", "- Last 7 days: ", "- By topic: games ", "- By kind of post", "thread ", "- By media: ",
+                  "- By shape of the first line: NO X, NO Y", "- By time of day (Paris time", "- By day: ",
+                  "- By length of the post: ", "- By last line: ", "ends with a question", "- First line has a number: ",
+                  "- First line names something everybody knows", "- First line sounds like breaking news",
+                  "OUR BEST POSTS:", "OUR WEAKEST POSTS:"):
+        assert label in sheet, label
+    assert "200 views, 2 reactions |" in sheet and "| news | games | image | GTA VI is finally out." in sheet
+    assert "x (" in sheet                                     # chaque chiffre dit sur combien de posts il repose
+
+
+def test_figures_sheet_never_raises(an, state, monkeypatch):
+    _formats_month(state)
+    monkeypatch.setattr(amod, "post_score", lambda p: 1 / 0)
+    assert an.figures_sheet() == ("", 0)

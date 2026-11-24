@@ -1926,3 +1926,124 @@ class TestFormatAuto:
         an.photo = (False, "net")
         bot._visual(_shot_draft("news"), "news_w")
         assert seen[-1] == (True, True, True)                 # réglage coupé : comme avant
+
+
+# ---------------------------------------------------------------------------
+# L'agent d'analyse dans la boucle (consigne du propriétaire, 24/11/2026 : « analyse avec les
+# agents et prends les bonnes décisions, tout est question de trend, de chiffre et d'algorithme »)
+# ---------------------------------------------------------------------------
+class StubStrategist:
+    def __init__(self, due: bool = True, memo=None) -> None:
+        self._due = due
+        self.memo_out = {"editor": [], "writer": []} if memo is None else memo
+        self.reviews = 0
+
+    def due(self) -> bool:
+        return self._due
+
+    def review(self, force: bool = False):
+        self.reviews += 1
+        self._due = False
+        return self.memo_out
+
+    def report_fr(self, memo=None) -> str:
+        return "🧠 Analyse automatique : 2 consignes"
+
+    def editor_block(self) -> str:
+        return "STRATEGY FOR CHOOSING STORIES: breaking news first"
+
+    def writer_block(self) -> str:
+        return "STRATEGY FOR WRITING: end with a statement"
+
+    def test_block(self) -> str:
+        return "WHAT TO TRY IN THIS TEST POST: a two-line post"
+
+
+class EditorWriter(StubWriter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.editor_context = ""
+
+    def set_editor_context(self, text: str) -> None:
+        self.editor_context = text
+
+
+def strategy_bot(settings, state, budget, parts, strategist, **over) -> Bot:
+    p = dict(parts)
+    p.update(over)
+    bot = Bot(settings, llm=object(), x=FakeX(), telegram=FakeTelegram(), news=p["news"], state=state,
+              writer=p["writer"], approvals=p["approvals"], publisher=p["publisher"], comments=p["comments"],
+              radar=p["radar"], analytics=p["analytics"], budget=budget, prepare_visual=p["visual"],
+              rng=random.Random(0), strategist=strategist)
+    bot.trends = None
+    return bot
+
+
+class TestStrategyInTheLoop:
+    def test_off_by_default(self, settings, state, budget, parts, clock):
+        bot = make_bot(settings, state, budget, parts)
+        assert settings.strategy_enabled is False and bot.strategist is None and bot.maybe_strategy() == 0
+
+    def test_the_real_agent_is_built_when_the_setting_is_on(self, settings, state, budget, parts, clock):
+        settings.strategy_enabled = True
+        bot = make_bot(settings, state, budget, parts)
+        from bot.algo import AlgoWatch
+        from bot.strategy import Strategist
+        assert isinstance(bot.strategist, Strategist) and isinstance(bot.strategist.algo, AlgoWatch)
+        assert bot.strategist.analytics is bot.analytics and bot.strategist.writer is bot.writer
+
+    def test_a_due_review_runs_and_is_reported_to_the_owner(self, settings, state, budget, parts, clock):
+        st = StubStrategist()
+        bot = strategy_bot(settings, state, budget, parts, st)
+        assert bot.maybe_strategy() == 1 and st.reviews == 1
+        assert parts["approvals"].notes == ["🧠 Analyse automatique : 2 consignes"] and parts["approvals"].silent == [True]
+        assert bot.maybe_strategy() == 0 and st.reviews == 1          # plus dû : rien
+
+    def test_no_review_no_message(self, settings, state, budget, parts, clock):
+        st = StubStrategist()
+        st.memo_out = None                                            # pas assez de chiffres, ou Claude muet
+        st.review = lambda force=False: None
+        bot = strategy_bot(settings, state, budget, parts, st)
+        assert bot.maybe_strategy() == 0 and parts["approvals"].notes == []
+
+    def test_it_waits_when_claude_is_down(self, settings, state, budget, parts, clock):
+        st = StubStrategist()
+
+        class DownLLM:
+            def paused(self):
+                return True
+
+        bot = strategy_bot(settings, state, budget, parts, st)
+        bot.llm = DownLLM()
+        assert bot.maybe_strategy() == 0 and st.reviews == 0 and st.due() is True     # réessayé plus tard
+
+    def test_the_loop_runs_it_last_and_not_when_paused(self, settings, state, budget, parts, clock):
+        clock(3, 0)
+        st = StubStrategist()
+        bot = strategy_bot(settings, state, budget, parts, st)
+        first = bot.tick()                                            # ce tour rédige un créneau : pas d'analyse en plus
+        assert first["plan"] == 1 and "strategy" not in first and st.reviews == 0
+        assert bot.tick()["strategy"] == 1 and st.reviews == 1        # tour suivant, rien à rédiger : l'analyse passe
+        st2 = StubStrategist()
+        bot2 = strategy_bot(settings, state, budget, parts, st2)
+        state.data["paused"] = True
+        assert "strategy" not in bot2.tick() and st2.reviews == 0
+
+    def test_the_editor_and_the_writer_read_the_directives(self, settings, state, budget, parts, clock):
+        writer = EditorWriter()
+        bot = strategy_bot(settings, state, budget, parts, StubStrategist(due=False), writer=writer)
+        bot.style_rng = random.Random(1)
+        bot.style_rng.random = lambda: 0.9                            # pas un post d'essai
+        perf, test = bot._context("news")
+        assert test is False
+        assert "STRATEGY FOR CHOOSING STORIES: breaking news first" in writer.editor_context
+        assert perf.endswith("STRATEGY FOR WRITING: end with a statement") and "WHAT TO TRY" not in perf
+
+    def test_a_test_post_gets_the_idea_to_try_instead(self, settings, state, budget, parts, clock):
+        writer = EditorWriter()
+        bot = strategy_bot(settings, state, budget, parts, StubStrategist(due=False), writer=writer)
+        bot.style_rng.random = lambda: 0.1                            # post d'essai
+        perf, test = bot._context("news")
+        assert test is True
+        assert "STRATEGY FOR CHOOSING STORIES" not in writer.editor_context
+        assert perf.endswith("WHAT TO TRY IN THIS TEST POST: a two-line post") and "STRATEGY FOR WRITING" not in perf
