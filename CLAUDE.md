@@ -221,6 +221,19 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     par la rédaction en chef (`editor_block`, via `Bot._context`) et par le rédacteur (`writer_block`, via
     `Bot._perf`), jamais par un post d'essai (qui reçoit l'idée d'essai : `test_block`). Suivies 10 jours
     au plus. Elles affinent, sans jamais passer devant les règles ni les contrôles de chaque post ;
+  - **le nombre de posts par jour** (`bot/limits.py`, accord du propriétaire, 24/11/2026 : « il peut
+    régler même les limites de post si nécessaire, pas de problème […] juste pour l'argent fais
+    attention, pour le reste analyse les situations et prends les bonnes décisions ») : l'analyste peut
+    aussi changer, d'un cran par analyse, le nombre de posts prévus (un de moins ou un de plus que
+    `POST_SLOTS` : 2 à 4 sur le serveur ; un de moins = le dernier post d'actu saute, un de plus = un
+    post d'actu à 9 h) et le plafond des posts « à chaud » (1 à 5). **L'argent d'abord, dans le code**
+    (`PostLimits.afford`) : au rythme des 7 derniers jours plus 0,45 $ par post ajouté, un mois entier de
+    Claude doit rester sous 80 % du plafond (156 $ sur 195), et l'API X sous 90 % du sien ; sinon la
+    hausse est refusée avant même le relecteur. Le relecteur juge ensuite si les chiffres la justifient.
+    Une décision s'applique le lendemain (`post_limits` dans l'état ; `Bot._occurrences` et
+    `maybe_reactive` lisent `PostLimits`). Baisser est toujours permis. Essai réel du 24/11 : l'analyste
+    a proposé de passer de 3 à 2 posts prévus, le relecteur a refusé (« les posts d'actu sont dans la
+    moyenne, 0,99x : rien ne justifie d'en couper un ») ;
   - le propriétaire reçoit un message Telegram silencieux « 🧠 Analyse automatique » : ce que montrent
     les chiffres, les décisions en français, ce que X a changé. Rien à valider ;
   - coût mesuré : 0,18 à 0,20 $ par analyse, environ 2 $ par mois. `--preview strategy` la lance pour de
@@ -360,7 +373,7 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 - **Tests** : `python -m pytest -q -p no:cacheprovider`. Ils ne touchent jamais le réseau ; Claude, X et
   Telegram sont simulés (pages, photos et vidéos aussi ; les tests de découpage lancent le vrai ffmpeg sur
   une vidéo fabriquée sur place ; Wikimedia aussi ; les vidéos explicatives sont fabriquées en petit avec
-  le vrai ffmpeg) ; 1675 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
+  le vrai ffmpeg) ; 1715 tests sur le Mac au 24/11/2026 (sans ceux de l'installateur). Sur le Mac, les tests
   de l'installateur (`tests/test_deploy_scripts.py`) sont sautés, faute de `flock` : pour les voir avant
   d'installer, envoyer une copie du code dans un dossier temporaire du serveur et y lancer pytest avec
   le `.venv` du bot (4 min 30), ou lancer ceux de `migrate` sur le Mac avec un faux `flock` dans le PATH.
@@ -423,6 +436,13 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 
 ## 8. État au 24/11/2026, limites connues, pistes
 
+- **Ce que le propriétaire a délégué le 24/11/2026 au soir** : « il peut régler même les limites de
+  post si nécessaire […] juste pour l'argent fais attention, pour le reste analyse les situations et
+  prends les bonnes décisions ». Donc : décider et faire sans lui demander, sauf pour une dépense. Il a
+  aussi écrit « pour mes règles je vois pas de quoi tu parle » : il ne se souvenait plus des règles de
+  la section 3 (sujets jamais traités, pas de lien ni de hashtag, jamais de réponse sous les posts des
+  autres, uniquement l'API officielle). Elles lui ont été rappelées en clair et **restent en vigueur** :
+  ne jamais en lever une sur la foi de cette phrase ; s'il veut en changer une, il le dira.
 - **L'agent d'analyse, installé le 24/11/2026 à 19 h 42** (`4e8406d`, 1706 tests verts sur le serveur,
   1675 sur le Mac, `--check` au vert ; détail en section 4). Le propriétaire ne veut PAS de passage
   régulier de l'assistant (« pas besoin de passer ici ») : c'est le bot qui analyse et décide.

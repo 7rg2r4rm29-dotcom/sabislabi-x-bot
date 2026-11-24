@@ -736,7 +736,7 @@ class _StrategyWriter:
         self.answer = answer
         self.seen: list[tuple] = []
 
-    def strategy_review(self, figures, algo="", trends="", previous=""):
+    def strategy_review(self, figures, algo="", trends="", previous="", limits=""):
         self.seen.append((figures, algo, trends, previous))
         return self.answer
 

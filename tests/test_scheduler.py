@@ -2047,3 +2047,57 @@ class TestStrategyInTheLoop:
         assert test is True
         assert "STRATEGY FOR CHOOSING STORIES" not in writer.editor_context
         assert perf.endswith("WHAT TO TRY IN THIS TEST POST: a two-line post") and "STRATEGY FOR WRITING" not in perf
+
+
+# ---------------------------------------------------------------------------
+# Le nombre de posts par jour décidé par l'agent d'analyse (bot/limits.py)
+# ---------------------------------------------------------------------------
+class TestPostLimitsInTheLoop:
+    def _decide(self, state, scheduled: int, reactive: int, date: str = "2026-10-15") -> None:
+        state.data["post_limits"] = [{"from": date, "scheduled": scheduled, "reactive": reactive,
+                                      "decided_at": "2026-10-14T09:00:00+02:00"}]
+
+    def test_by_default_nothing_changes(self, settings, state, budget, parts, clock):
+        clock(9, 0)
+        bot = make_bot(settings, state, budget, parts)
+        assert [s.key for _o, s in bot._occurrences((0,))] == ["gm-0800", "tip-1330", "news-1800"]
+        assert bot.limits.reactive() == settings.reactive_max_per_day
+
+    def test_one_more_post_a_day(self, settings, state, budget, parts, clock):
+        clock(7, 0)
+        settings.post_slots = parse_post_slots("tip@14:30,news@19:00,news@23:00")
+        self._decide(state, 4, settings.reactive_max_per_day)
+        bot = make_bot(settings, state, budget, parts)
+        assert [s.key for _o, s in bot._occurrences((0,))] == ["news-0900", "tip-1430", "news-1900", "news-2300"]
+        assert [s.key for _o, s in bot._occurrences((-1,))] == ["tip-1430", "news-1900", "news-2300"]   # hier : avant la décision
+
+    def test_one_post_less_a_day(self, settings, state, budget, parts, clock):
+        clock(7, 0)
+        settings.post_slots = parse_post_slots("tip@14:30,news@19:00,news@23:00")
+        self._decide(state, 2, settings.reactive_max_per_day)
+        bot = make_bot(settings, state, budget, parts)
+        assert [s.key for _o, s in bot._occurrences((0,))] == ["tip-1430", "news-1900"]
+
+    def test_the_breaking_cap_follows_the_decision(self, settings, state, budget, parts, clock):
+        clock(15, 0)
+        settings.reactive_enabled = True
+        settings.reactive_max_per_day = 1
+        bot = make_bot(settings, state, budget, parts)
+        state.incr("reactive")
+        assert bot.maybe_reactive(force=True) == 0                 # plafond du jour atteint : 1 sur 1
+        self._decide(state, bot.limits.scheduled_base(), 2)
+        assert bot.limits.reactive() == 2 and "⚡ Réactif : 1/2 aujourd'hui" in bot.plan_text()
+
+    def test_with_the_formats_chosen_by_the_figures(self, settings, state, budget, parts, clock):
+        clock(7, 0)
+        settings.post_slots = parse_post_slots("tip@14:30,news@19:00,news@23:00")
+        self._decide(state, 4, settings.reactive_max_per_day)
+        bot = auto_bot(settings, state, budget, parts,
+                       FormatAnalytics(feature=("explainer", "essai"), second=("thread", "prouvé")))
+        assert [(o.strftime("%H:%M"), s.kind) for o, s in bot._occurrences((0,))] == [
+            ("09:00", "news"), ("14:30", "explainer"), ("19:00", "thread"), ("23:00", "news")]
+
+    def test_the_real_analyst_gets_the_limits(self, settings, state, budget, parts, clock):
+        settings.strategy_enabled = True
+        bot = make_bot(settings, state, budget, parts)
+        assert bot.strategist.limits is bot.limits and bot.limits.budget is budget

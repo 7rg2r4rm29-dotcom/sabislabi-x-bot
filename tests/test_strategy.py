@@ -42,8 +42,9 @@ class FakeWriter:
         self.reviews: list[tuple] = []
         self.checks: list[tuple] = []
 
-    def strategy_review(self, figures, algo="", trends="", previous=""):
+    def strategy_review(self, figures, algo="", trends="", previous="", limits=""):
         self.reviews.append((figures, algo, trends, previous))
+        self.limits_seen = limits
         return self.answer
 
     def strategy_check(self, figures, algo, trends, directives):
@@ -270,3 +271,112 @@ def test_the_summary_says_when_the_reviewer_refused_some(settings, state, clock)
     st = make(settings, state, FakeWriter(verdicts=[True, False, True]))
     text = st.report_fr(st.review())
     assert "✅ 2 décision(s) appliquée(s) dès le prochain post (1 autre(s) refusée(s) à la relecture, pas assez solides) :" in text
+
+
+# ---------------------------------------------------------------------------
+# Le nombre de posts par jour (accord du propriétaire, 24/11/2026 : « il peut régler même les
+# limites de post si nécessaire […] juste pour l'argent fais attention »)
+# ---------------------------------------------------------------------------
+def limits_for(settings, state, usd_per_day: float = 3.0):
+    from datetime import timedelta
+
+    from bot import utils
+    from bot.config import parse_post_slots
+    from bot.limits import PostLimits
+    settings.post_slots = parse_post_slots("tip@14:30,news@19:00,news@23:00")
+    settings.reactive_max_per_day = 3
+    settings.claude_budget_monthly_usd = 195.0
+    today = utils.now_local()
+    state.data["llm_usage"] = {"days": {(today - timedelta(days=i)).strftime("%Y-%m-%d"): {"usd": usd_per_day}
+                                        for i in range(1, 8)}}
+    return PostLimits(settings, state)
+
+
+def with_limits(settings, state, writer, **kw) -> Strategist:
+    st = make(settings, state, writer)
+    st.limits = limits_for(settings, state, **kw)
+    return st
+
+
+MORE_BREAKING = {"scheduled_per_day": 3, "reactive_per_day": 4, "why": "Breaking posts 1.38x on 49 posts vs 0.99x.",
+                 "fr": "Les posts à chaud marchent mieux : un de plus par jour."}
+
+
+def test_the_analyst_is_told_the_limits_and_the_money(settings, state, clock):
+    clock(9, 0)
+    writer = FakeWriter(proposal(limits={"scheduled_per_day": 3, "reactive_per_day": 3, "why": "", "fr": ""}))
+    st = with_limits(settings, state, writer)
+    memo = st.review()
+    assert writer.limits_seen.startswith("POSTING LIMITS — the owner lets you change them")
+    assert "careful with money" in writer.limits_seen and "for a cap of $195" in writer.limits_seen
+    assert "POSTING LIMITS" in writer.checks[0][0]              # le relecteur voit les mêmes chiffres d'argent
+    assert memo["limits"] is None and memo["limits_note"] == "" and "post_limits" not in state.data
+    assert "Nombre de posts" not in st.report_fr(memo)          # rien ne change : rien à dire
+
+
+def test_a_justified_change_is_reviewed_then_applied_tomorrow(settings, state, clock):
+    clock(9, 0)
+    writer = FakeWriter(proposal(limits=MORE_BREAKING))
+    st = with_limits(settings, state, writer)
+    memo = st.review()
+    shown = writer.checks[0][3]
+    assert shown[-1] == ("(posting limits) Scheduled posts per day: 3 → 3; breaking-news posts per day at most: 3 → 4 "
+                         "— Breaking posts 1.38x on 49 posts vs 0.99x.")
+    assert memo["limits"]["reactive"] == 4 and memo["limits"]["from"] == "2026-10-16"
+    assert st.limits.reactive() == 3 and st.limits.target() == (3, 4)
+    text = st.report_fr(memo)
+    assert ("📈 Nombre de posts, à partir de demain : 3 prévus par jour (avant : 3), 4 « à chaud » au plus (avant : 3). "
+            "Les posts à chaud marchent mieux : un de plus par jour.") in text
+
+
+def test_the_reviewer_can_refuse_the_change(settings, state, clock):
+    writer = FakeWriter(proposal(limits=MORE_BREAKING), verdicts=[True, True, True, False])
+    st = with_limits(settings, state, writer)
+    memo = st.review()
+    assert memo["limits"] is None and st.limits.target() == (3, 3) and memo["dropped"] == 1
+    assert len(memo["editor"]) == 1 and len(memo["writer"]) == 2          # les autres consignes restent
+    assert "📈 Le relecteur a refusé de changer le nombre de posts. Le nombre de posts ne change pas." in st.report_fr(memo)
+
+
+def test_money_first_a_raise_the_budget_cannot_carry_never_reaches_the_reviewer(settings, state, clock):
+    writer = FakeWriter(proposal(limits=MORE_BREAKING))
+    st = with_limits(settings, state, writer, usd_per_day=5.0)            # 150 $ par mois : plus de marge
+    memo = st.review()
+    assert all("posting limits" not in d for d in writer.checks[0][3])
+    assert memo["limits"] is None and st.limits.target() == (3, 3)
+    assert memo["limits_note"].startswith("changement du nombre de posts refusé : le budget ne le permet pas")
+    assert "💰 Changement du nombre de posts refusé : le budget ne le permet pas" in st.report_fr(memo)
+
+
+@pytest.mark.parametrize("limits, note", [
+    ({"scheduled_per_day": 9, "reactive_per_day": 3, "why": "more is more", "fr": "plus"}, "hors bornes"),
+    ({"scheduled_per_day": 3, "reactive_per_day": 5, "why": "two steps", "fr": "deux crans"}, "plus d'un cran"),
+    ({"scheduled_per_day": 4, "reactive_per_day": 3, "why": " ", "fr": "sans raison"}, "sans justification"),
+])
+def test_the_code_refuses_what_is_out_of_bounds(settings, state, clock, limits, note):
+    writer = FakeWriter(proposal(limits=limits))
+    st = with_limits(settings, state, writer)
+    memo = st.review()
+    assert memo["limits"] is None and note in memo["limits_note"] and st.limits.target() == (3, 3)
+    assert all("posting limits" not in d for d in writer.checks[0][3])
+
+
+def test_fewer_posts_is_a_valid_decision(settings, state, clock):
+    fewer = {"scheduled_per_day": 2, "reactive_per_day": 3, "why": "Late-night news posts 0.98x on 15 posts.",
+             "fr": "Le post de 23 h marche moins bien : on l'enlève."}
+    st = with_limits(settings, state, FakeWriter(proposal(limits=fewer)), usd_per_day=5.0)
+    memo = st.review()
+    assert memo["limits"]["scheduled"] == 2 and st.limits.target() == (2, 3)     # une baisse ne coûte rien
+
+
+def test_a_change_alone_is_still_reviewed(settings, state, clock):
+    writer = FakeWriter(proposal(editor=(), writer=(), limits=MORE_BREAKING))
+    st = with_limits(settings, state, writer)
+    memo = st.review()
+    assert len(writer.checks[0][3]) == 1 and memo["limits"]["reactive"] == 4
+
+
+def test_without_the_limits_module_the_field_is_ignored(settings, state, clock):
+    writer = FakeWriter(proposal(limits=MORE_BREAKING))
+    memo = make(settings, state, writer).review()
+    assert memo["limits"] is None and memo["limits_note"] == "" and writer.limits_seen == ""

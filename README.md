@@ -133,6 +133,12 @@ marchent, dans le même style, tant que ça marche, et regarde les tendances à 
     posts ou qui toucheraient à tes règles (sujets interdits, liens, jargon, sujets pour initiés) ;
   - ce qui reste est appliqué dès le post suivant, et tu reçois un petit message « 🧠 Analyse
     automatique » sur Telegram qui te dit ce qui a été vu et décidé. **Tu n'as rien à valider.**
+  - **il peut aussi changer le nombre de posts par jour** (ton accord du 24 novembre : « il peut régler
+    même les limites de post si nécessaire », en faisant attention à l'argent) : un post prévu de moins
+    ou de plus (2 à 4 par jour), et de 1 à 5 posts « à chaud », un cran à la fois, à partir du
+    lendemain. Avant tout, le programme vérifie l'argent : si un post de plus faisait dépasser 80 % de
+    ton plafond Claude sur un mois, la hausse est refusée d'office. Le message Telegram te le dit
+    (« 📈 Nombre de posts… ») ;
   - coût : environ 2 $ de Claude par mois.
 - **La veille du marché** (ton accord du 23/11 : tes crédits API couvrent la dépense) : une fois par
   jour, le bot lit les derniers posts de 5 gros comptes qui racontent la tech et l'IA à tout le monde, et

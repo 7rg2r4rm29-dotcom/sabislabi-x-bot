@@ -650,7 +650,11 @@ def run_strategy_preview(settings, state_path=None, *, llm=None, writer=None, ht
             from .trends import TrendWatch
             trends = TrendWatch(settings, state)
         algo = AlgoWatch(settings, state, http_get=http_get)
-        strategist = Strategist(settings, state, Analytics(settings, state, None, None), writer, trends=trends, algo=algo)
+        from .costs import Budget
+        from .limits import PostLimits
+        limits = PostLimits(settings, state, llm, Budget(state, settings.x_budget_daily_usd, settings.x_budget_monthly_usd))
+        strategist = Strategist(settings, state, Analytics(settings, state, None, None), writer, trends=trends,
+                                algo=algo, limits=limits)
         out("=== Aperçu de l'analyse automatique — RIEN n'est appliqué au bot en service ===")
         memo = strategist.review(force=True)
         algo_text = algo.block()
@@ -662,6 +666,10 @@ def run_strategy_preview(settings, state_path=None, *, llm=None, writer=None, ht
             out(f"--- {title} ({len(memo[side])}) ---")
             for d in memo[side]:
                 out(f"  • {d['text']}\n      [{d['basis']}{', ' + str(d['n']) + ' posts' if d['n'] else ''}] {d['why']}")
+        lim = memo.get("limits")
+        out("--- Nombre de posts --- " + (
+            f"{lim['scheduled']} prévus par jour, {lim['reactive']} à chaud au plus, à partir du {lim['from']} : {lim['why']}"
+            if lim else (memo.get("limits_note") or "inchangé")))
         out(f"--- Idée d'essai --- {memo.get('test') or '(aucune)'}")
         out(f"--- Écartées par le code ou le relecteur : {memo.get('dropped', 0)} ---")
         out("--- Message Telegram ---")

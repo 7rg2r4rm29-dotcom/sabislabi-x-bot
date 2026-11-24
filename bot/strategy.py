@@ -96,13 +96,14 @@ def _clean(d: dict) -> dict:
 
 
 class Strategist:
-    def __init__(self, settings, state, analytics, writer, trends=None, algo=None) -> None:
+    def __init__(self, settings, state, analytics, writer, trends=None, algo=None, limits=None) -> None:
         self.settings = settings
         self.state = state
         self.analytics = analytics
         self.writer = writer
         self.trends = trends
         self.algo = algo
+        self.limits = limits          # bot/limits.py : le nombre de posts par jour, et ce que le budget permet
 
     # ---- État ---------------------------------------------------------
     def memo(self) -> dict | None:
@@ -152,7 +153,13 @@ class Strategist:
                 trends = self.trends.block() or ""
             except Exception as e:  # noqa: BLE001
                 log.warning("Analyse : tendances indisponibles (%s)", e)
-        proposal = self.writer.strategy_review(figures, algo, trends, self._previous_block())
+        limits_sheet = ""
+        if self.limits is not None:
+            try:
+                limits_sheet = self.limits.sheet() or ""
+            except Exception as e:  # noqa: BLE001
+                log.warning("Analyse : limites de posts illisibles (%s)", e)
+        proposal = self.writer.strategy_review(figures, algo, trends, self._previous_block(), limits_sheet)
         if not isinstance(proposal, dict):
             log.warning("Analyse : pas de réponse de l'analyste, consignes inchangées")
             return None
@@ -168,12 +175,19 @@ class Strategist:
                     continue
                 kept[side].append(_clean(d))
         flat = [(side, d) for side in ("editor", "writer") for d in kept[side]]
-        if flat:
-            verdicts = self.writer.strategy_check(
-                figures, algo, trends,
-                [f"({'for choosing stories' if side == 'editor' else 'for writing'}; basis: {d['basis']}"
+        # Le nombre de posts par jour : le code vérifie les bornes, le cran et le budget ; le
+        # relecteur dit ensuite si les chiffres justifient le changement.
+        change, limits_note = self._limits_change(proposal.get("limits")) if limits_sheet else (None, "")
+        shown = [f"({'for choosing stories' if side == 'editor' else 'for writing'}; basis: {d['basis']}"
                  f"{', ' + str(d['n']) + ' posts' if d['basis'] == 'numbers' else ''}) {d['text']} — {d['why']}"
-                 for side, d in flat])
+                 for side, d in flat]
+        if change:
+            before = self.limits.target()
+            shown.append(f"(posting limits) Scheduled posts per day: {before[0]} → {change['scheduled']}; breaking-news "
+                         f"posts per day at most: {before[1]} → {change['reactive']} — {change['why']}")
+        if shown:
+            verdicts = self.writer.strategy_check(
+                "\n\n".join(p for p in (figures, limits_sheet) if p), algo, trends, shown)
             if verdicts is None:
                 log.warning("Analyse : pas de réponse du relecteur, consignes inchangées")
                 return None
@@ -183,6 +197,14 @@ class Strategist:
                     kept[side].append(d)
                 else:
                     dropped += 1
+            if change and not verdicts[-1]:
+                change, limits_note = None, "le relecteur a refusé de changer le nombre de posts"
+                dropped += 1
+        adopted = None
+        if change:
+            adopted = self.limits.adopt(change["scheduled"], change["reactive"], change["why"], change["fr"])
+            if adopted is None:
+                limits_note = "le nombre de posts n'a pas pu être changé"
         test = " ".join(str(proposal.get("test") or "").split())
         if test and (len(test) > TEXT_MAX or directive_problem({"text": test, "basis": "trends", "n": 0, "why": "essai"})):
             test = ""
@@ -193,7 +215,8 @@ class Strategist:
                                  "n": f.get("n") if isinstance(f.get("n"), int) else 0,
                                  "gap": " ".join(str(f.get("gap") or "").split())[:60]})
         memo = {"at": iso(now_local()), "posts": n_posts, "editor": kept["editor"], "writer": kept["writer"],
-                "test": test, "findings": findings, "dropped": dropped,
+                "test": test, "findings": findings, "dropped": dropped, "limits": adopted,
+                "limits_note": limits_note,
                 "summary_fr": " ".join(str(proposal.get("summary_fr") or "").split())[:700]}
         history = [h for h in self.state.data.get("strategy_history") or [] if isinstance(h, dict)]
         old = self.state.data.get("strategy")
@@ -206,6 +229,28 @@ class Strategist:
         log.info("Analyse faite sur %d posts : %d consigne(s) pour le choix, %d pour l'écriture, %d écartée(s)",
                  n_posts, len(memo["editor"]), len(memo["writer"]), dropped)
         return memo
+
+    def _limits_change(self, raw) -> tuple[dict | None, str]:
+        """Le changement du nombre de posts demandé par l'analyste : (changement valide ou None,
+        note en français quand le code le refuse). Rien de demandé, ou les mêmes valeurs : (None, "")."""
+        if not isinstance(raw, dict):
+            return None, ""
+        scheduled, reactive = raw.get("scheduled_per_day"), raw.get("reactive_per_day")
+        try:
+            if not self.limits.changed(scheduled, reactive):
+                return None, ""
+            bad = self.limits.problem(scheduled, reactive)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Analyse : limites de posts illisibles (%s)", e)
+            return None, ""
+        why = " ".join(str(raw.get("why") or "").split())
+        if not bad and not why:
+            bad = "sans justification"
+        if bad:
+            log.info("Analyse : changement du nombre de posts refusé par le code (%s)", bad)
+            return None, f"changement du nombre de posts refusé : {bad}"
+        return {"scheduled": scheduled, "reactive": reactive, "why": why[:300],
+                "fr": " ".join(str(raw.get("fr") or "").split())[:300]}, ""
 
     def _previous_block(self) -> str:
         m = self.state.data.get("strategy")
@@ -276,6 +321,16 @@ class Strategist:
                       for d in (m.get("editor") or []) + (m.get("writer") or [])]
         else:
             lines.append("Rien d'assez net dans les chiffres pour changer quoi que ce soit : on continue comme avant.")
+        lim = m.get("limits")
+        if isinstance(lim, dict):
+            before = lim.get("before") or {}
+            lines.append(f"📈 Nombre de posts, à partir de demain : {lim.get('scheduled')} prévus par jour (avant : "
+                         f"{before.get('scheduled')}), {lim.get('reactive')} « à chaud » au plus (avant : "
+                         f"{before.get('reactive')}). {esc(lim.get('fr') or '')}".rstrip())
+        elif m.get("limits_note"):
+            note = str(m["limits_note"])
+            note = note[:1].upper() + note[1:]
+            lines.append(("💰 " if "budget" in note else "📈 ") + esc(note) + ". Le nombre de posts ne change pas.")
         if self.algo is not None:
             changes = self.algo.changes_fr()
             if changes:

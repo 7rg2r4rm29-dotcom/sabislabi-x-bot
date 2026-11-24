@@ -191,12 +191,16 @@ class Bot:
             from .trends import TrendWatch
             trends = TrendWatch(settings, self.state, x=self.x)      # x : la veille du marché
         self.trends = trends
+        # Le nombre de posts par jour (bot/limits.py) : ceux des réglages tant que l'agent d'analyse
+        # n'en a pas décidé autrement, dans ses bornes et dans le budget.
+        from .limits import PostLimits
+        self.limits = PostLimits(settings, self.state, self.llm, self.budget)
         # L'agent d'analyse (bot/strategy.py) : chiffres, tendances et algorithme de X → consignes.
         if strategist is None and getattr(settings, "strategy_enabled", False):
             from .algo import AlgoWatch
             from .strategy import Strategist
             strategist = Strategist(settings, self.state, self.analytics, self.writer, trends=self.trends,
-                                    algo=AlgoWatch(settings, self.state))
+                                    algo=AlgoWatch(settings, self.state), limits=self.limits)
         self.strategist = strategist
         self._prepare_visual = prepare_visual
         self._prepare_explainer = prepare_explainer
@@ -490,7 +494,7 @@ class Bot:
                           if sl.weekday == day.weekday()]
             explainers = [(occ, sl) for occ, sl in explainers
                           if not any(abs(minutes_between(occ, t)) < THREAD_CLEAR_MIN for t in threads)]
-            for slot in self.settings.post_slots or []:
+            for slot in self.limits.post_slots(day):
                 occ = at_local(day, slot.at)
                 # Jour de thread : le thread prend la place du post le plus proche (pas
                 # plus de 3 posts par jour, et jamais deux posts à moins de 3 h).
@@ -512,13 +516,13 @@ class Bot:
         """Le grand créneau du jour : celui du post « le futur arrive »."""
         return next((sl for sl in self.settings.post_slots or [] if sl.kind == "tip"), None)
 
-    def _second_slot(self, feature: Slot) -> Slot | None:
+    def _second_slot(self, feature: Slot, day: datetime | None = None) -> Slot | None:
         """Le post d'actu qu'un format prouvé peut remplacer : le premier après le grand créneau,
         assez loin de tous les autres posts pour qu'un thread à sa place n'en annule aucun."""
         def minute(sl: Slot) -> int:
             return sl.at.hour * 60 + sl.at.minute
 
-        posts = [sl for sl in self.settings.post_slots or [] if sl.kind != "gm"]
+        posts = [sl for sl in self.limits.post_slots(day) if sl.kind != "gm"]
         for sl in sorted(posts, key=minute):
             if (sl.kind == "news" and minute(sl) > minute(feature)
                     and all(abs(minute(sl) - minute(o)) >= THREAD_CLEAR_MIN for o in posts if o is not sl)):
@@ -587,7 +591,7 @@ class Bot:
         kind, why = pick
         plan = {"feature": kind, "why": str(why), "second": None, "why2": "", "decided_at": iso(now)}
         second = getattr(self.analytics, "second_format", None)
-        if callable(second) and self._second_slot(feature) is not None:
+        if callable(second) and self._second_slot(feature, day) is not None:
             extra = second(kind, [k for k in cands if k != "tip"])
             if extra:
                 plan["second"], plan["why2"] = extra[0], str(extra[1])
@@ -615,10 +619,10 @@ class Bot:
         """Les créneaux d'un jour dont le plan des formats est décidé : le même nombre de posts
         qu'avec le planning fixe, seul le format de deux d'entre eux au plus change."""
         feature = self._feature_slot()
-        second = self._second_slot(feature) if feature is not None and plan.get("second") else None
+        second = self._second_slot(feature, day) if feature is not None and plan.get("second") else None
         chosen: list[tuple[datetime, Slot]] = []
         posts: list[tuple[datetime, Slot]] = []
-        for slot in self.settings.post_slots or []:
+        for slot in self.limits.post_slots(day):
             occ = at_local(day, slot.at)
             if slot == feature and plan.get("feature") != "tip":
                 chosen.append((occ, Slot(plan["feature"], slot.at, day.weekday())))
@@ -1034,7 +1038,7 @@ class Bot:
         s = self.settings
         if not s.reactive_enabled and not force:
             return 0
-        if self.state.count("reactive") >= s.reactive_max_per_day:
+        if self.state.count("reactive") >= self.limits.reactive():
             return 0
         now = now_local()
         if not force:
@@ -1230,7 +1234,7 @@ class Bot:
         published = [p for p in self.state.data.get("published") or []
                      if str(p.get("created_at") or "").startswith(today) and p.get("kind") != "comment_reply"]
         lines.append(f"📤 Aujourd'hui : {len(published)} post(s) publié(s) · ⚡ réactif "
-                     f"{self.state.count('reactive')}/{s.reactive_max_per_day} · 💬 "
+                     f"{self.state.count('reactive')}/{self.limits.reactive()} · 💬 "
                      f"{self.state.count('comment_drafts')} brouillon(s) de réponse · 🎯 radar "
                      f"{self.state.count('radar_suggestions')}/{s.radar_max_per_day}")
         groups = (("awaiting", "⏳ À valider"), ("approved", "🗓️ Programmé"),
@@ -1318,7 +1322,7 @@ class Bot:
                              f"— {esc(str(plan.get('why') or ''))}{esc(extra)}")
         s = self.settings
         reactive = [it for it in self.state.items(kinds=("reactive",), statuses=("awaiting", "approved"))]
-        line = f"⚡ Réactif : {self.state.count('reactive')}/{s.reactive_max_per_day} aujourd'hui"
+        line = f"⚡ Réactif : {self.state.count('reactive')}/{self.limits.reactive()} aujourd'hui"
         if not s.reactive_enabled:
             line = "⚡ Réactif : désactivé"
         elif reactive:

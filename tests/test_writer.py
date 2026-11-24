@@ -2553,7 +2553,9 @@ class TestStrategyCalls:
         assert c["user"].index("OUR NUMBERS") < c["user"].index("X'S RANKING ALGORITHM") \
             < c["user"].index("TRENDING TODAY") < c["user"].index("YOUR EARLIER DIRECTIVES")
         assert c["user"].endswith("Today is Thursday October 15, 2026. Fill every field of the JSON.")
-        assert set(c["schema"]["properties"]) == {"findings", "editor", "writer", "test", "summary_fr"}
+        assert set(c["schema"]["properties"]) == {"findings", "editor", "writer", "limits", "test", "summary_fr"}
+        assert set(c["schema"]["properties"]["limits"]["properties"]) == {"scheduled_per_day", "reactive_per_day",
+                                                                          "why", "fr"}
         directive = c["schema"]["properties"]["editor"]["items"]["properties"]
         assert set(directive) == {"text", "fr", "basis", "n", "why"}
         assert directive["basis"]["enum"] == ["numbers", "algorithm", "trends"]
@@ -2563,6 +2565,8 @@ class TestStrategyCalls:
         w.strategy_review("OUR NUMBERS — …")
         assert "YOUR EARLIER DIRECTIVES: none yet, this is your first review." in llm.calls[0]["user"]
         assert w.strategy_review("  ") is None and len(llm.calls) == 1
+        w.strategy_review("OUR NUMBERS — …", limits="POSTING LIMITS — scheduled posts per day: 3 now")
+        assert "POSTING LIMITS — scheduled posts per day: 3 now" in llm.calls[1]["user"]
         assert make_writer(settings, state, {})[0].strategy_review("OUR NUMBERS — …") is None
 
     def test_the_prompts_carry_the_rules_of_the_account(self):
@@ -2573,6 +2577,8 @@ class TestStrategyCalls:
         assert "HOW THE ACCOUNT ALREADY WRITES" in wmod.STRATEGY_RULES and "never tie one to today" in wmod.STRATEGY_PROMPT
         assert "it contradicts HOW THE ACCOUNT ALREADY WRITES" in wmod.STRATEGY_CHECK_PROMPT
         assert "it is tied to today" in wmod.STRATEGY_CHECK_PROMPT
+        assert "careful with money" in wmod.STRATEGY_PROMPT and "careful with money" in wmod.STRATEGY_CHECK_PROMPT
+        assert "posts per day does not change" not in wmod.STRATEGY_RULES
         assert "Be strict: a wrong directive costs more than a missing one." in wmod.STRATEGY_CHECK_PROMPT
 
     def test_the_reviewer_answers_for_each_directive(self, settings, state):
