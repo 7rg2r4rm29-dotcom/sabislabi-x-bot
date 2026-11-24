@@ -92,6 +92,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   photos (`visuals.fetch_image_bytes`, `visuals.X_DOMAINS`).
 - Jamais de réponse ni de like automatique sous les posts des autres. Le radar ne fait que suggérer, et le
   propriétaire valide à la main. Le bot ne répond par l'API que quand le compte est sollicité.
+- **Jamais de like fait par le programme, même sur NOS propres posts.** Les règles de X pour les
+  développeurs l'interdisent sans exception (docs.x.com/developer-guidelines, lu le 24/11/2026 : « Likes
+  must be directly initiated by the authenticated user. Automated, bulk, or indiscriminate liking —
+  including auto-liking by keyword, hashtag, user, or schedule — is prohibited » ; sanctions annoncées :
+  suspension de l'application, retrait de l'accès à l'API, bannissement définitif). Le propriétaire l'a
+  demandé le 24/11/2026 (« s'ils peuvent liker, ils likent aussi ») sans connaître cette règle : refusé
+  et expliqué. Seul un like fait à la main par une vraie personne est permis. Les agents n'ont pas le
+  droit de le proposer non plus (`strategy._RULE_RE`, `STRATEGY_RULES`).
 
 **Ligne éditoriale** (codée dans `bot/filters.py` et dans les consignes de `bot/writer.py`)
 
@@ -434,6 +442,12 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
 ## 7. Travailler avec le propriétaire
 
 - Écrire en **français simple, sans jargon**.
+- **Le propriétaire ne va JAMAIS sur Telegram** (il l'a dit le 24/11/2026 : « pas la peine de msg sur
+  Telegram, je vais jamais dessus »). Ne jamais compter sur Telegram pour l'informer, ne rien lui
+  proposer d'y faire (boutons, commandes, rapports). Les messages du bot y partent quand même, alertes
+  comprises (crédit Claude épuisé, clé refusée, plafond atteint) : **il ne les verra pas**. Tout ce
+  qu'il doit savoir se dit ici, dans la conversation. Une panne peut donc durer jusqu'à sa prochaine
+  session : vérifier l'état du service à chaque session, sans attendre qu'il le demande.
 - **Faire le travail soi-même, de bout en bout** : code, tests, push, installation quand l'accès existe,
   vérification. Ne pas lui demander de faire à la main ce que les outils permettent de faire.
 - Le **consulter seulement** pour :
@@ -463,6 +477,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   la section 3 (sujets jamais traités, pas de lien ni de hashtag, jamais de réponse sous les posts des
   autres, uniquement l'API officielle). Elles lui ont été rappelées en clair et **restent en vigueur** :
   ne jamais en lever une sur la foi de cette phrase ; s'il veut en changer une, il le dira.
+- **Étiquette « Automated » et bio (à régler avec le propriétaire, question posée le 24/11/2026 au
+  soir)** : la page officielle de X pour les développeurs demande à un compte automatique d'activer
+  l'étiquette « Automated » du profil et de dire dans sa bio que c'est un robot et qui le tient
+  (« Enable the "Automated" profile label », « Disclose in bio », « Cannot impersonate humans »). Le
+  README le disait déjà pour `APPROVAL_MODE=auto`. L'API ne permet pas de voir si l'étiquette est
+  activée, et la bio refaite le 24/11 ne dit pas que le compte est automatique. C'est son compte et son
+  réglage : lui expliquer simplement, lui donner le chemin dans l'app (Réglages → Votre compte →
+  Informations sur le compte → Automatisation) et une bio qui le dit ; ne jamais le faire à sa place.
 - **Ce que le code de X dit vraiment (lecture du spécialiste du 24/11/2026, vérifiée à la main dans
   `author_cold_start.rs`)** — à connaître avant de proposer quoi que ce soit sur la portée :
   - **poids** : partage par copie du lien 20, réponse 5 (20 entre deux comptes qui se suivent), partage
@@ -474,8 +496,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     rapportés à ses vues (`Beta(0,75 + likes ; 49,25 + vues − likes)`). Tous nos posts y sont éligibles
     (toujours moins de 200 vues) : **un ou deux likes dans les premières vues doublent ou triplent leurs
     chances** (0 like sur 40 vues : 0,8 % ; 1 like : 1,9 % ; 2 likes : 3 %). C'est le levier le plus
-    net trouvé à ce jour, et le bot ne peut pas l'actionner (pas de like automatique) : dit au
-    propriétaire le 24/11, qui peut liker chaque post depuis son compte personnel ;
+    net trouvé à ce jour, et le bot ne peut pas l'actionner : X interdit tout like automatique, même
+    sur ses propres posts (section 3). Dit au propriétaire le 24/11 : il peut liker chaque post à la
+    main depuis son compte personnel, s'il le veut ; pas de bouton Telegram (il n'y va jamais) ;
   - **photos et vidéos** : ouvrir une vidéo ou une photo ne rapporte presque rien dans le fil principal
     (`VideoOpenWeight`, `VqvWeight`, `PostVideoWeight` à 0, `PhotoExpandWeight` 0,05) ; c'est le temps
     passé et la lecture jusqu'au bout qui comptent (mises à jour des 8 et 13/10/2026) ;

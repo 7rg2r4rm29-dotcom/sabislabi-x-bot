@@ -104,6 +104,8 @@ def make(settings, state, writer=None, analytics=None, algo=True, trends=True) -
     "Mention the price on its own line.",
     "End with a line people want to reply to or argue with.",
     "Write posts people want to quote to a friend.",
+    "Pick stories likely to earn a like in the first views: a clear wow fact in line 1.",
+    "End on a take readers would like and pass on, rather than on a caveat.",
 ])
 def test_a_plain_directive_passes(text):
     assert directive_problem({"text": text, "basis": "numbers", "n": 9, "why": "1.6x vs 1.0x"}) is None
@@ -117,6 +119,9 @@ def test_a_plain_directive_passes(text):
     ("Cover the crypto market when Bitcoin trends.", "sujet interdit"),
     ("Tell stories about the war in plain words.", "sujet interdit"),
     ("See https://example.com/tips for hooks.", "lien"), ("Short.", "vide"), ("x" * 230, "trop longue"),
+    ("Like our own posts within the first minutes to win the cold-start slot.", "règle"),
+    ("Self-like each post right after publishing.", "règle"), ("Auto-like every post of the account.", "règle"),
+    ("Like other accounts' posts about robots to get noticed.", "règle"),
     ("Today, pick the GTA VI story first if an article covers it.", "actu du jour"),
     ("Lead with whatever is trending right now on Google.", "actu du jour"),
 ])

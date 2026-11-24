@@ -51,7 +51,10 @@ _RULE_RE = re.compile(
     r"\brepl(?:y|ies|ying) (?:to|under|on|in) (?:other|big|bigger|large|larger|popular|viral)\b|"
     r"\bunder (?:other|big|bigger|large|larger|popular) accounts?\b|\bother (?:accounts'?|people'?s?) posts\b|"
     r"\bquote[- ]?(?:tweets?|posts?)\b|\b(?:more|fewer|less) posts? (?:a|per|each) day\b|\bposts? per day\b|"
-    r"\bdevelopers?\b|\bprogrammers?\b|\bAPIs?\b|\bSDKs?\b|\bbenchmarks?\b|\bopen[- ]source\b")
+    r"\bdevelopers?\b|\bprogrammers?\b|\bAPIs?\b|\bSDKs?\b|\bbenchmarks?\b|\bopen[- ]source\b|"
+    # Jamais de like fait par le programme, même sur nos propres posts (règles de X pour les développeurs).
+    r"\bself[- ]?lik\w*|\bauto[- ]?lik\w*|\blik(?:e|es|ing) (?:our|its|your|the account's) own\b|"
+    r"\blik(?:e|es|ing) (?:each|every|our|its|other|their|big|the) (?:\w+ ){0,2}posts?\b|\bautomat\w* lik\w*")
 
 
 # Une consigne vit plusieurs jours : rien qui tienne à l'actu du jour (la rédaction en chef voit déjà
