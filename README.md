@@ -405,9 +405,10 @@ ssh botuser@178.128.194.190 'tail -n 50 ~/x-degen-bot/logs/bot.log'
 ## 9. Chaque mois : la santé du compte
 
 Ouvre **x.com/i/jf/under_the_hood** et regarde le rapport du mois : s'il affiche des **étiquettes**
-(labels) sur le compte ou sur des posts, c'est que X te limite. Celui d'octobre, généré début novembre,
-est le premier à surveiller de près. En cas d'étiquette, arrête tout ce qui ressemble à de l'automatique
-et demande de l'aide.
+(labels) sur le compte ou sur des posts, c'est que X te limite. Celui d'octobre, généré le 7 novembre, est
+propre : « None in this period » aux deux lignes, donc aucune limite (vu le 24/11/2026). Le prochain à
+regarder est celui de novembre, généré vers le 7 décembre : il doit afficher les deux mêmes coches
+vertes. En cas d'étiquette, arrête tout ce qui ressemble à de l'automatique et demande de l'aide.
 
 **Ton profil compte autant que tes posts** (bilan du 24/11/2026) : quelqu'un qui découvre un post regarde
 le profil avant de s'abonner. Il doit dire la promesse du compte, en anglais, sans rien de l'ancienne

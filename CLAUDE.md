@@ -384,11 +384,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     bannière reste à poser : il ne trouvait pas le fichier ; une copie est sur son Bureau
     (`banniere-x.png`) et il l'a reçue dans la conversation. Vérifier par l'API (`profile_banner_url`)
     avant d'en reparler.
-  - **Rapport de santé du compte** (x.com/i/jf/under_the_hood, voir README section 9) : il l'a ouvert le
-    24/11 sans le comprendre et a proposé à l'assistant de le lire. L'assistant ne lit jamais x.com
-    lui-même, même invité (règle absolue de la section 3) : lui demander de coller le texte de la page
-    ou une capture d'écran faite par lui, puis la lui expliquer simplement. Une étiquette (« label »)
-    sur le compte voudrait dire que X le limite.
+  - **Rapport de santé du compte** (x.com/i/jf/under_the_hood, voir README section 9) : **aucune
+    étiquette**. Rapport d'octobre 2026 (généré le 7/11, 396 posts sur la période), capture d'écran
+    envoyée par le propriétaire le 24/11 : « Post labels : None in this period », « Account labels :
+    None in this period ». X ne limitait donc pas le compte : la portée faible ne vient pas d'une
+    sanction. Le rapport de novembre (premier mois de la ligne grand public et du mode automatique)
+    sera généré vers le 7/12 : le lui faire rouvrir à ce moment-là. L'assistant ne lit jamais x.com
+    lui-même, même invité (règle absolue de la section 3) : c'est le propriétaire qui envoie une
+    capture ou colle le texte, et l'assistant le lui explique simplement.
   - **Corrigé et installé le 24/11** :
     - sources : retirés The Debrief (404 depuis le 19/11), IEEE Spectrum et The Guardian (403 : ils
       refusent les robots, jamais forcés), et quatre flux du groupe Future (Tom's Guide ×2, TechRadar,
