@@ -485,9 +485,14 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     d'octobre ne montrait aucune étiquette ; **celui de novembre (vers le 7/12) est à regarder de
     près**, puisque nos posts ne sortent presque jamais du cercle des abonnés ;
   - plusieurs posts du même auteur dans un même fil : chaque post suivant est minoré.
-- **Agent spécialiste de l'algorithme et mesure des tendances, installés le 24/11/2026 au soir** (voir
-  la ligne d'installation plus bas). Essai réel avant installation : 10 fichiers lus, mémo complet,
-  puis analyse : 3 consignes de choix, 1 d'écriture, 2 refusées, changement du nombre de posts refusé.
+- **Agent spécialiste de l'algorithme et mesure des tendances, installés le 24/11/2026 à 21 h 27**
+  (`11ffc0a`, 1783 tests verts sur le serveur, 1752 sur le Mac, `--check` au vert, aucun avertissement
+  après le redémarrage). Essai réel avant installation : 10 fichiers lus, mémo complet, puis analyse :
+  3 consignes de choix, 1 d'écriture, 2 refusées, changement du nombre de posts refusé. Sur le serveur,
+  le spécialiste fera sa première lecture le 25/11 à partir de 15 h 45 environ (20 heures après
+  l'analyse du 24/11 à 19 h 43), et l'analyse sera refaite avec son mémo. À regarder dans le journal :
+  « mémo de l'agent spécialiste fait », « Tendance du jour reprise par ce post », « Algorithme de X :
+  N réglage(s) modifié(s) » ; dans l'état : `algo_watch.brief`.
 - **Le nombre de posts réglable par l'agent, installé le 24/11/2026 à 20 h 31** (`35b5c97`, 1746 tests
   verts sur le serveur, 1715 sur le Mac, `--check` au vert). Vérifié après l'installation : service
   actif, aucun avertissement, aucune limite décidée pour l'instant (`post_limits` absent : 3 posts
