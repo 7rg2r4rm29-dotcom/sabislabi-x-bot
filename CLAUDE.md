@@ -186,7 +186,9 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
     github.com/thewh1teagle/kokoro-onnx (« model-files-v1.0 »), empreintes dans `voice.MODEL_SHA256` ;
     nouveau serveur : `bash ~/x-degen-bot/deploy/install_voice.sh`. Réglages : `EXPLAINER_VOICE_ENABLED`
     (vrai sur le serveur, faux par défaut), `EXPLAINER_VOICE` (`af_heart` par défaut, la mieux notée ;
-    28 voix anglaises, par exemple `am_michael` pour un homme), `VOICE_MODEL_DIR`. Ce qui est dit = ce
+    28 voix anglaises, par exemple `am_michael` pour un homme), `VOICE_MODEL_DIR`. **Voix gardée par le
+    propriétaire le 24/11/2026** (« Garde cette voix ») : `af_heart`, une voix de femme américaine ; ne
+    plus lui poser la question. Ce qui est dit = ce
     qui est écrit (`explainer.narration` : titre, texte, étapes, côtés, « As X put it: … », fin, puis
     « Follow for the future, explained. ») : rien de nouveau à relire. Les scènes se calent sur la voix
     (`voice_timing` : 0,3 s avant, 0,35 s entre deux phrases, 0,6 s après ; chaque étape apparaît quand
@@ -366,6 +368,10 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
      relecture avait accepté « GTA » (sigle non expliqué) au 2e essai : depuis `067d228`, « un peu
      technique » n'est toléré qu'au 3e et dernier essai d'une vidéo.
 - Le flux The Guardian répond aussi 403 depuis le 23/11 (avec IEEE Spectrum 403 et The Debrief 404).
+- Le 24/11 vers 16 h (heure de Paris), tous les flux du groupe Future répondent 404 : les 6 de
+  `news_feeds` (TechRadar, Tom's Guide ×2, GamesRadar, Live Science, Space.com) et même leur flux
+  général `/feeds.xml`, depuis le serveur comme depuis le Mac, alors que leurs sites marchent. Panne
+  chez eux, sans doute passagère : le bot les saute. À revoir si ça dure (adresses changées ?).
 - **@sabislabi est DÉJÀ abonné à X Premium** (le propriétaire l'a rappelé le 23/11/2026 ; vérifié par
   l'API : `verified_type` « blue », `subscription_type` « Premium »). Ne plus le lui proposer ; vérifier
   ce genre de chose par l'API AVANT de suggérer une dépense. La portée faible ne vient donc pas de là.
@@ -465,6 +471,4 @@ propriétaire. Détails techniques : `DESIGN.md`. Mode d'emploi côté propriét
   - après une ou deux semaines, lire `--report` et les notes de performance, puis ajuster les sources
     (`news_feeds`) et les consignes ;
   - regarder la portée des premières vidéos explicatives (type `explainer` dans `what_works`) contre les
-    autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche ;
-  - la voix off est installée (voir section 4) : l'assistant ne peut pas l'écouter lui-même ; demander
-    au propriétaire si la voix lui plaît (sinon `EXPLAINER_VOICE`, par exemple `am_michael`).
+    autres posts, et celle des posts « d'essai » (`fmt.test`) contre ceux qui suivent ce qui marche.
